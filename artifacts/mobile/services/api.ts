@@ -182,6 +182,60 @@ export interface BackendUser {
   [key: string]: unknown;
 }
 
+export interface BackendProject {
+  id: number | string;
+  name: string;
+  description?: string | null;
+  status?: string | null;
+  address?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  color?: string | null;
+  tags?: string[] | null;
+  coverPhotoId?: number | null;
+  accountId?: string;
+  createdById?: string;
+  createdAt: string;
+  updatedAt: string;
+  photoCount?: number;
+  recentPhotos?: Array<{ id: number; url: string }>;
+}
+
+export interface BackendMedia {
+  id: number | string;
+  projectId: number | string;
+  filename?: string;
+  originalName?: string;
+  mimeType?: string;
+  url: string;
+  caption?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  tags?: string[] | null;
+  createdAt: string;
+}
+
+export interface BackendTask {
+  id: number | string;
+  projectId: number | string;
+  title: string;
+  description?: string | null;
+  status?: string | null;
+  priority?: string | null;
+  dueDate?: string | null;
+  createdAt: string;
+  updatedAt?: string;
+  project?: { name?: string };
+}
+
+export interface BackendProjectDetail {
+  project: BackendProject;
+  media?: BackendMedia[];
+  tasks?: BackendTask[];
+  checklists?: unknown[];
+  reports?: unknown[];
+}
+
 // ----- Endpoint wrappers -----
 export const api = {
   base: API_BASE_URL,
@@ -211,7 +265,12 @@ export const api = {
 
   me: () => apiFetch<BackendUser | null>("/api/auth/user"),
 
-  projects: () => apiFetch<unknown>("/api/projects"),
+  projects: () => apiFetch<BackendProject[]>("/api/projects"),
+
+  project: (id: string | number) =>
+    apiFetch<BackendProjectDetail>(`/api/projects/${id}`),
+
+  tasks: () => apiFetch<BackendTask[]>("/api/tasks"),
 
   uploadPhoto: async (
     projectId: string,

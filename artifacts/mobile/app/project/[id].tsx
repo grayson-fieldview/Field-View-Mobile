@@ -1,7 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Modal,
@@ -44,7 +44,14 @@ export default function ProjectDetailScreen() {
     createShare,
     revokeShare,
     deletePhoto,
+    loadProjectDetail,
   } = useData();
+
+  // When opening a project that originated from the backend, pull its latest
+  // photos / tasks / checklists so the tabs aren't empty.
+  useEffect(() => {
+    if (id) loadProjectDetail(String(id));
+  }, [id, loadProjectDetail]);
 
   const project = useMemo(
     () => projects.find((p) => p.id === id),

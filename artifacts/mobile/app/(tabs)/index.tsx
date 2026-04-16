@@ -22,13 +22,22 @@ export default function ProjectsScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { projects, photos, tasks, ready } = useData();
+  const { projects, photos, tasks, ready, syncing, syncError, refresh } =
+    useData();
 
   const stats = useMemo(() => {
-    const byProject = new Map<string, { photos: number; openTasks: number }>();
+    const byProject = new Map<
+      string,
+      { photos: number; openTasks: number }
+    >();
     for (const p of projects)
-      byProject.set(p.id, { photos: 0, openTasks: 0 });
+      byProject.set(p.id, {
+        photos: typeof p.photoCount === "number" ? p.photoCount : 0,
+        openTasks: 0,
+      });
+    // Add any locally-captured photos on top of backend counts.
     for (const ph of photos) {
+      if (ph.remote) continue;
       const s = byProject.get(ph.projectId);
       if (s) s.photos += 1;
     }
@@ -80,9 +89,47 @@ export default function ProjectsScreen() {
         </Pressable>
       </View>
 
+      {syncError ? (
+        <Pressable
+          onPress={() => refresh()}
+          style={{
+            marginHorizontal: 20,
+            marginTop: 10,
+            padding: 12,
+            borderRadius: 10,
+            backgroundColor: colors.card,
+            borderWidth: 1,
+            borderColor: colors.destructive,
+          }}
+        >
+          <Text
+            style={{
+              color: colors.destructive,
+              fontFamily: "Inter_500Medium",
+              fontSize: 13,
+            }}
+          >
+            Couldn’t load projects from the server. Tap to retry.
+          </Text>
+          <Text
+            style={{
+              color: colors.mutedForeground,
+              fontSize: 11,
+              marginTop: 4,
+              fontFamily: "Inter_400Regular",
+            }}
+            numberOfLines={2}
+          >
+            {syncError}
+          </Text>
+        </Pressable>
+      ) : null}
+
       <FlatList
         data={projects}
         keyExtractor={(item) => item.id}
+        refreshing={syncing}
+        onRefresh={refresh}
         contentContainerStyle={{
           padding: 20,
           paddingBottom: insets.bottom + 100,

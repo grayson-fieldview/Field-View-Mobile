@@ -10,9 +10,20 @@ export interface Project {
   name: string;
   address: string;
   client: string;
-  status: "active" | "on-hold" | "complete";
+  /** "active" | "on-hold" | "complete" — but backend may return other strings, so we keep it loose. */
+  status: string;
   createdAt: string;
   updatedAt: string;
+  /** Optional fields surfaced from the web backend. */
+  description?: string;
+  photoCount?: number;
+  color?: string;
+  tags?: string[];
+  latitude?: number;
+  longitude?: number;
+  coverPhotoUrl?: string;
+  /** True when this record originated from the backend (not a local draft). */
+  remote?: boolean;
 }
 
 export interface Photo {
@@ -26,6 +37,8 @@ export interface Photo {
   accuracy?: number;
   note?: string;
   uploaded: boolean;
+  tags?: string[];
+  remote?: boolean;
 }
 
 export interface Task {
@@ -36,6 +49,7 @@ export interface Task {
   done: boolean;
   dueDate?: string;
   createdAt: string;
+  remote?: boolean;
 }
 
 export interface ChecklistItem {

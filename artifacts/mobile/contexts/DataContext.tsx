@@ -4,9 +4,18 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
+
+import { useAuth } from "@/contexts/AuthContext";
+import { ApiError, api } from "@/services/api";
 import { newId } from "@/services/id";
+import {
+  mapBackendMedia,
+  mapBackendProject,
+  mapBackendTask,
+} from "@/services/mappers";
 import { storage } from "@/services/storage";
 import type {
   Checklist,
@@ -24,6 +33,14 @@ interface DataState {
   checklists: Checklist[];
   shares: ShareLink[];
   ready: boolean;
+  syncing: boolean;
+  syncError: string | null;
+
+  /** Force a re-sync of projects + tasks from the backend. */
+  refresh: () => Promise<void>;
+
+  /** Load a single project's detail (photos + tasks + checklists) into state. */
+  loadProjectDetail: (id: string) => Promise<void>;
 
   createProject: (
     input: Pick<Project, "name" | "address" | "client">,
@@ -65,14 +82,32 @@ interface DataState {
 
 const DataContext = createContext<DataState | undefined>(undefined);
 
+/** Merge backend items into an array keyed by id, preserving any local-only rows. */
+function mergeById<T extends { id: string; remote?: boolean }>(
+  existing: T[],
+  incoming: T[],
+): T[] {
+  const incomingIds = new Set(incoming.map((i) => i.id));
+  // Keep existing rows that (a) are local-only (no `remote` flag) AND (b) not
+  // superseded by an incoming row with the same id.
+  const localKept = existing.filter(
+    (e) => !e.remote && !incomingIds.has(e.id),
+  );
+  return [...incoming, ...localKept];
+}
+
 export function DataProvider({ children }: { children: React.ReactNode }) {
+  const { user, ready: authReady } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [checklists, setChecklists] = useState<Checklist[]>([]);
   const [shares, setShares] = useState<ShareLink[]>([]);
   const [ready, setReady] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
+  // Hydrate local cache on first mount so the app works offline immediately.
   useEffect(() => {
     (async () => {
       const [p, ph, ts, cl, sh] = await Promise.all([
@@ -112,6 +147,96 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     await storage.setShares(next);
   }, []);
 
+  // --- Backend sync ---
+  // Refs let our sync callbacks read current state without being recreated
+  // every time the state changes (avoids effect re-runs / fetch loops).
+  const projectsRef = useRef(projects);
+  const tasksRef = useRef(tasks);
+  const photosRef = useRef(photos);
+  projectsRef.current = projects;
+  tasksRef.current = tasks;
+  photosRef.current = photos;
+
+  const refresh = useCallback(async () => {
+    setSyncing(true);
+    setSyncError(null);
+    try {
+      const [backendProjects, backendTasks] = await Promise.all([
+        api.projects(),
+        api.tasks().catch(() => [] as []),
+      ]);
+      const mappedProjects = Array.isArray(backendProjects)
+        ? backendProjects.map(mapBackendProject)
+        : [];
+      const mappedTasks = Array.isArray(backendTasks)
+        ? backendTasks.map(mapBackendTask)
+        : [];
+      await persistProjects(mergeById(projectsRef.current, mappedProjects));
+      await persistTasks(mergeById(tasksRef.current, mappedTasks));
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        // Auth context will handle logout; don't surface as error here.
+        return;
+      }
+      setSyncError(e instanceof Error ? e.message : "Sync failed");
+    } finally {
+      setSyncing(false);
+    }
+  }, [persistProjects, persistTasks]);
+
+  // Re-sync whenever the authenticated user changes.
+  useEffect(() => {
+    if (!authReady || !ready) return;
+    if (!user) {
+      // Logged out — we leave cached local state alone; it's behind auth gate.
+      setSyncError(null);
+      return;
+    }
+    refresh();
+    // We want this to run on user id change only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authReady, ready, user?.id]);
+
+  const loadProjectDetail = useCallback(
+    async (id: string) => {
+      if (!user) return;
+      // Only fetch detail for projects that originated from the backend.
+      // Locally-created projects use nanoid-style ids and would 404.
+      const existing = projectsRef.current.find((p) => p.id === id);
+      if (!existing?.remote) return;
+      try {
+        const detail = await api.project(id);
+        if (!detail?.project) return;
+        const mappedProject = mapBackendProject(detail.project);
+        const idStr = String(mappedProject.id);
+        await persistProjects(
+          mergeById(projectsRef.current, [mappedProject]),
+        );
+        // Always replace remote photos for this project (even with empty list,
+        // so stale deletions on the web propagate); keep local-only rows.
+        const mappedMedia = (detail.media ?? []).map(mapBackendMedia);
+        const keptLocalPhotos = photosRef.current.filter(
+          (p) => !(p.remote && p.projectId === idStr),
+        );
+        await persistPhotos([...mappedMedia, ...keptLocalPhotos]);
+        const mappedTasks = (detail.tasks ?? []).map(mapBackendTask);
+        if (mappedTasks.length) {
+          await persistTasks(mergeById(tasksRef.current, mappedTasks));
+        }
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) return; // silently ignore
+        if (!(e instanceof ApiError && e.status === 401)) {
+          setSyncError(
+            e instanceof Error ? e.message : "Failed to load project",
+          );
+        }
+      }
+    },
+    [user, persistProjects, persistPhotos, persistTasks],
+  );
+
+  // --- Local CRUD (unchanged from before). Creates/updates stay local until
+  //     we wire backend write endpoints.
   const createProject: DataState["createProject"] = useCallback(
     async (input) => {
       const now = new Date().toISOString();
@@ -133,7 +258,9 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const updateProject: DataState["updateProject"] = useCallback(
     async (id, patch) => {
       const next = projects.map((p) =>
-        p.id === id ? { ...p, ...patch, updatedAt: new Date().toISOString() } : p,
+        p.id === id
+          ? { ...p, ...patch, updatedAt: new Date().toISOString() }
+          : p,
       );
       await persistProjects(next);
     },
@@ -296,6 +423,10 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       checklists,
       shares,
       ready,
+      syncing,
+      syncError,
+      refresh,
+      loadProjectDetail,
       createProject,
       updateProject,
       deleteProject,
@@ -318,6 +449,10 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       checklists,
       shares,
       ready,
+      syncing,
+      syncError,
+      refresh,
+      loadProjectDetail,
       createProject,
       updateProject,
       deleteProject,
