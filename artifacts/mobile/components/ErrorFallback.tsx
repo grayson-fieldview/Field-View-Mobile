@@ -73,9 +73,34 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
           Something went wrong
         </Text>
 
-        <Text style={[styles.message, { color: colors.mutedForeground }]}>
-          Please reload the app to continue.
-        </Text>
+        {__DEV__ ? (
+          <View
+            style={[
+              styles.devBox,
+              { backgroundColor: colors.card, borderColor: colors.border },
+            ]}
+          >
+            <Text
+              selectable
+              style={[
+                styles.devMessage,
+                { color: colors.destructive, fontFamily: monoFont },
+              ]}
+            >
+              {error.name ? `${error.name}: ` : ""}
+              {error.message}
+            </Text>
+            <Text
+              style={[styles.devHint, { color: colors.mutedForeground }]}
+            >
+              Tap the alert icon (top right) for the full stack trace.
+            </Text>
+          </View>
+        ) : (
+          <Text style={[styles.message, { color: colors.mutedForeground }]}>
+            Please reload the app to continue.
+          </Text>
+        )}
 
         <Pressable
           onPress={handleRestart}
@@ -274,5 +299,20 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
     width: "100%",
+  },
+  devBox: {
+    width: "100%",
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 14,
+    gap: 8,
+  },
+  devMessage: {
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  devHint: {
+    fontSize: 12,
+    lineHeight: 16,
   },
 });

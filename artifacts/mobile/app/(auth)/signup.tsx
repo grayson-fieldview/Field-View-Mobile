@@ -14,7 +14,8 @@ export default function SignupScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { signUp } = useAuth();
-  const [name, setName] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -24,7 +25,7 @@ export default function SignupScreen() {
     setError(null);
     setLoading(true);
     try {
-      await signUp(name, email, password);
+      await signUp(firstName, lastName, email, password);
       router.replace("/(tabs)");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Sign up failed.");
@@ -51,13 +52,28 @@ export default function SignupScreen() {
       </Text>
 
       <View style={styles.form}>
-        <Input
-          label="Full name"
-          value={name}
-          onChangeText={setName}
-          placeholder="Jane Carpenter"
-          autoCapitalize="words"
-        />
+        <View style={{ flexDirection: "row", gap: 10 }}>
+          <View style={{ flex: 1 }}>
+            <Input
+              label="First name"
+              value={firstName}
+              onChangeText={setFirstName}
+              placeholder="Jane"
+              autoCapitalize="words"
+              autoComplete="given-name"
+            />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Input
+              label="Last name"
+              value={lastName}
+              onChangeText={setLastName}
+              placeholder="Carpenter"
+              autoCapitalize="words"
+              autoComplete="family-name"
+            />
+          </View>
+        </View>
         <Input
           label="Email"
           value={email}
@@ -72,12 +88,17 @@ export default function SignupScreen() {
           label="Password"
           value={password}
           onChangeText={setPassword}
-          placeholder="At least 6 characters"
+          placeholder="At least 8 characters"
           secureTextEntry
-          autoComplete="password-new"
+          autoComplete="new-password"
         />
         {error ? (
-          <Text style={{ color: colors.destructive, fontFamily: "Inter_500Medium" }}>
+          <Text
+            style={{
+              color: colors.destructive,
+              fontFamily: "Inter_500Medium",
+            }}
+          >
             {error}
           </Text>
         ) : null}
@@ -90,7 +111,12 @@ export default function SignupScreen() {
       </View>
 
       <View style={styles.footer}>
-        <Text style={{ color: colors.mutedForeground, fontFamily: "Inter_400Regular" }}>
+        <Text
+          style={{
+            color: colors.mutedForeground,
+            fontFamily: "Inter_400Regular",
+          }}
+        >
           Already have an account?{" "}
         </Text>
         <Pressable onPress={() => router.push("/(auth)/login")} hitSlop={8}>
