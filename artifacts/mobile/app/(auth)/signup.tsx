@@ -1,6 +1,6 @@
-import { Link, useRouter } from "expo-router";
+import { useRouter } from "expo-router";
 import React, { useState } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -93,11 +93,11 @@ export default function SignupScreen() {
         <Text style={{ color: colors.mutedForeground, fontFamily: "Inter_400Regular" }}>
           Already have an account?{" "}
         </Text>
-        <Link href="/(auth)/login" asChild>
+        <Pressable onPress={() => router.push("/(auth)/login")} hitSlop={8}>
           <Text style={[styles.linkInline, { color: colors.primary }]}>
             Sign in
           </Text>
-        </Link>
+        </Pressable>
       </View>
     </KeyboardAwareScrollViewCompat>
   );

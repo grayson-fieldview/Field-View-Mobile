@@ -1,6 +1,6 @@
-import { Link, useRouter } from "expo-router";
+import { useRouter } from "expo-router";
 import React, { useState } from "react";
-import { Alert, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
@@ -88,25 +88,22 @@ export default function LoginScreen() {
           loading={loading}
           size="lg"
         />
-        <Link href="/(auth)/forgot" asChild>
-          <Text
-            style={[styles.link, { color: colors.primary }]}
-            accessibilityRole="link"
-          >
+        <Pressable onPress={() => router.push("/(auth)/forgot")} hitSlop={8}>
+          <Text style={[styles.link, { color: colors.primary }]}>
             Forgot password?
           </Text>
-        </Link>
+        </Pressable>
       </View>
 
       <View style={styles.footer}>
         <Text style={{ color: colors.mutedForeground, fontFamily: "Inter_400Regular" }}>
           New to Field View?{" "}
         </Text>
-        <Link href="/(auth)/signup" asChild>
+        <Pressable onPress={() => router.push("/(auth)/signup")} hitSlop={8}>
           <Text style={[styles.linkInline, { color: colors.primary }]}>
             Create account
           </Text>
-        </Link>
+        </Pressable>
       </View>
     </KeyboardAwareScrollViewCompat>
   );
