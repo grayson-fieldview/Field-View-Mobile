@@ -1,0 +1,71 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import type {
+  Checklist,
+  Photo,
+  Project,
+  ShareLink,
+  Task,
+  User,
+} from "./types";
+
+const KEYS = {
+  user: "@fv/user",
+  authToken: "@fv/token",
+  projects: "@fv/projects",
+  photos: "@fv/photos",
+  tasks: "@fv/tasks",
+  checklists: "@fv/checklists",
+  shares: "@fv/shares",
+  users: "@fv/registered_users",
+} as const;
+
+async function readJson<T>(key: string, fallback: T): Promise<T> {
+  try {
+    const raw = await AsyncStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+async function writeJson<T>(key: string, value: T): Promise<void> {
+  await AsyncStorage.setItem(key, JSON.stringify(value));
+}
+
+export const storage = {
+  // Session
+  getUser: () => readJson<User | null>(KEYS.user, null),
+  setUser: (u: User | null) =>
+    u ? writeJson(KEYS.user, u) : AsyncStorage.removeItem(KEYS.user),
+
+  getToken: () => AsyncStorage.getItem(KEYS.authToken),
+  setToken: (t: string | null) =>
+    t ? AsyncStorage.setItem(KEYS.authToken, t) : AsyncStorage.removeItem(KEYS.authToken),
+
+  // Local registered users (so signup/login works offline)
+  getRegisteredUsers: () =>
+    readJson<Array<User & { password: string }>>(KEYS.users, []),
+  setRegisteredUsers: (users: Array<User & { password: string }>) =>
+    writeJson(KEYS.users, users),
+
+  // Data
+  getProjects: () => readJson<Project[]>(KEYS.projects, []),
+  setProjects: (p: Project[]) => writeJson(KEYS.projects, p),
+
+  getPhotos: () => readJson<Photo[]>(KEYS.photos, []),
+  setPhotos: (p: Photo[]) => writeJson(KEYS.photos, p),
+
+  getTasks: () => readJson<Task[]>(KEYS.tasks, []),
+  setTasks: (t: Task[]) => writeJson(KEYS.tasks, t),
+
+  getChecklists: () => readJson<Checklist[]>(KEYS.checklists, []),
+  setChecklists: (c: Checklist[]) => writeJson(KEYS.checklists, c),
+
+  getShares: () => readJson<ShareLink[]>(KEYS.shares, []),
+  setShares: (s: ShareLink[]) => writeJson(KEYS.shares, s),
+
+  clearSession: async () => {
+    await AsyncStorage.multiRemove([KEYS.user, KEYS.authToken]);
+  },
+};

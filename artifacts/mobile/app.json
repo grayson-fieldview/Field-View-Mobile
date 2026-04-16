@@ -1,0 +1,72 @@
+{
+  "expo": {
+    "name": "Field View",
+    "slug": "mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "fieldview",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/images/icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#111418"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Field View uses the camera to capture project photos with burst mode for rapid documentation.",
+        "NSLocationWhenInUseUsageDescription": "Field View tags your photos with GPS coordinates so you can map site locations.",
+        "NSPhotoLibraryUsageDescription": "Field View saves captured photos to your library.",
+        "NSPhotoLibraryAddUsageDescription": "Field View saves captured photos to your library."
+      }
+    },
+    "android": {
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/images/icon.png"
+    },
+    "plugins": [
+      [
+        "expo-router",
+        {
+          "origin": "https://replit.com/"
+        }
+      ],
+      "expo-font",
+      "expo-web-browser",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Field View uses the camera to capture project photos with burst mode for rapid documentation."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Field View tags your photos with GPS coordinates so you can map site locations."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Field View saves captured photos to your library.",
+          "savePhotosPermission": "Field View saves captured photos to your library.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    }
+  }
+}
