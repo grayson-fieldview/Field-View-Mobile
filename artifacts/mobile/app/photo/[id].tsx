@@ -2,9 +2,11 @@ import { Feather } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import * as MediaLibrary from "expo-media-library";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
+  Dimensions,
+  FlatList,
   Platform,
   Pressable,
   ScrollView,
@@ -16,7 +18,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Path } from "react-native-svg";
 
 import { useData } from "@/contexts/DataContext";
-import type { AnnotationStroke } from "@/services/types";
+import type { AnnotationStroke, Photo } from "@/services/types";
 
 const COLORS = ["#ef4444", "#22c55e", "#3b82f6", "#f59e0b", "#a855f7", "#111111"];
 const SIZES = [3, 6, 12];
@@ -27,18 +29,51 @@ export default function PhotoViewerScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { photos, updatePhoto, deletePhoto } = useData();
 
-  const photo = useMemo(() => photos.find((p) => p.id === id), [photos, id]);
+  const startPhoto = useMemo(() => photos.find((p) => p.id === id), [photos, id]);
+  const projectPhotos = useMemo(
+    () =>
+      startPhoto
+        ? photos.filter((p) => p.projectId === startPhoto.projectId)
+        : [],
+    [photos, startPhoto],
+  );
+  const startIndex = useMemo(() => {
+    const i = projectPhotos.findIndex((p) => p.id === id);
+    return i < 0 ? 0 : i;
+  }, [projectPhotos, id]);
+
+  const [currentIndex, setCurrentIndex] = useState(startIndex);
+  const currentPhoto = projectPhotos[currentIndex];
 
   const [editing, setEditing] = useState(false);
   const [color, setColor] = useState(COLORS[0]);
   const [size, setSize] = useState(SIZES[1]);
-  const [strokes, setStrokes] = useState<AnnotationStroke[]>(
-    photo?.annotations ?? [],
-  );
+  // Per-photo working stroke state, keyed by photo id.
+  const [strokesById, setStrokesById] = useState<
+    Record<string, AnnotationStroke[]>
+  >(() => {
+    const init: Record<string, AnnotationStroke[]> = {};
+    for (const p of projectPhotos) init[p.id] = p.annotations ?? [];
+    return init;
+  });
+  // Re-seed if the photo set changes (e.g. after delete).
+  useEffect(() => {
+    setStrokesById((prev) => {
+      const next = { ...prev };
+      for (const p of projectPhotos) {
+        if (!(p.id in next)) next[p.id] = p.annotations ?? [];
+      }
+      return next;
+    });
+  }, [projectPhotos]);
+
   const currentStroke = useRef<AnnotationStroke | null>(null);
   const [, force] = useState(0);
 
-  if (!photo) {
+  const winWidth = Dimensions.get("window").width;
+  const listRef = useRef<FlatList<Photo>>(null);
+
+  if (!startPhoto || !currentPhoto) {
     return (
       <View style={styles.bg}>
         <Stack.Screen options={{ headerShown: false }} />
@@ -49,23 +84,16 @@ export default function PhotoViewerScreen() {
     );
   }
 
-  const projectIndex = photos
-    .filter((p) => p.projectId === photo.projectId)
-    .findIndex((p) => p.id === photo.id);
-  const total = photos.filter((p) => p.projectId === photo.projectId).length;
-
   const startStroke = (x: number, y: number) => {
     if (!editing) return;
     currentStroke.current = { color, size, points: [{ x, y }] };
     force((n) => n + 1);
   };
-
   const extendStroke = (x: number, y: number) => {
     if (!editing || !currentStroke.current) return;
     currentStroke.current.points.push({ x, y });
     force((n) => n + 1);
   };
-
   const endStroke = async () => {
     if (!editing) return;
     const s = currentStroke.current;
@@ -74,27 +102,33 @@ export default function PhotoViewerScreen() {
       force((n) => n + 1);
       return;
     }
-    const next = [...strokes, s];
-    setStrokes(next);
-    await updatePhoto(photo.id, { annotations: next });
+    const id = currentPhoto.id;
+    const next = [...(strokesById[id] ?? []), s];
+    setStrokesById((prev) => ({ ...prev, [id]: next }));
+    await updatePhoto(id, { annotations: next });
   };
 
   const undo = async () => {
-    if (strokes.length === 0) return;
-    const next = strokes.slice(0, -1);
-    setStrokes(next);
-    await updatePhoto(photo.id, { annotations: next });
+    const id = currentPhoto.id;
+    const list = strokesById[id] ?? [];
+    if (list.length === 0) return;
+    const next = list.slice(0, -1);
+    setStrokesById((prev) => ({ ...prev, [id]: next }));
+    await updatePhoto(id, { annotations: next });
   };
 
   const clearAll = async () => {
-    setStrokes([]);
-    await updatePhoto(photo.id, { annotations: [] });
+    const id = currentPhoto.id;
+    setStrokesById((prev) => ({ ...prev, [id]: [] }));
+    await updatePhoto(id, { annotations: [] });
   };
 
   const onDelete = () => {
+    const photoId = currentPhoto.id;
     const doIt = async () => {
-      await deletePhoto(photo.id);
-      router.back();
+      await deletePhoto(photoId);
+      // If this was the last photo in the project, leave the screen.
+      if (projectPhotos.length <= 1) router.back();
     };
     if (Platform.OS === "web") return doIt();
     Alert.alert("Delete photo?", undefined, [
@@ -117,7 +151,7 @@ export default function PhotoViewerScreen() {
         Alert.alert("Photos permission needed", "Allow access to save photos.");
         return;
       }
-      await MediaLibrary.saveToLibraryAsync(photo.uri);
+      await MediaLibrary.saveToLibraryAsync(currentPhoto.uri);
       Alert.alert("Saved", "Photo saved to your camera roll.");
     } catch (e) {
       Alert.alert(
@@ -128,7 +162,10 @@ export default function PhotoViewerScreen() {
   };
 
   const live = currentStroke.current;
-  const allStrokes = live ? [...strokes, live] : strokes;
+  const currentStrokeList = strokesById[currentPhoto.id] ?? [];
+  const allStrokes = live
+    ? [...currentStrokeList, live]
+    : currentStrokeList;
 
   return (
     <View style={styles.bg}>
@@ -146,43 +183,73 @@ export default function PhotoViewerScreen() {
           <Feather name="x" size={20} color="#fff" />
         </Pressable>
         <Text style={styles.counter}>
-          {projectIndex + 1} of {total}
+          {currentIndex + 1} of {projectPhotos.length}
         </Text>
       </View>
 
-      {/* Photo + drawing canvas */}
-      <View
-        style={styles.canvasWrap}
-        onStartShouldSetResponder={() => editing}
-        onMoveShouldSetResponder={() => editing}
-        onResponderGrant={(e) =>
-          startStroke(e.nativeEvent.locationX, e.nativeEvent.locationY)
-        }
-        onResponderMove={(e) =>
-          extendStroke(e.nativeEvent.locationX, e.nativeEvent.locationY)
-        }
-        onResponderRelease={endStroke}
-        onResponderTerminate={endStroke}
-      >
-        <Image
-          source={{ uri: photo.uri }}
-          style={StyleSheet.absoluteFill}
-          contentFit="contain"
-        />
-        <Svg style={StyleSheet.absoluteFill}>
-          {allStrokes.map((s, i) => (
-            <Path
-              key={i}
-              d={pointsToPath(s.points)}
-              stroke={s.color}
-              strokeWidth={s.size}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              fill="none"
-            />
-          ))}
-        </Svg>
-      </View>
+      {/* Pager: one full-width page per photo */}
+      <FlatList
+        ref={listRef}
+        data={projectPhotos}
+        keyExtractor={(p) => p.id}
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        scrollEnabled={!editing}
+        initialScrollIndex={startIndex}
+        getItemLayout={(_, i) => ({
+          length: winWidth,
+          offset: winWidth * i,
+          index: i,
+        })}
+        onMomentumScrollEnd={(e) => {
+          const i = Math.round(e.nativeEvent.contentOffset.x / winWidth);
+          if (i !== currentIndex) {
+            // Cancel any in-progress stroke when swiping away.
+            currentStroke.current = null;
+            setCurrentIndex(i);
+          }
+        }}
+        renderItem={({ item, index }) => {
+          const isCurrent = index === currentIndex;
+          const itemStrokes = strokesById[item.id] ?? [];
+          const drawn = isCurrent ? allStrokes : itemStrokes;
+          return (
+            <View
+              style={{ width: winWidth, height: "100%" }}
+              onStartShouldSetResponder={() => editing && isCurrent}
+              onMoveShouldSetResponder={() => editing && isCurrent}
+              onResponderGrant={(e) =>
+                startStroke(e.nativeEvent.locationX, e.nativeEvent.locationY)
+              }
+              onResponderMove={(e) =>
+                extendStroke(e.nativeEvent.locationX, e.nativeEvent.locationY)
+              }
+              onResponderRelease={endStroke}
+              onResponderTerminate={endStroke}
+            >
+              <Image
+                source={{ uri: item.uri }}
+                style={StyleSheet.absoluteFill}
+                contentFit="contain"
+              />
+              <Svg style={StyleSheet.absoluteFill}>
+                {drawn.map((s, i) => (
+                  <Path
+                    key={i}
+                    d={pointsToPath(s.points)}
+                    stroke={s.color}
+                    strokeWidth={s.size}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    fill="none"
+                  />
+                ))}
+              </Svg>
+            </View>
+          );
+        }}
+      />
 
       {/* Tools panel (top-left) */}
       <View style={[styles.toolsPanel, { top: insets.top + 56 }]}>
@@ -201,7 +268,7 @@ export default function PhotoViewerScreen() {
           <ToolButton
             onPress={undo}
             icon="rotate-ccw"
-            disabled={strokes.length === 0}
+            disabled={currentStrokeList.length === 0}
             label="Undo last stroke"
           />
           <ToolButton
@@ -219,6 +286,9 @@ export default function PhotoViewerScreen() {
                 <Pressable
                   key={c}
                   onPress={() => setColor(c)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Color ${c}`}
+                  accessibilityState={{ selected: color === c }}
                   style={[
                     styles.swatch,
                     {
@@ -235,6 +305,9 @@ export default function PhotoViewerScreen() {
                 <Pressable
                   key={s}
                   onPress={() => setSize(s)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Brush size ${s}`}
+                  accessibilityState={{ selected: size === s }}
                   style={[
                     styles.sizeDot,
                     {
@@ -252,7 +325,7 @@ export default function PhotoViewerScreen() {
                   />
                 </Pressable>
               ))}
-              {strokes.length > 0 ? (
+              {currentStrokeList.length > 0 ? (
                 <Pressable onPress={clearAll} style={styles.clearBtn}>
                   <Text style={styles.clearTxt}>Clear all</Text>
                 </Pressable>
@@ -271,17 +344,18 @@ export default function PhotoViewerScreen() {
           ]}
           contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 10 }}
         >
-          {photo.note ? (
-            <Text style={styles.metaCaption}>{photo.note}</Text>
+          {currentPhoto.note ? (
+            <Text style={styles.metaCaption}>{currentPhoto.note}</Text>
           ) : null}
-          {photo.takenAt ? (
+          {currentPhoto.takenAt ? (
             <Text style={styles.metaSub}>
-              {new Date(photo.takenAt).toLocaleString()}
+              {new Date(currentPhoto.takenAt).toLocaleString()}
             </Text>
           ) : null}
-          {photo.latitude != null && photo.longitude != null ? (
+          {currentPhoto.latitude != null && currentPhoto.longitude != null ? (
             <Text style={styles.metaSub}>
-              {photo.latitude.toFixed(5)}, {photo.longitude.toFixed(5)}
+              {currentPhoto.latitude.toFixed(5)},{" "}
+              {currentPhoto.longitude.toFixed(5)}
             </Text>
           ) : null}
         </ScrollView>
@@ -364,8 +438,12 @@ const styles = StyleSheet.create({
     color: "rgba(255,255,255,0.85)",
     fontFamily: "Inter_500Medium",
     fontSize: 13,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 100,
+    overflow: "hidden",
   },
-  canvasWrap: { flex: 1 },
   toolsPanel: {
     position: "absolute",
     left: 12,
