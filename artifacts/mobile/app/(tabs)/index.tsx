@@ -1,8 +1,8 @@
 import { Feather } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import * as Location from "expo-location";
-import { useRouter } from "expo-router";
-import React, { useEffect, useMemo, useState } from "react";
+import { useFocusEffect, useRouter } from "expo-router";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   FlatList,
   Platform,
@@ -57,6 +57,14 @@ export default function ProjectsScreen() {
   const router = useRouter();
   const { projects, photos, tasks, ready, syncing, syncError, refresh } =
     useData();
+
+  // Refresh whenever the screen gains focus. The DataContext throttles this
+  // internally so it's safe to call frequently.
+  useFocusEffect(
+    useCallback(() => {
+      refresh();
+    }, [refresh]),
+  );
 
   const [sortMode, setSortMode] = useState<SortMode>("nearby");
   const [query, setQuery] = useState("");
@@ -291,7 +299,7 @@ export default function ProjectsScreen() {
         data={filteredAndSorted}
         keyExtractor={(item) => item.id}
         refreshing={syncing}
-        onRefresh={refresh}
+        onRefresh={() => refresh({ force: true })}
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={{
           padding: 16,

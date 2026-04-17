@@ -139,14 +139,16 @@ export default function MapScreen() {
           styles.header,
           {
             paddingTop: insets.top + 12,
+            backgroundColor: colors.background,
+            borderBottomColor: colors.border,
           },
         ]}
       >
         <View>
-          <Text style={[styles.eyebrow, { color: "rgba(255,255,255,0.7)" }]}>
+          <Text style={[styles.eyebrow, { color: colors.mutedForeground }]}>
             FIELD VIEW
           </Text>
-          <Text style={[styles.title, { color: "#fff" }]}>Map</Text>
+          <Text style={[styles.title, { color: colors.foreground }]}>Map</Text>
         </View>
         <Pressable
           accessibilityLabel="Recenter on me"
@@ -238,7 +240,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingHorizontal: 20,
     paddingBottom: 14,
-    backgroundColor: "#111418",
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
   eyebrow: {
     fontSize: 11,

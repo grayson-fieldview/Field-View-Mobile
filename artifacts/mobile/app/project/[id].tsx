@@ -8,6 +8,7 @@ import {
   Platform,
   Pressable,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   View,
@@ -21,7 +22,7 @@ import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollV
 import { useData } from "@/contexts/DataContext";
 import { useColors } from "@/hooks/useColors";
 
-type TabKey = "photos" | "tasks" | "checklists" | "share";
+type TabKey = "photos" | "tasks" | "checklists" | "team";
 
 export default function ProjectDetailScreen() {
   const colors = useColors();
@@ -81,37 +82,76 @@ export default function ProjectDetailScreen() {
 
   // Photos tab UI state.
   const [gridSize, setGridSize] = useState<1 | 2 | 3>(2);
-  const [selectMode, setSelectMode] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Selection mode is implicit: we're in it whenever something is selected.
+  const selectMode = selected.size > 0;
 
-  // Group photos by their taken-at calendar day.
+  // Group photos by their taken-at calendar day, most recent day first; within
+  // each day, photos are sorted with the newest at the top.
   const photoGroups = useMemo(() => {
     const groups = new Map<
       string,
-      { label: string; ids: string[]; photos: typeof projectPhotos }
+      {
+        label: string;
+        sortKey: number;
+        ids: string[];
+        photos: typeof projectPhotos;
+      }
     >();
     for (const ph of projectPhotos) {
       const d = ph.takenAt ? new Date(ph.takenAt) : new Date();
-      const dayKey = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      const dayStart = new Date(
+        d.getFullYear(),
+        d.getMonth(),
+        d.getDate(),
+      ).getTime();
+      const dayKey = String(dayStart);
       const label = d.toLocaleDateString(undefined, {
         weekday: "long",
         month: "long",
         day: "numeric",
         year: "numeric",
       });
-      const g = groups.get(dayKey) ?? { label, ids: [], photos: [] };
+      const g =
+        groups.get(dayKey) ??
+        { label, sortKey: dayStart, ids: [], photos: [] };
       g.ids.push(ph.id);
       g.photos.push(ph);
       groups.set(dayKey, g);
     }
-    return Array.from(groups.values()).sort((a, b) =>
-      b.label.localeCompare(a.label),
-    );
+    const list = Array.from(groups.values());
+    for (const g of list) {
+      g.photos.sort((a, b) => {
+        const ta = a.takenAt ? Date.parse(a.takenAt) : 0;
+        const tb = b.takenAt ? Date.parse(b.takenAt) : 0;
+        return tb - ta;
+      });
+      g.ids = g.photos.map((p) => p.id);
+    }
+    return list.sort((a, b) => b.sortKey - a.sortKey);
   }, [projectPhotos]);
 
   const exitSelectMode = () => {
-    setSelectMode(false);
     setSelected(new Set());
+  };
+
+  const onSharePhotos = async () => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    // Build a viewer URL pointing at the production web app. The query string
+    // lets the web app filter to just the picked photos.
+    const url = `https://code-genius-graysongladu.replit.app/share/project/${project!.id}?photos=${ids.join(",")}`;
+    try {
+      await Share.share(
+        {
+          url,
+          message: `${project!.name} — ${ids.length} photo${ids.length === 1 ? "" : "s"}\n${url}`,
+        },
+        { subject: `${project!.name} — Field View photos` },
+      );
+    } catch {
+      /* user cancelled */
+    }
   };
 
   const togglePhotoSelected = (id: string) => {
@@ -251,16 +291,20 @@ export default function ProjectDetailScreen() {
               <Text style={styles.heroBackTxt}>Projects</Text>
             </Pressable>
             <View style={{ flexDirection: "row", gap: 8 }}>
-              <Pressable
-                onPress={() => setShowShareModal(true)}
-                hitSlop={10}
-                style={styles.heroIconBtn}
-              >
-                <Feather name="share-2" size={16} color="#fff" />
-              </Pressable>
+              {selected.size > 0 ? (
+                <Pressable
+                  onPress={onSharePhotos}
+                  hitSlop={10}
+                  accessibilityLabel={`Share ${selected.size} selected photo${selected.size === 1 ? "" : "s"}`}
+                  style={styles.heroIconBtn}
+                >
+                  <Feather name="share-2" size={16} color="#fff" />
+                </Pressable>
+              ) : null}
               <Pressable
                 onPress={onDelete}
                 hitSlop={10}
+                accessibilityLabel="More options"
                 style={styles.heroIconBtn}
               >
                 <Feather name="more-horizontal" size={18} color="#fff" />
@@ -399,7 +443,7 @@ export default function ProjectDetailScreen() {
                 label: "Checklists",
                 count: projectChecklists.length,
               },
-              { key: "share", label: "Share", count: projectShares.length },
+              { key: "team", label: "Team", count: projectShares.length },
             ] as { key: TabKey; label: string; count: number }[]
           ).map((t) => {
             const active = tab === t.key;
@@ -451,12 +495,6 @@ export default function ProjectDetailScreen() {
             <PhotosToolbar
               gridSize={gridSize}
               onGridSize={setGridSize}
-              selectMode={selectMode}
-              selectedCount={selected.size}
-              onToggleSelect={() => {
-                if (selectMode) exitSelectMode();
-                else setSelectMode(true);
-              }}
               onTakePhoto={() =>
                 router.push({
                   pathname: "/capture",
@@ -477,39 +515,36 @@ export default function ProjectDetailScreen() {
             ) : (
               <View style={{ marginTop: 14, gap: 18 }}>
                 {photoGroups.map((g) => {
-                  const allSelected =
-                    selectMode && g.ids.every((i) => selected.has(i));
+                  const allSelected = g.ids.every((i) => selected.has(i));
                   return (
                     <View key={g.label} style={{ gap: 10 }}>
                       <View style={styles.dateHeader}>
-                        {selectMode ? (
-                          <Pressable
-                            onPress={() => toggleGroupSelected(g.ids)}
-                            hitSlop={6}
-                            accessibilityRole="checkbox"
-                            accessibilityLabel={`Select all photos from ${g.label}`}
-                            accessibilityState={{ checked: allSelected }}
-                            style={[
-                              styles.dateCheckbox,
-                              {
-                                borderColor: allSelected
-                                  ? colors.primary
-                                  : colors.border,
-                                backgroundColor: allSelected
-                                  ? colors.primary
-                                  : "transparent",
-                              },
-                            ]}
-                          >
-                            {allSelected ? (
-                              <Feather
-                                name="check"
-                                size={12}
-                                color={colors.primaryForeground}
-                              />
-                            ) : null}
-                          </Pressable>
-                        ) : null}
+                        <Pressable
+                          onPress={() => toggleGroupSelected(g.ids)}
+                          hitSlop={6}
+                          accessibilityRole="checkbox"
+                          accessibilityLabel={`Select all photos from ${g.label}`}
+                          accessibilityState={{ checked: allSelected }}
+                          style={[
+                            styles.dateCheckbox,
+                            {
+                              borderColor: allSelected
+                                ? colors.primary
+                                : colors.border,
+                              backgroundColor: allSelected
+                                ? colors.primary
+                                : "transparent",
+                            },
+                          ]}
+                        >
+                          {allSelected ? (
+                            <Feather
+                              name="check"
+                              size={12}
+                              color={colors.primaryForeground}
+                            />
+                          ) : null}
+                        </Pressable>
                         <Text
                           style={[
                             styles.dateLabel,
@@ -824,60 +859,118 @@ export default function ProjectDetailScreen() {
           </View>
         ) : null}
 
-        {tab === "share" ? (
+        {tab === "team" ? (
           <View style={styles.body}>
             {projectShares.length === 0 ? (
               <EmptyState
-                icon="share-2"
-                title="Not shared yet"
-                description="Invite a client or stakeholder to view this project."
+                icon="users"
+                title="No team members yet"
+                description="Invite a teammate or client by email to give them access to this project."
                 action={
                   <Button
-                    title="Share with client"
+                    title="Add user"
                     onPress={() => setShowShareModal(true)}
                   />
                 }
               />
             ) : (
               <View style={{ gap: 10 }}>
-                {projectShares.map((s) => (
-                  <View
-                    key={s.id}
-                    style={[
-                      styles.shareCard,
-                      {
-                        backgroundColor: colors.card,
-                        borderColor: colors.border,
-                      },
-                    ]}
-                  >
-                    <View style={{ flex: 1 }}>
-                      <Text
-                        style={[styles.shareEmail, { color: colors.foreground }]}
-                      >
-                        {s.recipientEmail}
-                      </Text>
-                      <Text
-                        style={[
-                          styles.shareUrl,
-                          { color: colors.mutedForeground },
-                        ]}
-                        numberOfLines={1}
-                      >
-                        {s.url}
-                      </Text>
-                    </View>
-                    <Pressable
-                      onPress={() => revokeShare(s.id)}
-                      hitSlop={10}
+                <Text
+                  style={{
+                    color: colors.mutedForeground,
+                    fontSize: 12,
+                    fontFamily: "Inter_500Medium",
+                    textTransform: "uppercase",
+                    letterSpacing: 1,
+                    marginBottom: 2,
+                  }}
+                >
+                  Has access ({projectShares.length})
+                </Text>
+                {projectShares.map((s) => {
+                  const initials = s.recipientEmail
+                    .split("@")[0]
+                    .split(/[._-]+/)
+                    .filter(Boolean)
+                    .slice(0, 2)
+                    .map((p) => p[0]?.toUpperCase() ?? "")
+                    .join("");
+                  return (
+                    <View
+                      key={s.id}
+                      style={[
+                        styles.shareCard,
+                        {
+                          backgroundColor: colors.card,
+                          borderColor: colors.border,
+                        },
+                      ]}
                     >
-                      <Feather name="x" size={18} color={colors.mutedForeground} />
-                    </Pressable>
-                  </View>
-                ))}
+                      <View
+                        style={{
+                          width: 36,
+                          height: 36,
+                          borderRadius: 18,
+                          backgroundColor: colors.muted,
+                          alignItems: "center",
+                          justifyContent: "center",
+                          marginRight: 10,
+                        }}
+                      >
+                        <Text
+                          style={{
+                            color: colors.foreground,
+                            fontFamily: "Inter_700Bold",
+                            fontSize: 13,
+                          }}
+                        >
+                          {initials || "?"}
+                        </Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text
+                          style={[
+                            styles.shareEmail,
+                            { color: colors.foreground },
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {s.recipientEmail}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.shareUrl,
+                            { color: colors.mutedForeground },
+                          ]}
+                          numberOfLines={1}
+                        >
+                          Can view photos, tasks &amp; checklists
+                        </Text>
+                      </View>
+                      <Pressable
+                        onPress={() => revokeShare(s.id)}
+                        hitSlop={10}
+                        accessibilityLabel={`Remove ${s.recipientEmail}`}
+                      >
+                        <Feather
+                          name="x"
+                          size={18}
+                          color={colors.mutedForeground}
+                        />
+                      </Pressable>
+                    </View>
+                  );
+                })}
                 <Button
-                  title="Share with another client"
+                  title="Add user"
                   variant="secondary"
+                  icon={
+                    <Feather
+                      name="user-plus"
+                      size={14}
+                      color={colors.foreground}
+                    />
+                  }
                   onPress={() => setShowShareModal(true)}
                 />
               </View>
@@ -1021,17 +1114,11 @@ function PhotoTile({
 function PhotosToolbar({
   gridSize,
   onGridSize,
-  selectMode,
-  selectedCount,
-  onToggleSelect,
   onTakePhoto,
   colors,
 }: {
   gridSize: 1 | 2 | 3;
   onGridSize: (s: 1 | 2 | 3) => void;
-  selectMode: boolean;
-  selectedCount: number;
-  onToggleSelect: () => void;
   onTakePhoto: () => void;
   colors: ReturnType<typeof useColors>;
 }) {
@@ -1072,36 +1159,6 @@ function PhotosToolbar({
           );
         })}
       </View>
-
-      <Pressable
-        onPress={onToggleSelect}
-        accessibilityRole="button"
-        accessibilityLabel={selectMode ? "Exit select mode" : "Select photos"}
-        style={({ pressed }) => [
-          styles.toolbarBtn,
-          {
-            backgroundColor: selectMode ? colors.muted : colors.background,
-            borderColor: colors.border,
-            opacity: pressed ? 0.85 : 1,
-          },
-        ]}
-      >
-        <Feather
-          name={selectMode ? "x" : "check"}
-          size={14}
-          color={colors.foreground}
-        />
-        <Text
-          style={[styles.toolbarBtnText, { color: colors.foreground }]}
-          numberOfLines={1}
-        >
-          {selectMode
-            ? selectedCount > 0
-              ? `Cancel (${selectedCount})`
-              : "Cancel"
-            : "Select"}
-        </Text>
-      </Pressable>
 
       <Pressable
         onPress={onTakePhoto}

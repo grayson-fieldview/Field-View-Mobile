@@ -7,6 +7,7 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { AppState } from "react-native";
 
 import { useAuth } from "@/contexts/AuthContext";
 import { ApiError, api } from "@/services/api";
@@ -36,8 +37,8 @@ interface DataState {
   syncing: boolean;
   syncError: string | null;
 
-  /** Force a re-sync of projects + tasks from the backend. */
-  refresh: () => Promise<void>;
+  /** Re-sync projects + tasks from the backend (pass `{force:true}` to bypass throttling). */
+  refresh: (opts?: { force?: boolean }) => Promise<void>;
 
   /** Load a single project's detail (photos + tasks + checklists) into state. */
   loadProjectDetail: (id: string) => Promise<void>;
@@ -159,7 +160,12 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   tasksRef.current = tasks;
   photosRef.current = photos;
 
-  const refresh = useCallback(async () => {
+  // Throttle + dedupe refreshes triggered from many places (auth ready, app
+  // foreground, screen focus, manual pull-to-refresh).
+  const syncingRef = useRef(false);
+  const lastSyncRef = useRef(0);
+
+  const doSync = useCallback(async () => {
     setSyncing(true);
     setSyncError(null);
     try {
@@ -175,29 +181,65 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         : [];
       await persistProjects(mergeById(projectsRef.current, mappedProjects));
       await persistTasks(mergeById(tasksRef.current, mappedTasks));
+      lastSyncRef.current = Date.now();
+      return true;
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) {
-        // Auth context will handle logout; don't surface as error here.
-        return;
-      }
+      if (e instanceof ApiError && e.status === 401) return false;
       setSyncError(e instanceof Error ? e.message : "Sync failed");
+      return false;
     } finally {
       setSyncing(false);
     }
   }, [persistProjects, persistTasks]);
 
+  const refresh = useCallback(
+    async (opts?: { force?: boolean }) => {
+      if (syncingRef.current) return;
+      // Throttle background refreshes to once every 4s; manual pulls bypass.
+      if (
+        !opts?.force &&
+        Date.now() - lastSyncRef.current < 4000 &&
+        lastSyncRef.current !== 0
+      ) {
+        return;
+      }
+      syncingRef.current = true;
+      try {
+        const ok = await doSync();
+        // Transient failure on a fresh app start? Try once more after a short
+        // backoff. This fixes the "had to pull-down to load" issue when the
+        // session cookie wasn't ready on the first call.
+        if (!ok && lastSyncRef.current === 0) {
+          await new Promise((r) => setTimeout(r, 1500));
+          await doSync();
+        }
+      } finally {
+        syncingRef.current = false;
+      }
+    },
+    [doSync],
+  );
+
   // Re-sync whenever the authenticated user changes.
   useEffect(() => {
     if (!authReady || !ready) return;
     if (!user) {
-      // Logged out — we leave cached local state alone; it's behind auth gate.
       setSyncError(null);
+      lastSyncRef.current = 0;
       return;
     }
-    refresh();
-    // We want this to run on user id change only.
+    refresh({ force: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authReady, ready, user?.id]);
+
+  // Re-sync when the app comes back to the foreground.
+  useEffect(() => {
+    if (!authReady || !ready) return;
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active" && user) refresh();
+    });
+    return () => sub.remove();
+  }, [authReady, ready, user, refresh]);
 
   const loadProjectDetail = useCallback(
     async (id: string) => {
