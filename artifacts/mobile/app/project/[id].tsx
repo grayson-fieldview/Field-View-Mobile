@@ -109,82 +109,291 @@ export default function ProjectDetailScreen() {
     );
   };
 
+  const heroPhoto = project.coverPhotoUrl ?? projectPhotos[0]?.uri;
+  const status = (project.status ?? "active").toLowerCase();
+  const statusColor =
+    status === "active"
+      ? colors.primary
+      : status === "complete" || status === "completed"
+        ? colors.success
+        : colors.mutedForeground;
+  const doneTaskCount = projectTasks.filter((t) => t.done).length;
+  const donePct =
+    projectTasks.length === 0
+      ? 0
+      : Math.round((doneTaskCount / projectTasks.length) * 100);
+  const totalPhotos =
+    typeof project.photoCount === "number" && project.photoCount >= projectPhotos.length
+      ? project.photoCount
+      : projectPhotos.length;
+  const createdLabel = project.createdAt
+    ? new Date(project.createdAt).toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : null;
+
   return (
     <View style={[styles.wrap, { backgroundColor: colors.background }]}>
-      <Stack.Screen
-        options={{
-          title: project.name,
-          headerRight: () => (
-            <Pressable
-              onPress={onDelete}
-              hitSlop={10}
-              style={{ paddingHorizontal: 4 }}
-            >
-              <Feather name="trash-2" size={20} color={colors.destructive} />
-            </Pressable>
-          ),
-        }}
-      />
+      <Stack.Screen options={{ headerShown: false }} />
 
       <ScrollView
         contentContainerStyle={{
           paddingBottom: insets.bottom + 100,
         }}
       >
-        <View style={styles.headerBlock}>
-          <Text style={[styles.metaLine, { color: colors.mutedForeground }]}>
-            {project.client || "—"} · {project.address || "No address"}
-          </Text>
-          <View style={styles.headerActions}>
-            <Button
-              title="Capture photos"
-              icon={
-                <Feather
-                  name="camera"
-                  size={16}
-                  color={colors.primaryForeground}
-                />
-              }
-              onPress={() =>
-                router.push({ pathname: "/capture", params: { projectId: project.id } })
-              }
-              size="lg"
-              style={{ flex: 1 }}
+        <View style={styles.heroWrap}>
+          {heroPhoto ? (
+            <Image
+              source={{ uri: heroPhoto }}
+              style={StyleSheet.absoluteFill}
+              contentFit="cover"
+              transition={150}
             />
+          ) : (
+            <View
+              style={[
+                StyleSheet.absoluteFill,
+                {
+                  backgroundColor: colors.muted,
+                  alignItems: "center",
+                  justifyContent: "center",
+                },
+              ]}
+            >
+              <Feather
+                name="image"
+                size={36}
+                color={colors.mutedForeground}
+              />
+            </View>
+          )}
+          <View style={[styles.heroScrim, { paddingTop: insets.top + 8 }]}>
+            <Pressable
+              onPress={() => router.back()}
+              hitSlop={10}
+              style={styles.heroBackBtn}
+            >
+              <Feather name="chevron-left" size={18} color="#fff" />
+              <Text style={styles.heroBackTxt}>Projects</Text>
+            </Pressable>
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              <Pressable
+                onPress={() => setShowShareModal(true)}
+                hitSlop={10}
+                style={styles.heroIconBtn}
+              >
+                <Feather name="share-2" size={16} color="#fff" />
+              </Pressable>
+              <Pressable
+                onPress={onDelete}
+                hitSlop={10}
+                style={styles.heroIconBtn}
+              >
+                <Feather name="more-horizontal" size={18} color="#fff" />
+              </Pressable>
+            </View>
           </View>
         </View>
 
-        <View style={[styles.tabs, { borderBottomColor: colors.border }]}>
-          {(
-            [
-              { key: "photos", label: `Photos (${projectPhotos.length})` },
-              { key: "tasks", label: `Tasks (${projectTasks.length})` },
-              { key: "checklists", label: `Lists (${projectChecklists.length})` },
-              { key: "share", label: `Share (${projectShares.length})` },
-            ] as { key: TabKey; label: string }[]
-          ).map((t) => (
-            <Pressable
-              key={t.key}
-              onPress={() => setTab(t.key)}
+        <View
+          style={[
+            styles.summaryCard,
+            { backgroundColor: colors.card, borderColor: colors.border },
+          ]}
+        >
+          <View style={styles.summaryTitleRow}>
+            <Text
+              style={[styles.summaryTitle, { color: colors.foreground }]}
+              numberOfLines={2}
+            >
+              {project.name}
+            </Text>
+            <View
               style={[
-                styles.tab,
-                tab === t.key && { borderBottomColor: colors.primary },
+                styles.statusPill,
+                { backgroundColor: statusColor + "22" },
               ]}
             >
+              <View
+                style={[styles.statusDot, { backgroundColor: statusColor }]}
+              />
+              <Text
+                style={[styles.statusText, { color: statusColor }]}
+                numberOfLines={1}
+              >
+                {(project.status ?? "active").toString()}
+              </Text>
+            </View>
+          </View>
+
+          {project.address ? (
+            <View style={styles.summaryMetaRow}>
+              <Feather
+                name="map-pin"
+                size={13}
+                color={colors.mutedForeground}
+              />
               <Text
                 style={[
-                  styles.tabLabel,
+                  styles.summaryMeta,
+                  { color: colors.foreground },
+                ]}
+                numberOfLines={2}
+              >
+                {project.address}
+              </Text>
+            </View>
+          ) : null}
+
+          {createdLabel ? (
+            <View style={styles.summaryMetaRow}>
+              <Feather
+                name="calendar"
+                size={13}
+                color={colors.mutedForeground}
+              />
+              <Text
+                style={[
+                  styles.summaryMeta,
+                  { color: colors.mutedForeground },
+                ]}
+              >
+                {createdLabel}
+              </Text>
+            </View>
+          ) : null}
+
+          <View style={[styles.statsRow, { borderTopColor: colors.border }]}>
+            <View style={styles.statCol}>
+              <Text style={[styles.statNum, { color: colors.primary }]}>
+                {totalPhotos}
+              </Text>
+              <Text
+                style={[styles.statLbl, { color: colors.mutedForeground }]}
+              >
+                PHOTOS
+              </Text>
+            </View>
+            <View
+              style={[
+                styles.statDivider,
+                { backgroundColor: colors.border },
+              ]}
+            />
+            <View style={styles.statCol}>
+              <Text
+                style={[styles.statNum, { color: colors.foreground }]}
+              >
+                {projectTasks.length}
+              </Text>
+              <Text
+                style={[styles.statLbl, { color: colors.mutedForeground }]}
+              >
+                TASKS
+              </Text>
+            </View>
+            <View
+              style={[
+                styles.statDivider,
+                { backgroundColor: colors.border },
+              ]}
+            />
+            <View style={styles.statCol}>
+              <Text style={[styles.statNum, { color: colors.success }]}>
+                {donePct}%
+              </Text>
+              <Text
+                style={[styles.statLbl, { color: colors.mutedForeground }]}
+              >
+                DONE
+              </Text>
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.captureRow}>
+          <Button
+            title="Take Photo"
+            icon={
+              <Feather
+                name="camera"
+                size={16}
+                color={colors.primaryForeground}
+              />
+            }
+            onPress={() =>
+              router.push({
+                pathname: "/capture",
+                params: { projectId: project.id },
+              })
+            }
+            size="lg"
+            style={{ flex: 1 }}
+          />
+        </View>
+
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.pillTabsRow}
+        >
+          {(
+            [
+              { key: "photos", label: "Photos", count: projectPhotos.length },
+              { key: "tasks", label: "Tasks", count: projectTasks.length },
+              {
+                key: "checklists",
+                label: "Checklists",
+                count: projectChecklists.length,
+              },
+              { key: "share", label: "Share", count: projectShares.length },
+            ] as { key: TabKey; label: string; count: number }[]
+          ).map((t) => {
+            const active = tab === t.key;
+            return (
+              <Pressable
+                key={t.key}
+                onPress={() => setTab(t.key)}
+                style={[
+                  styles.pillTab,
                   {
-                    color:
-                      tab === t.key ? colors.foreground : colors.mutedForeground,
+                    backgroundColor: active ? colors.muted : "transparent",
                   },
                 ]}
               >
-                {t.label}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
+                <Text
+                  style={[
+                    styles.pillTabLabel,
+                    {
+                      color: active
+                        ? colors.foreground
+                        : colors.mutedForeground,
+                      fontFamily: active
+                        ? "Inter_700Bold"
+                        : "Inter_500Medium",
+                    },
+                  ]}
+                >
+                  {t.label}
+                </Text>
+                <Text
+                  style={[
+                    styles.pillTabCount,
+                    {
+                      color: active
+                        ? colors.mutedForeground
+                        : colors.mutedForeground,
+                    },
+                  ]}
+                >
+                  {t.count}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
 
         {tab === "photos" ? (
           <View style={styles.body}>
@@ -735,14 +944,137 @@ function ModalShell({
 
 const styles = StyleSheet.create({
   wrap: { flex: 1 },
-  headerBlock: {
-    paddingHorizontal: 20,
-    paddingTop: 14,
-    paddingBottom: 18,
-    gap: 14,
+  heroWrap: {
+    width: "100%",
+    height: 220,
+    backgroundColor: "#000",
   },
-  metaLine: { fontSize: 14, fontFamily: "Inter_500Medium" },
-  headerActions: { flexDirection: "row", gap: 10 },
+  heroScrim: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+  },
+  heroBackBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingLeft: 6,
+    paddingRight: 12,
+    paddingVertical: 8,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    borderRadius: 100,
+  },
+  heroBackTxt: {
+    color: "#fff",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 14,
+  },
+  heroIconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.45)",
+  },
+  summaryCard: {
+    marginTop: -28,
+    marginHorizontal: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 16,
+    gap: 10,
+    shadowColor: "#000",
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  summaryTitleRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  summaryTitle: {
+    flex: 1,
+    fontSize: 22,
+    fontFamily: "Inter_700Bold",
+    letterSpacing: -0.4,
+  },
+  statusPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 100,
+  },
+  statusDot: { width: 8, height: 8, borderRadius: 4 },
+  statusText: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 12,
+    textTransform: "capitalize",
+  },
+  summaryMetaRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+  },
+  summaryMeta: {
+    flex: 1,
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    lineHeight: 18,
+  },
+  statsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingTop: 12,
+    marginTop: 4,
+  },
+  statCol: { flex: 1, alignItems: "flex-start" },
+  statNum: {
+    fontSize: 22,
+    fontFamily: "Inter_700Bold",
+    letterSpacing: -0.5,
+  },
+  statLbl: {
+    fontSize: 10,
+    fontFamily: "Inter_600SemiBold",
+    letterSpacing: 1,
+    marginTop: 2,
+  },
+  statDivider: { width: StyleSheet.hairlineWidth, height: 32 },
+  captureRow: {
+    flexDirection: "row",
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 4,
+  },
+  pillTabsRow: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 6,
+    gap: 8,
+  },
+  pillTab: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 100,
+  },
+  pillTabLabel: { fontSize: 14 },
+  pillTabCount: { fontSize: 12, fontFamily: "Inter_500Medium" },
   tabs: {
     flexDirection: "row",
     borderBottomWidth: StyleSheet.hairlineWidth,

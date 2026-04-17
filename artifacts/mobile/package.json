@@ -58,6 +58,7 @@
     "zod-validation-error": "^3.4.0"
   },
   "dependencies": {
-    "expo-secure-store": "^55.0.13"
+    "expo-secure-store": "^55.0.13",
+    "react-native-maps": "1.20.1"
   }
 }

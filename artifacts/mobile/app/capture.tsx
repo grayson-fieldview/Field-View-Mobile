@@ -19,12 +19,14 @@ import { useData } from "@/contexts/DataContext";
 import { useColors } from "@/hooks/useColors";
 import type { Photo } from "@/services/types";
 
+const HOLD_TO_BURST_MS = 350;
+
 export default function CaptureScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { projectId } = useLocalSearchParams<{ projectId: string }>();
-  const { projects, addPhotosBatch } = useData();
+  const { projects, addPhoto, addPhotosBatch } = useData();
   const project = projects.find((p) => p.id === projectId);
 
   const [permission, requestPermission] = useCameraPermissions();
@@ -38,9 +40,35 @@ export default function CaptureScreen() {
   const [captureCount, setCaptureCount] = useState(0);
   const [sessionCount, setSessionCount] = useState(0);
   const [saving, setSaving] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const cameraRef = useRef<CameraView | null>(null);
   const burstActive = useRef(false);
+  const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tappedRef = useRef(false);
+  const mountedRef = useRef(true);
+  const buffer = useRef<
+    Array<{
+      uri: string;
+      takenAt: string;
+      latitude?: number;
+      longitude?: number;
+      accuracy?: number;
+    }>
+  >([]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      burstActive.current = false;
+      if (holdTimer.current) {
+        clearTimeout(holdTimer.current);
+        holdTimer.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -75,7 +103,11 @@ export default function CaptureScreen() {
           Project not found.
         </Text>
         <View style={{ padding: 20 }}>
-          <Button title="Close" onPress={() => router.back()} variant="secondary" />
+          <Button
+            title="Close"
+            onPress={() => router.back()}
+            variant="secondary"
+          />
         </View>
       </View>
     );
@@ -88,13 +120,19 @@ export default function CaptureScreen() {
       <View
         style={[
           styles.wrap,
-          { backgroundColor: "#000", paddingTop: insets.top + 40, padding: 24, gap: 16 },
+          {
+            backgroundColor: "#000",
+            paddingTop: insets.top + 40,
+            padding: 24,
+            gap: 16,
+          },
         ]}
       >
         <Feather name="camera" size={36} color={colors.primary} />
         <Text style={styles.permTitle}>Camera access needed</Text>
         <Text style={styles.permBody}>
-          Field View needs your camera to capture project photos. You can revoke access anytime from system settings.
+          Field View needs your camera to capture project photos. You can revoke
+          access anytime from system settings.
         </Text>
         <Button title="Grant camera access" onPress={requestPermission} size="lg" />
         <Button title="Cancel" variant="ghost" onPress={() => router.back()} />
@@ -102,71 +140,117 @@ export default function CaptureScreen() {
     );
   }
 
-  const buffer = useRef<
-    Array<{ uri: string; takenAt: string; latitude?: number; longitude?: number; accuracy?: number }>
-  >([]);
-
+  // Take a single photo.
   const captureOnce = async () => {
-    if (!cameraRef.current) return;
+    if (!cameraRef.current || !cameraReady) return null;
     try {
       const photo = await cameraRef.current.takePictureAsync({
         quality: 0.7,
-        skipProcessing: true,
         exif: false,
       });
-      if (!photo?.uri) return;
-      buffer.current.push({
+      if (!photo?.uri) return null;
+      const entry = {
         uri: photo.uri,
         takenAt: new Date().toISOString(),
         latitude: locationCoord?.latitude,
         longitude: locationCoord?.longitude,
         accuracy: locationCoord?.accuracy,
-      });
-      setCaptureCount((c) => c + 1);
-    } catch {
-      /* drop */
+      };
+      return entry;
+    } catch (e) {
+      setErrorMsg(
+        e instanceof Error ? e.message : "Couldn't capture photo. Try again.",
+      );
+      return null;
     }
   };
 
+  // Tap behavior: single capture + save immediately.
+  const singleShot = async () => {
+    if (!cameraReady || saving) return;
+    setSaving(true);
+    setErrorMsg(null);
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+      const entry = await captureOnce();
+      if (entry) {
+        await addPhoto({ projectId: project.id, ...entry });
+        setSessionCount((s) => s + 1);
+        Haptics.notificationAsync(
+          Haptics.NotificationFeedbackType.Success,
+        ).catch(() => {});
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Hold behavior: burst until release.
   const startBurst = async () => {
-    if (bursting || saving) return;
+    if (!cameraReady || saving) return;
     burstActive.current = true;
     setBursting(true);
     buffer.current = [];
     setCaptureCount(0);
+    setErrorMsg(null);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
 
-    // Fire captures as fast as the camera allows, without awaiting between shots
-    // to maintain 5+ photos per second on modern devices.
     while (burstActive.current) {
-      await captureOnce();
+      const entry = await captureOnce();
+      if (!entry) break;
+      buffer.current.push(entry);
+      setCaptureCount(buffer.current.length);
     }
   };
 
   const stopBurst = async () => {
-    if (!bursting) return;
+    if (!burstActive.current && buffer.current.length === 0) return;
     burstActive.current = false;
     setBursting(false);
+    if (buffer.current.length === 0) return;
     setSaving(true);
     try {
-      if (buffer.current.length > 0) {
-        await addPhotosBatch(
-          buffer.current.map((b) => ({
-            projectId: project.id,
-            uri: b.uri,
-            takenAt: b.takenAt,
-            latitude: b.latitude,
-            longitude: b.longitude,
-            accuracy: b.accuracy,
-          })),
-        );
-        setSessionCount((s) => s + buffer.current.length);
-        buffer.current = [];
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      }
+      await addPhotosBatch(
+        buffer.current.map((b) => ({
+          projectId: project.id,
+          uri: b.uri,
+          takenAt: b.takenAt,
+          latitude: b.latitude,
+          longitude: b.longitude,
+          accuracy: b.accuracy,
+        })),
+      );
+      setSessionCount((s) => s + buffer.current.length);
+      buffer.current = [];
+      Haptics.notificationAsync(
+        Haptics.NotificationFeedbackType.Success,
+      ).catch(() => {});
     } finally {
       setSaving(false);
       setCaptureCount(0);
+    }
+  };
+
+  // Differentiate tap vs. hold using a hold timer.
+  const onShutterPressIn = () => {
+    if (!cameraReady || saving) return;
+    tappedRef.current = true;
+    holdTimer.current = setTimeout(() => {
+      tappedRef.current = false;
+      startBurst();
+    }, HOLD_TO_BURST_MS);
+  };
+
+  const onShutterPressOut = () => {
+    if (holdTimer.current) {
+      clearTimeout(holdTimer.current);
+      holdTimer.current = null;
+    }
+    if (tappedRef.current) {
+      tappedRef.current = false;
+      singleShot();
+    } else {
+      stopBurst();
     }
   };
 
@@ -182,10 +266,15 @@ export default function CaptureScreen() {
         style={StyleSheet.absoluteFill}
         facing={facing}
         flash={flash}
+        onCameraReady={() => setCameraReady(true)}
       />
 
       <View style={[styles.topBar, { paddingTop: insets.top + 10 }]}>
-        <Pressable onPress={() => router.back()} hitSlop={12} style={styles.circleBtn}>
+        <Pressable
+          onPress={() => router.back()}
+          hitSlop={12}
+          style={styles.circleBtn}
+        >
           <Feather name="x" size={22} color="#fff" />
         </Pressable>
 
@@ -202,7 +291,11 @@ export default function CaptureScreen() {
           </Text>
         </View>
 
-        <Pressable onPress={toggleFlash} hitSlop={12} style={styles.circleBtn}>
+        <Pressable
+          onPress={toggleFlash}
+          hitSlop={12}
+          style={styles.circleBtn}
+        >
           <Feather
             name={flash === "off" ? "zap-off" : "zap"}
             size={20}
@@ -223,19 +316,46 @@ export default function CaptureScreen() {
             {sessionCount} photo{sessionCount === 1 ? "" : "s"} saved
           </Text>
         </View>
+      ) : !cameraReady ? (
+        <View style={styles.sessionPill}>
+          <ActivityIndicator size="small" color="#111" />
+          <Text style={styles.sessionPillText}>Starting camera…</Text>
+        </View>
+      ) : null}
+
+      {errorMsg ? (
+        <View
+          style={[
+            styles.sessionPill,
+            { backgroundColor: "#fee2e2", top: 150 },
+          ]}
+        >
+          <Feather name="alert-triangle" size={14} color="#991b1b" />
+          <Text style={[styles.sessionPillText, { color: "#991b1b" }]}>
+            {errorMsg}
+          </Text>
+        </View>
       ) : null}
 
       <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 20 }]}>
-        <Pressable onPress={toggleFacing} hitSlop={12} style={styles.sideBtn}>
+        <Pressable
+          onPress={toggleFacing}
+          hitSlop={12}
+          style={styles.sideBtn}
+        >
           <Feather name="refresh-ccw" size={22} color="#fff" />
         </Pressable>
 
         <Pressable
-          onPressIn={startBurst}
-          onPressOut={stopBurst}
+          onPressIn={onShutterPressIn}
+          onPressOut={onShutterPressOut}
+          disabled={!cameraReady || saving}
           style={({ pressed }) => [
             styles.shutter,
-            { transform: [{ scale: pressed || bursting ? 0.94 : 1 }] },
+            {
+              opacity: !cameraReady || saving ? 0.5 : 1,
+              transform: [{ scale: pressed || bursting ? 0.94 : 1 }],
+            },
           ]}
         >
           <View
@@ -264,7 +384,11 @@ export default function CaptureScreen() {
 
       <View style={[styles.hintWrap, { bottom: insets.bottom + 120 }]}>
         <Text style={styles.hint}>
-          {bursting ? "Hold to keep capturing…" : "Press and hold to burst-capture"}
+          {bursting
+            ? "Hold to keep capturing…"
+            : !cameraReady
+              ? "Starting camera…"
+              : "Tap for one photo · Hold for burst"}
         </Text>
       </View>
     </View>
@@ -381,9 +505,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  shutterInner: {
-    backgroundColor: "#fff",
-  },
+  shutterInner: { backgroundColor: "#fff" },
   hintWrap: { position: "absolute", left: 0, right: 0, alignItems: "center" },
   hint: {
     color: "rgba(255,255,255,0.85)",

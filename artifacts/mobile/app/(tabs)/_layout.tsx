@@ -16,6 +16,10 @@ function NativeTabLayout() {
         <Icon sf={{ default: "folder", selected: "folder.fill" }} />
         <Label>Projects</Label>
       </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="map">
+        <Icon sf={{ default: "map", selected: "map.fill" }} />
+        <Label>Map</Label>
+      </NativeTabs.Trigger>
       <NativeTabs.Trigger name="tasks">
         <Icon sf={{ default: "checklist", selected: "checklist" }} />
         <Label>Tasks</Label>
@@ -79,6 +83,18 @@ function ClassicTabLayout() {
               <SymbolView name="folder" tintColor={color} size={24} />
             ) : (
               <Feather name="folder" size={22} color={color} />
+            ),
+        }}
+      />
+      <Tabs.Screen
+        name="map"
+        options={{
+          title: "Map",
+          tabBarIcon: ({ color }) =>
+            isIOS ? (
+              <SymbolView name="map" tintColor={color} size={24} />
+            ) : (
+              <Feather name="map" size={22} color={color} />
             ),
         }}
       />

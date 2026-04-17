@@ -1,6 +1,8 @@
 import { Feather } from "@expo/vector-icons";
+import { Image } from "expo-image";
+import * as Location from "expo-location";
 import { useRouter } from "expo-router";
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   FlatList,
   Platform,
@@ -18,12 +20,60 @@ import { useData } from "@/contexts/DataContext";
 import { useColors } from "@/hooks/useColors";
 import type { Project } from "@/services/types";
 
+type SortMode = "nearby" | "recent";
+
+function distanceMeters(
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+) {
+  const R = 6_371_000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.sin(dLng / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
 export default function ProjectsScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { projects, photos, tasks, ready, syncing, syncError, refresh } =
     useData();
+
+  const [sortMode, setSortMode] = useState<SortMode>("nearby");
+  const [userLoc, setUserLoc] = useState<{ lat: number; lng: number } | null>(
+    null,
+  );
+
+  // Try to get user location once on mount, so "Nearby" can sort by distance.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (Platform.OS === "web") return;
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== "granted") return;
+        const loc = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+        if (cancelled) return;
+        setUserLoc({
+          lat: loc.coords.latitude,
+          lng: loc.coords.longitude,
+        });
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const stats = useMemo(() => {
     const byProject = new Map<
@@ -35,7 +85,6 @@ export default function ProjectsScreen() {
         photos: typeof p.photoCount === "number" ? p.photoCount : 0,
         openTasks: 0,
       });
-    // Add any locally-captured photos on top of backend counts.
     for (const ph of photos) {
       if (ph.remote) continue;
       const s = byProject.get(ph.projectId);
@@ -48,6 +97,57 @@ export default function ProjectsScreen() {
     }
     return byProject;
   }, [projects, photos, tasks]);
+
+  // Cover image for each project: prefer backend coverPhotoUrl, then any
+  // photo we have for that project.
+  const coverFor = useMemo(() => {
+    const m = new Map<string, string | undefined>();
+    for (const p of projects) m.set(p.id, p.coverPhotoUrl);
+    for (const ph of photos) {
+      if (m.get(ph.projectId)) continue;
+      m.set(ph.projectId, ph.uri);
+    }
+    return m;
+  }, [projects, photos]);
+
+  const sortedProjects = useMemo(() => {
+    if (sortMode === "recent") {
+      return [...projects].sort((a, b) =>
+        (b.createdAt ?? "").localeCompare(a.createdAt ?? ""),
+      );
+    }
+    // Nearby: use user location if we have it; otherwise fall back to recency.
+    if (!userLoc) {
+      return [...projects].sort((a, b) =>
+        (b.createdAt ?? "").localeCompare(a.createdAt ?? ""),
+      );
+    }
+    return [...projects].sort((a, b) => {
+      const da =
+        a.latitude != null && a.longitude != null
+          ? distanceMeters(userLoc, { lat: a.latitude, lng: a.longitude })
+          : Number.POSITIVE_INFINITY;
+      const db =
+        b.latitude != null && b.longitude != null
+          ? distanceMeters(userLoc, { lat: b.latitude, lng: b.longitude })
+          : Number.POSITIVE_INFINITY;
+      if (da === db)
+        return (b.createdAt ?? "").localeCompare(a.createdAt ?? "");
+      return da - db;
+    });
+  }, [projects, sortMode, userLoc]);
+
+  const distanceLabelFor = (p: Project): string | null => {
+    if (sortMode !== "nearby" || !userLoc) return null;
+    if (p.latitude == null || p.longitude == null) return null;
+    const m = distanceMeters(userLoc, {
+      lat: p.latitude,
+      lng: p.longitude,
+    });
+    if (m < 1000) return `${Math.round(m)} m`;
+    if (m < 100_000) return `${(m / 1000).toFixed(1)} km`;
+    return `${Math.round(m / 1000)} km`;
+  };
 
   if (!ready) return <LoadingScreen />;
 
@@ -81,12 +181,23 @@ export default function ProjectsScreen() {
             },
           ]}
         >
-          <Feather
-            name="plus"
-            size={22}
-            color={colors.primaryForeground}
-          />
+          <Feather name="plus" size={22} color={colors.primaryForeground} />
         </Pressable>
+      </View>
+
+      <View style={styles.toggleRow}>
+        <SortToggle
+          icon="map-pin"
+          label="Nearby"
+          active={sortMode === "nearby"}
+          onPress={() => setSortMode("nearby")}
+        />
+        <SortToggle
+          icon="clock"
+          label="Recent"
+          active={sortMode === "recent"}
+          onPress={() => setSortMode("recent")}
+        />
       </View>
 
       {syncError ? (
@@ -94,7 +205,7 @@ export default function ProjectsScreen() {
           onPress={() => refresh()}
           style={{
             marginHorizontal: 20,
-            marginTop: 10,
+            marginTop: 4,
             padding: 12,
             borderRadius: 10,
             backgroundColor: colors.card,
@@ -126,12 +237,12 @@ export default function ProjectsScreen() {
       ) : null}
 
       <FlatList
-        data={projects}
+        data={sortedProjects}
         keyExtractor={(item) => item.id}
         refreshing={syncing}
         onRefresh={refresh}
         contentContainerStyle={{
-          padding: 20,
+          padding: 16,
           paddingBottom: insets.bottom + 100,
           gap: 12,
           flexGrow: 1,
@@ -139,8 +250,10 @@ export default function ProjectsScreen() {
         renderItem={({ item }) => (
           <ProjectCard
             project={item}
+            cover={coverFor.get(item.id)}
             photoCount={stats.get(item.id)?.photos ?? 0}
             openTaskCount={stats.get(item.id)?.openTasks ?? 0}
+            distanceLabel={distanceLabelFor(item)}
             onPress={() => router.push(`/project/${item.id}`)}
           />
         )}
@@ -164,22 +277,69 @@ export default function ProjectsScreen() {
   );
 }
 
-function ProjectCard({
-  project,
-  photoCount,
-  openTaskCount,
+function SortToggle({
+  icon,
+  label,
+  active,
   onPress,
 }: {
-  project: Project;
-  photoCount: number;
-  openTaskCount: number;
+  icon: keyof typeof Feather.glyphMap;
+  label: string;
+  active: boolean;
   onPress: () => void;
 }) {
   const colors = useColors();
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.toggle,
+        {
+          backgroundColor: active ? colors.primary : colors.muted,
+          opacity: pressed ? 0.85 : 1,
+        },
+      ]}
+    >
+      <Feather
+        name={icon}
+        size={14}
+        color={active ? colors.primaryForeground : colors.foreground}
+      />
+      <Text
+        style={[
+          styles.toggleLabel,
+          {
+            color: active ? colors.primaryForeground : colors.foreground,
+          },
+        ]}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function ProjectCard({
+  project,
+  cover,
+  photoCount,
+  openTaskCount,
+  distanceLabel,
+  onPress,
+}: {
+  project: Project;
+  cover?: string;
+  photoCount: number;
+  openTaskCount: number;
+  distanceLabel: string | null;
+  onPress: () => void;
+}) {
+  const colors = useColors();
+  const status = (project.status ?? "active").toLowerCase();
   const statusColor =
-    project.status === "active"
+    status === "active"
       ? colors.primary
-      : project.status === "complete"
+      : status === "complete" || status === "completed"
         ? colors.success
         : colors.mutedForeground;
 
@@ -196,79 +356,99 @@ function ProjectCard({
         },
       ]}
     >
-      <View style={styles.cardTopRow}>
-        <View style={styles.cardTitleWrap}>
-          <Text
-            style={[styles.cardTitle, { color: colors.foreground }]}
-            numberOfLines={1}
+      <View
+        style={[styles.cover, { backgroundColor: colors.muted }]}
+      >
+        {cover ? (
+          <Image
+            source={{ uri: cover }}
+            style={StyleSheet.absoluteFill}
+            contentFit="cover"
+            transition={120}
+          />
+        ) : (
+          <View
+            style={[
+              StyleSheet.absoluteFill,
+              { alignItems: "center", justifyContent: "center" },
+            ]}
           >
-            {project.name}
-          </Text>
-          <Text
-            style={[styles.cardMeta, { color: colors.mutedForeground }]}
-            numberOfLines={1}
-          >
-            {project.client || "—"} · {project.address || "No address"}
-          </Text>
-        </View>
-        <View
-          style={[
-            styles.statusDot,
-            { backgroundColor: statusColor },
-          ]}
-        />
+            <Feather
+              name="image"
+              size={24}
+              color={colors.mutedForeground}
+            />
+          </View>
+        )}
       </View>
 
-      <View style={[styles.cardStats, { borderTopColor: colors.border }]}>
-        <Stat
+      <View style={styles.cardBody}>
+        <Text
+          style={[styles.cardTitle, { color: colors.foreground }]}
+          numberOfLines={1}
+        >
+          {project.name}
+        </Text>
+        <Text
+          style={[styles.cardMeta, { color: colors.mutedForeground }]}
+          numberOfLines={1}
+        >
+          {project.address || project.client || "No address"}
+        </Text>
+        {distanceLabel ? (
+          <View style={styles.distanceRow}>
+            <Feather name="navigation" size={11} color={colors.primary} />
+            <Text style={[styles.distance, { color: colors.primary }]}>
+              {distanceLabel}
+            </Text>
+          </View>
+        ) : null}
+      </View>
+
+      <View style={styles.cardRight}>
+        <RightStat
           icon="camera"
-          label="Photos"
           value={photoCount}
           color={colors.foreground}
           muted={colors.mutedForeground}
         />
-        <View style={[styles.divider, { backgroundColor: colors.border }]} />
-        <Stat
+        <RightStat
           icon="check-square"
-          label="Open tasks"
           value={openTaskCount}
           color={colors.foreground}
           muted={colors.mutedForeground}
         />
-        <View style={[styles.divider, { backgroundColor: colors.border }]} />
-        <Stat
-          icon="activity"
-          label="Status"
-          value={project.status}
-          color={colors.foreground}
-          muted={colors.mutedForeground}
-        />
+        <View
+          style={[
+            styles.statusPill,
+            { backgroundColor: statusColor + "22" },
+          ]}
+        >
+          <View
+            style={[styles.statusDot, { backgroundColor: statusColor }]}
+          />
+        </View>
       </View>
     </Pressable>
   );
 }
 
-function Stat({
+function RightStat({
   icon,
-  label,
   value,
   color,
   muted,
 }: {
   icon: keyof typeof Feather.glyphMap;
-  label: string;
-  value: string | number;
+  value: number | string;
   color: string;
   muted: string;
 }) {
   return (
-    <View style={styles.stat}>
-      <Feather name={icon} size={14} color={muted} />
-      <Text style={[styles.statValue, { color }]} numberOfLines={1}>
+    <View style={styles.rightStat}>
+      <Feather name={icon} size={12} color={muted} />
+      <Text style={[styles.rightStatValue, { color }]} numberOfLines={1}>
         {value}
-      </Text>
-      <Text style={[styles.statLabel, { color: muted }]} numberOfLines={1}>
-        {label}
       </Text>
     </View>
   );
@@ -302,46 +482,81 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  toggleRow: {
+    flexDirection: "row",
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 4,
+    gap: 10,
+  },
+  toggle: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    paddingVertical: 11,
+    borderRadius: 100,
+  },
+  toggleLabel: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 14,
+  },
   card: {
     borderWidth: 1,
     borderRadius: 16,
-    padding: 16,
-    gap: 16,
-  },
-  cardTopRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    padding: 10,
     gap: 12,
   },
-  cardTitleWrap: { flex: 1, gap: 4 },
+  cover: {
+    width: 84,
+    height: 84,
+    borderRadius: 12,
+    overflow: "hidden",
+  },
+  cardBody: { flex: 1, gap: 4, minWidth: 0 },
   cardTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontFamily: "Inter_600SemiBold",
-    letterSpacing: -0.3,
+    letterSpacing: -0.2,
   },
   cardMeta: {
-    fontSize: 13,
+    fontSize: 12,
     fontFamily: "Inter_400Regular",
   },
-  statusDot: { width: 10, height: 10, borderRadius: 5 },
-  cardStats: {
+  distanceRow: {
     flexDirection: "row",
     alignItems: "center",
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: 12,
+    gap: 4,
+    marginTop: 2,
   },
-  stat: { flex: 1, alignItems: "flex-start", gap: 2 },
-  statValue: {
-    fontSize: 15,
+  distance: {
+    fontSize: 12,
     fontFamily: "Inter_600SemiBold",
-    textTransform: "capitalize",
   },
-  statLabel: {
-    fontSize: 11,
-    fontFamily: "Inter_500Medium",
-    letterSpacing: 0.3,
-    textTransform: "uppercase",
+  cardRight: {
+    alignItems: "flex-end",
+    gap: 6,
+    paddingLeft: 4,
   },
-  divider: { width: StyleSheet.hairlineWidth, height: 28, marginHorizontal: 8 },
+  rightStat: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  rightStatValue: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+  },
+  statusPill: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 2,
+  },
+  statusDot: { width: 8, height: 8, borderRadius: 4 },
 });
