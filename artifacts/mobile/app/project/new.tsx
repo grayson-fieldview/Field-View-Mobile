@@ -4,6 +4,7 @@ import { StyleSheet, Text, View } from "react-native";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { AddressAutocomplete } from "@/components/AddressAutocomplete";
 import { Button } from "@/components/Button";
 import { Input } from "@/components/Input";
 import { useData } from "@/contexts/DataContext";
@@ -13,11 +14,14 @@ export default function NewProjectScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { createProject } = useData();
+  const { createProject, updateProject } = useData();
 
   const [name, setName] = useState("");
   const [client, setClient] = useState("");
   const [address, setAddress] = useState("");
+  const [coords, setCoords] = useState<
+    { latitude: number; longitude: number } | null
+  >(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -29,8 +33,14 @@ export default function NewProjectScreen() {
     setError(null);
     try {
       const p = await createProject({ name, client, address });
+      // Save the lat/lng we got from Places (if any) so the map can pin it.
+      if (coords) {
+        await updateProject(p.id, {
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+        });
+      }
       router.back();
-      // Small delay so the dismiss animation completes before push
       setTimeout(() => router.push(`/project/${p.id}`), 200);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not save.");
@@ -67,11 +77,18 @@ export default function NewProjectScreen() {
           value={client}
           onChangeText={setClient}
         />
-        <Input
-          label="Address"
-          placeholder="Job site address"
+        <AddressAutocomplete
           value={address}
-          onChangeText={setAddress}
+          onChangeText={(v) => {
+            setAddress(v);
+            // If the user types after picking, drop the saved coords.
+            if (coords) setCoords(null);
+          }}
+          onSelectPlace={(d) => {
+            if (d.latitude != null && d.longitude != null) {
+              setCoords({ latitude: d.latitude, longitude: d.longitude });
+            }
+          }}
         />
         {error ? (
           <Text style={{ color: colors.destructive, fontFamily: "Inter_500Medium" }}>

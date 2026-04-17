@@ -53,11 +53,13 @@ interface DataState {
     inputs: Array<Omit<Photo, "id" | "uploaded">>,
   ) => Promise<Photo[]>;
   deletePhoto: (id: string) => Promise<void>;
+  updatePhoto: (id: string, patch: Partial<Photo>) => Promise<void>;
 
   createTask: (
     projectId: string,
     title: string,
     notes?: string,
+    assignee?: string,
   ) => Promise<Task>;
   toggleTask: (id: string) => Promise<void>;
   deleteTask: (id: string) => Promise<void>;
@@ -318,13 +320,23 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     [photos, persistPhotos],
   );
 
+  const updatePhoto: DataState["updatePhoto"] = useCallback(
+    async (id, patch) => {
+      await persistPhotos(
+        photos.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+      );
+    },
+    [photos, persistPhotos],
+  );
+
   const createTask: DataState["createTask"] = useCallback(
-    async (projectId, title, notes) => {
+    async (projectId, title, notes, assignee) => {
       const task: Task = {
         id: newId(),
         projectId,
         title: title.trim(),
         notes: notes?.trim() || undefined,
+        assignee: assignee?.trim() || undefined,
         done: false,
         createdAt: new Date().toISOString(),
       };
@@ -433,6 +445,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       addPhoto,
       addPhotosBatch,
       deletePhoto,
+      updatePhoto,
       createTask,
       toggleTask,
       deleteTask,
@@ -459,6 +472,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       addPhoto,
       addPhotosBatch,
       deletePhoto,
+      updatePhoto,
       createTask,
       toggleTask,
       deleteTask,

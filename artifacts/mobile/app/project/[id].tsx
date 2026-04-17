@@ -1,7 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Modal,
@@ -406,36 +406,13 @@ export default function ProjectDetailScreen() {
             ) : (
               <View style={styles.photoGrid}>
                 {projectPhotos.map((ph) => (
-                  <Pressable
+                  <PhotoTile
                     key={ph.id}
-                    onLongPress={() => {
-                      if (Platform.OS === "web") {
-                        deletePhoto(ph.id);
-                        return;
-                      }
-                      Alert.alert("Delete photo?", undefined, [
-                        { text: "Cancel", style: "cancel" },
-                        {
-                          text: "Delete",
-                          style: "destructive",
-                          onPress: () => deletePhoto(ph.id),
-                        },
-                      ]);
-                    }}
-                    style={[styles.photoTile, { borderColor: colors.border }]}
-                  >
-                    <Image
-                      source={{ uri: ph.uri }}
-                      style={styles.photo}
-                      contentFit="cover"
-                      transition={120}
-                    />
-                    {ph.latitude != null ? (
-                      <View style={styles.photoBadge}>
-                        <Feather name="map-pin" size={10} color="#fff" />
-                      </View>
-                    ) : null}
-                  </Pressable>
+                    photo={ph}
+                    borderColor={colors.border}
+                    onOpen={() => router.push(`/photo/${ph.id}`)}
+                    onDelete={() => deletePhoto(ph.id)}
+                  />
                 ))}
               </View>
             )}
@@ -736,8 +713,8 @@ export default function ProjectDetailScreen() {
       <TaskModal
         visible={showTaskModal}
         onClose={() => setShowTaskModal(false)}
-        onSubmit={async (title, notes) => {
-          await createTask(project.id, title, notes);
+        onSubmit={async (title, notes, assignee) => {
+          await createTask(project.id, title, notes, assignee);
           setShowTaskModal(false);
         }}
       />
@@ -761,6 +738,68 @@ export default function ProjectDetailScreen() {
   );
 }
 
+function PhotoTile({
+  photo,
+  borderColor,
+  onOpen,
+  onDelete,
+}: {
+  photo: import("@/services/types").Photo;
+  borderColor: string;
+  onOpen: () => void;
+  onDelete: () => void;
+}) {
+  // Suppress the onPress that fires when a long-press releases.
+  const longPressed = useRef(false);
+
+  const handleLongPress = () => {
+    longPressed.current = true;
+    if (Platform.OS === "web") {
+      onDelete();
+      return;
+    }
+    Alert.alert("Delete photo?", undefined, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Delete", style: "destructive", onPress: onDelete },
+    ]);
+  };
+
+  const handlePress = () => {
+    if (longPressed.current) {
+      longPressed.current = false;
+      return;
+    }
+    onOpen();
+  };
+
+  return (
+    <Pressable
+      accessibilityLabel="Photo. Tap to open, long press to delete."
+      onPress={handlePress}
+      onLongPress={handleLongPress}
+      delayLongPress={350}
+      style={[styles.photoTile, { borderColor }]}
+    >
+      <Image
+        source={{ uri: photo.uri }}
+        style={styles.photo}
+        contentFit="cover"
+        transition={120}
+      />
+      {photo.latitude != null ? (
+        <View style={styles.photoBadge}>
+          <Feather name="map-pin" size={10} color="#fff" />
+        </View>
+      ) : null}
+      {photo.annotations && photo.annotations.length > 0 ? (
+        <View style={[styles.photoBadge, { right: 6, left: undefined }]}>
+          <Feather name="edit-2" size={10} color="#fff" />
+        </View>
+      ) : null}
+    </Pressable>
+  );
+}
+
 function TaskModal({
   visible,
   onClose,
@@ -768,20 +807,21 @@ function TaskModal({
 }: {
   visible: boolean;
   onClose: () => void;
-  onSubmit: (title: string, notes?: string) => Promise<void>;
+  onSubmit: (title: string, notes?: string, assignee?: string) => Promise<void>;
 }) {
-  const colors = useColors();
   const [title, setTitle] = useState("");
   const [notes, setNotes] = useState("");
+  const [assignee, setAssignee] = useState("");
   const [saving, setSaving] = useState(false);
 
   const save = async () => {
     if (!title.trim()) return;
     setSaving(true);
     try {
-      await onSubmit(title, notes);
+      await onSubmit(title, notes, assignee);
       setTitle("");
       setNotes("");
+      setAssignee("");
     } finally {
       setSaving(false);
     }
@@ -791,6 +831,13 @@ function TaskModal({
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
       <ModalShell title="New task" onClose={onClose}>
         <Input label="Title" value={title} onChangeText={setTitle} autoFocus />
+        <Input
+          label="Assigned to"
+          value={assignee}
+          onChangeText={setAssignee}
+          placeholder="Teammate name (optional)"
+          autoCapitalize="words"
+        />
         <Input
           label="Notes"
           value={notes}

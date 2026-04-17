@@ -47,6 +47,13 @@ export function mapBackendMedia(m: BackendMedia): Photo {
 }
 
 export function mapBackendTask(t: BackendTask): Task {
+  // Backends use various field names for assignee — pick whichever exists.
+  const raw = t as unknown as Record<string, unknown>;
+  const assignee =
+    (typeof raw.assignedToName === "string" && raw.assignedToName) ||
+    (typeof raw.assigneeName === "string" && raw.assigneeName) ||
+    (typeof raw.assignee === "string" && raw.assignee) ||
+    undefined;
   return {
     id: String(t.id),
     projectId: String(t.projectId),
@@ -54,6 +61,7 @@ export function mapBackendTask(t: BackendTask): Task {
     notes: t.description ?? undefined,
     done: DONE_TASK_STATUSES.has((t.status ?? "").toString().toLowerCase()),
     createdAt: t.createdAt,
+    assignee,
     remote: true,
   };
 }

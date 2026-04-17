@@ -26,6 +26,12 @@ export interface Project {
   remote?: boolean;
 }
 
+export interface AnnotationStroke {
+  color: string;
+  size: number;
+  points: { x: number; y: number }[];
+}
+
 export interface Photo {
   id: string;
   projectId: string;
@@ -39,6 +45,7 @@ export interface Photo {
   uploaded: boolean;
   tags?: string[];
   remote?: boolean;
+  annotations?: AnnotationStroke[];
 }
 
 export interface Task {
@@ -50,6 +57,8 @@ export interface Task {
   dueDate?: string;
   createdAt: string;
   remote?: boolean;
+  /** Display name of the person assigned to this task. Mobile-local for now. */
+  assignee?: string;
 }
 
 export interface ChecklistItem {

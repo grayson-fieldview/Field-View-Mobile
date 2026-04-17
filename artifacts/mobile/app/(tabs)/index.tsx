@@ -9,6 +9,7 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -21,6 +22,8 @@ import { useColors } from "@/hooks/useColors";
 import type { Project } from "@/services/types";
 
 type SortMode = "nearby" | "recent";
+
+const METERS_PER_MILE = 1609.344;
 
 function distanceMeters(
   a: { lat: number; lng: number },
@@ -38,6 +41,16 @@ function distanceMeters(
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
 }
 
+function formatMiles(meters: number): string {
+  const miles = meters / METERS_PER_MILE;
+  if (miles < 0.1) {
+    const feet = Math.round(meters * 3.28084);
+    return `${feet} ft`;
+  }
+  if (miles < 10) return `${miles.toFixed(1)} mi`;
+  return `${Math.round(miles)} mi`;
+}
+
 export default function ProjectsScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
@@ -46,11 +59,11 @@ export default function ProjectsScreen() {
     useData();
 
   const [sortMode, setSortMode] = useState<SortMode>("nearby");
+  const [query, setQuery] = useState("");
   const [userLoc, setUserLoc] = useState<{ lat: number; lng: number } | null>(
     null,
   );
 
-  // Try to get user location once on mount, so "Nearby" can sort by distance.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -98,8 +111,6 @@ export default function ProjectsScreen() {
     return byProject;
   }, [projects, photos, tasks]);
 
-  // Cover image for each project: prefer backend coverPhotoUrl, then any
-  // photo we have for that project.
   const coverFor = useMemo(() => {
     const m = new Map<string, string | undefined>();
     for (const p of projects) m.set(p.id, p.coverPhotoUrl);
@@ -110,19 +121,24 @@ export default function ProjectsScreen() {
     return m;
   }, [projects, photos]);
 
-  const sortedProjects = useMemo(() => {
-    if (sortMode === "recent") {
-      return [...projects].sort((a, b) =>
+  const filteredAndSorted = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const filtered = q
+      ? projects.filter((p) => {
+          return (
+            p.name.toLowerCase().includes(q) ||
+            (p.address ?? "").toLowerCase().includes(q) ||
+            (p.client ?? "").toLowerCase().includes(q)
+          );
+        })
+      : projects;
+
+    if (sortMode === "recent" || !userLoc) {
+      return [...filtered].sort((a, b) =>
         (b.createdAt ?? "").localeCompare(a.createdAt ?? ""),
       );
     }
-    // Nearby: use user location if we have it; otherwise fall back to recency.
-    if (!userLoc) {
-      return [...projects].sort((a, b) =>
-        (b.createdAt ?? "").localeCompare(a.createdAt ?? ""),
-      );
-    }
-    return [...projects].sort((a, b) => {
+    return [...filtered].sort((a, b) => {
       const da =
         a.latitude != null && a.longitude != null
           ? distanceMeters(userLoc, { lat: a.latitude, lng: a.longitude })
@@ -135,18 +151,17 @@ export default function ProjectsScreen() {
         return (b.createdAt ?? "").localeCompare(a.createdAt ?? "");
       return da - db;
     });
-  }, [projects, sortMode, userLoc]);
+  }, [projects, query, sortMode, userLoc]);
 
   const distanceLabelFor = (p: Project): string | null => {
     if (sortMode !== "nearby" || !userLoc) return null;
     if (p.latitude == null || p.longitude == null) return null;
-    const m = distanceMeters(userLoc, {
-      lat: p.latitude,
-      lng: p.longitude,
-    });
-    if (m < 1000) return `${Math.round(m)} m`;
-    if (m < 100_000) return `${(m / 1000).toFixed(1)} km`;
-    return `${Math.round(m / 1000)} km`;
+    return formatMiles(
+      distanceMeters(userLoc, {
+        lat: p.latitude,
+        lng: p.longitude,
+      }),
+    );
   };
 
   if (!ready) return <LoadingScreen />;
@@ -200,12 +215,48 @@ export default function ProjectsScreen() {
         />
       </View>
 
+      <View
+        style={[
+          styles.searchWrap,
+          {
+            backgroundColor: colors.muted,
+            borderColor: colors.border,
+          },
+        ]}
+      >
+        <Feather name="search" size={16} color={colors.mutedForeground} />
+        <TextInput
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Search projects, address, client…"
+          placeholderTextColor={colors.mutedForeground}
+          style={[styles.searchInput, { color: colors.foreground }]}
+          autoCorrect={false}
+          autoCapitalize="none"
+          returnKeyType="search"
+        />
+        {query ? (
+          <Pressable
+            onPress={() => setQuery("")}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Clear search"
+          >
+            <Feather
+              name="x-circle"
+              size={16}
+              color={colors.mutedForeground}
+            />
+          </Pressable>
+        ) : null}
+      </View>
+
       {syncError ? (
         <Pressable
           onPress={() => refresh()}
           style={{
-            marginHorizontal: 20,
-            marginTop: 4,
+            marginHorizontal: 16,
+            marginTop: 8,
             padding: 12,
             borderRadius: 10,
             backgroundColor: colors.card,
@@ -237,10 +288,11 @@ export default function ProjectsScreen() {
       ) : null}
 
       <FlatList
-        data={sortedProjects}
+        data={filteredAndSorted}
         keyExtractor={(item) => item.id}
         refreshing={syncing}
         onRefresh={refresh}
+        keyboardShouldPersistTaps="handled"
         contentContainerStyle={{
           padding: 16,
           paddingBottom: insets.bottom + 100,
@@ -259,17 +311,25 @@ export default function ProjectsScreen() {
         )}
         ListEmptyComponent={
           <View style={{ flex: 1, justifyContent: "center", paddingTop: 60 }}>
-            <EmptyState
-              icon="folder"
-              title="No projects yet"
-              description="Create your first project to start capturing photos, tasks, and checklists."
-              action={
-                <Button
-                  title="Create project"
-                  onPress={() => router.push("/project/new")}
-                />
-              }
-            />
+            {query ? (
+              <EmptyState
+                icon="search"
+                title="No matches"
+                description={`Nothing matches "${query}". Try a different search.`}
+              />
+            ) : (
+              <EmptyState
+                icon="folder"
+                title="No projects yet"
+                description="Create your first project to start capturing photos, tasks, and checklists."
+                action={
+                  <Button
+                    title="Create project"
+                    onPress={() => router.push("/project/new")}
+                  />
+                }
+              />
+            )}
           </View>
         }
       />
@@ -356,9 +416,7 @@ function ProjectCard({
         },
       ]}
     >
-      <View
-        style={[styles.cover, { backgroundColor: colors.muted }]}
-      >
+      <View style={[styles.cover, { backgroundColor: colors.muted }]}>
         {cover ? (
           <Image
             source={{ uri: cover }}
@@ -373,11 +431,7 @@ function ProjectCard({
               { alignItems: "center", justifyContent: "center" },
             ]}
           >
-            <Feather
-              name="image"
-              size={24}
-              color={colors.mutedForeground}
-            />
+            <Feather name="image" size={24} color={colors.mutedForeground} />
           </View>
         )}
       </View>
@@ -424,9 +478,7 @@ function ProjectCard({
             { backgroundColor: statusColor + "22" },
           ]}
         >
-          <View
-            style={[styles.statusDot, { backgroundColor: statusColor }]}
-          />
+          <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
         </View>
       </View>
     </Pressable>
@@ -486,7 +538,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     paddingHorizontal: 16,
     paddingTop: 14,
-    paddingBottom: 4,
+    paddingBottom: 8,
     gap: 10,
   },
   toggle: {
@@ -502,6 +554,23 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_600SemiBold",
     fontSize: 14,
   },
+  searchWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginHorizontal: 16,
+    marginTop: 4,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === "ios" ? 10 : 6,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  searchInput: {
+    flex: 1,
+    fontFamily: "Inter_500Medium",
+    fontSize: 14,
+    padding: 0,
+  },
   card: {
     borderWidth: 1,
     borderRadius: 16,
@@ -510,46 +579,24 @@ const styles = StyleSheet.create({
     padding: 10,
     gap: 12,
   },
-  cover: {
-    width: 84,
-    height: 84,
-    borderRadius: 12,
-    overflow: "hidden",
-  },
+  cover: { width: 84, height: 84, borderRadius: 12, overflow: "hidden" },
   cardBody: { flex: 1, gap: 4, minWidth: 0 },
   cardTitle: {
     fontSize: 16,
     fontFamily: "Inter_600SemiBold",
     letterSpacing: -0.2,
   },
-  cardMeta: {
-    fontSize: 12,
-    fontFamily: "Inter_400Regular",
-  },
+  cardMeta: { fontSize: 12, fontFamily: "Inter_400Regular" },
   distanceRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
     marginTop: 2,
   },
-  distance: {
-    fontSize: 12,
-    fontFamily: "Inter_600SemiBold",
-  },
-  cardRight: {
-    alignItems: "flex-end",
-    gap: 6,
-    paddingLeft: 4,
-  },
-  rightStat: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-  },
-  rightStatValue: {
-    fontSize: 13,
-    fontFamily: "Inter_600SemiBold",
-  },
+  distance: { fontSize: 12, fontFamily: "Inter_600SemiBold" },
+  cardRight: { alignItems: "flex-end", gap: 6, paddingLeft: 4 },
+  rightStat: { flexDirection: "row", alignItems: "center", gap: 4 },
+  rightStatValue: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
   statusPill: {
     width: 18,
     height: 18,
