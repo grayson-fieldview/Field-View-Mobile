@@ -79,6 +79,78 @@ export default function ProjectDetailScreen() {
   const [showChecklistModal, setShowChecklistModal] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
 
+  // Photos tab UI state.
+  const [gridSize, setGridSize] = useState<1 | 2 | 3>(2);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  // Group photos by their taken-at calendar day.
+  const photoGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      { label: string; ids: string[]; photos: typeof projectPhotos }
+    >();
+    for (const ph of projectPhotos) {
+      const d = ph.takenAt ? new Date(ph.takenAt) : new Date();
+      const dayKey = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      const label = d.toLocaleDateString(undefined, {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      });
+      const g = groups.get(dayKey) ?? { label, ids: [], photos: [] };
+      g.ids.push(ph.id);
+      g.photos.push(ph);
+      groups.set(dayKey, g);
+    }
+    return Array.from(groups.values()).sort((a, b) =>
+      b.label.localeCompare(a.label),
+    );
+  }, [projectPhotos]);
+
+  const exitSelectMode = () => {
+    setSelectMode(false);
+    setSelected(new Set());
+  };
+
+  const togglePhotoSelected = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleGroupSelected = (ids: string[]) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const allSelected = ids.every((i) => next.has(i));
+      if (allSelected) for (const i of ids) next.delete(i);
+      else for (const i of ids) next.add(i);
+      return next;
+    });
+  };
+
+  const deleteSelected = () => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    const doIt = async () => {
+      for (const pid of ids) await deletePhoto(pid);
+      exitSelectMode();
+    };
+    if (Platform.OS === "web") return doIt();
+    Alert.alert(
+      `Delete ${ids.length} photo${ids.length === 1 ? "" : "s"}?`,
+      undefined,
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", style: "destructive", onPress: doIt },
+      ],
+    );
+  };
+
   if (!project) {
     return (
       <View style={[styles.wrap, { backgroundColor: colors.background }]}>
@@ -313,27 +385,6 @@ export default function ProjectDetailScreen() {
           </View>
         </View>
 
-        <View style={styles.captureRow}>
-          <Button
-            title="Take Photo"
-            icon={
-              <Feather
-                name="camera"
-                size={16}
-                color={colors.primaryForeground}
-              />
-            }
-            onPress={() =>
-              router.push({
-                pathname: "/capture",
-                params: { projectId: project.id },
-              })
-            }
-            size="lg"
-            style={{ flex: 1 }}
-          />
-        </View>
-
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -397,25 +448,150 @@ export default function ProjectDetailScreen() {
 
         {tab === "photos" ? (
           <View style={styles.body}>
+            <PhotosToolbar
+              gridSize={gridSize}
+              onGridSize={setGridSize}
+              selectMode={selectMode}
+              selectedCount={selected.size}
+              onToggleSelect={() => {
+                if (selectMode) exitSelectMode();
+                else setSelectMode(true);
+              }}
+              onTakePhoto={() =>
+                router.push({
+                  pathname: "/capture",
+                  params: { projectId: project.id },
+                })
+              }
+              colors={colors}
+            />
+
             {projectPhotos.length === 0 ? (
-              <EmptyState
-                icon="camera"
-                title="No photos yet"
-                description="Tap Capture to take burst-mode photos with GPS tagging."
-              />
+              <View style={{ paddingTop: 20 }}>
+                <EmptyState
+                  icon="camera"
+                  title="No photos yet"
+                  description="Tap Take Photo to capture burst-mode photos with GPS tagging."
+                />
+              </View>
             ) : (
-              <View style={styles.photoGrid}>
-                {projectPhotos.map((ph) => (
-                  <PhotoTile
-                    key={ph.id}
-                    photo={ph}
-                    borderColor={colors.border}
-                    onOpen={() => router.push(`/photo/${ph.id}`)}
-                    onDelete={() => deletePhoto(ph.id)}
-                  />
-                ))}
+              <View style={{ marginTop: 14, gap: 18 }}>
+                {photoGroups.map((g) => {
+                  const allSelected =
+                    selectMode && g.ids.every((i) => selected.has(i));
+                  return (
+                    <View key={g.label} style={{ gap: 10 }}>
+                      <View style={styles.dateHeader}>
+                        {selectMode ? (
+                          <Pressable
+                            onPress={() => toggleGroupSelected(g.ids)}
+                            hitSlop={6}
+                            accessibilityRole="checkbox"
+                            accessibilityLabel={`Select all photos from ${g.label}`}
+                            accessibilityState={{ checked: allSelected }}
+                            style={[
+                              styles.dateCheckbox,
+                              {
+                                borderColor: allSelected
+                                  ? colors.primary
+                                  : colors.border,
+                                backgroundColor: allSelected
+                                  ? colors.primary
+                                  : "transparent",
+                              },
+                            ]}
+                          >
+                            {allSelected ? (
+                              <Feather
+                                name="check"
+                                size={12}
+                                color={colors.primaryForeground}
+                              />
+                            ) : null}
+                          </Pressable>
+                        ) : null}
+                        <Text
+                          style={[
+                            styles.dateLabel,
+                            { color: colors.foreground },
+                          ]}
+                        >
+                          {g.label}
+                        </Text>
+                      </View>
+                      <View
+                        style={[
+                          styles.photoGrid,
+                          gridSize === 1
+                            ? { rowGap: 12 }
+                            : gridSize === 3
+                              ? { rowGap: 6 }
+                              : { rowGap: 10 },
+                        ]}
+                      >
+                        {g.photos.map((ph) => (
+                          <PhotoTile
+                            key={ph.id}
+                            photo={ph}
+                            borderColor={colors.border}
+                            widthPercent={
+                              gridSize === 1
+                                ? "100%"
+                                : gridSize === 2
+                                  ? "48.5%"
+                                  : "32%"
+                            }
+                            selectMode={selectMode}
+                            selected={selected.has(ph.id)}
+                            primary={colors.primary}
+                            primaryForeground={colors.primaryForeground}
+                            onOpen={() => router.push(`/photo/${ph.id}`)}
+                            onToggleSelected={() => togglePhotoSelected(ph.id)}
+                            onDelete={() => deletePhoto(ph.id)}
+                          />
+                        ))}
+                      </View>
+                    </View>
+                  );
+                })}
               </View>
             )}
+
+            {selectMode && selected.size > 0 ? (
+              <View style={styles.selectionBar}>
+                <Pressable onPress={exitSelectMode} hitSlop={6}>
+                  <Text
+                    style={{
+                      color: colors.mutedForeground,
+                      fontFamily: "Inter_600SemiBold",
+                      fontSize: 14,
+                    }}
+                  >
+                    Cancel
+                  </Text>
+                </Pressable>
+                <Text
+                  style={{
+                    color: colors.foreground,
+                    fontFamily: "Inter_600SemiBold",
+                    fontSize: 14,
+                  }}
+                >
+                  {selected.size} selected
+                </Text>
+                <Pressable onPress={deleteSelected} hitSlop={6}>
+                  <Text
+                    style={{
+                      color: colors.destructive,
+                      fontFamily: "Inter_700Bold",
+                      fontSize: 14,
+                    }}
+                  >
+                    Delete
+                  </Text>
+                </Pressable>
+              </View>
+            ) : null}
           </View>
         ) : null}
 
@@ -741,18 +917,31 @@ export default function ProjectDetailScreen() {
 function PhotoTile({
   photo,
   borderColor,
+  widthPercent,
+  selectMode,
+  selected,
+  primary,
+  primaryForeground,
   onOpen,
+  onToggleSelected,
   onDelete,
 }: {
   photo: import("@/services/types").Photo;
   borderColor: string;
+  widthPercent: import("react-native").DimensionValue;
+  selectMode: boolean;
+  selected: boolean;
+  primary: string;
+  primaryForeground: string;
   onOpen: () => void;
+  onToggleSelected: () => void;
   onDelete: () => void;
 }) {
   // Suppress the onPress that fires when a long-press releases.
   const longPressed = useRef(false);
 
   const handleLongPress = () => {
+    if (selectMode) return;
     longPressed.current = true;
     if (Platform.OS === "web") {
       onDelete();
@@ -769,16 +958,30 @@ function PhotoTile({
       longPressed.current = false;
       return;
     }
-    onOpen();
+    if (selectMode) onToggleSelected();
+    else onOpen();
   };
 
   return (
     <Pressable
-      accessibilityLabel="Photo. Tap to open, long press to delete."
+      accessibilityLabel={
+        selectMode
+          ? `Photo. ${selected ? "Selected" : "Not selected"}. Tap to toggle.`
+          : "Photo. Tap to open, long press to delete."
+      }
+      accessibilityRole={selectMode ? "checkbox" : "imagebutton"}
+      accessibilityState={selectMode ? { checked: selected } : undefined}
       onPress={handlePress}
       onLongPress={handleLongPress}
       delayLongPress={350}
-      style={[styles.photoTile, { borderColor }]}
+      style={[
+        styles.photoTile,
+        {
+          borderColor: selectMode && selected ? primary : borderColor,
+          borderWidth: selectMode && selected ? 3 : 1,
+          width: widthPercent,
+        },
+      ]}
     >
       <Image
         source={{ uri: photo.uri }}
@@ -786,6 +989,21 @@ function PhotoTile({
         contentFit="cover"
         transition={120}
       />
+      {selectMode ? (
+        <View
+          style={[
+            styles.selectMark,
+            {
+              backgroundColor: selected ? primary : "rgba(255,255,255,0.85)",
+              borderColor: selected ? primary : "rgba(0,0,0,0.2)",
+            },
+          ]}
+        >
+          {selected ? (
+            <Feather name="check" size={12} color={primaryForeground} />
+          ) : null}
+        </View>
+      ) : null}
       {photo.latitude != null ? (
         <View style={styles.photoBadge}>
           <Feather name="map-pin" size={10} color="#fff" />
@@ -797,6 +1015,118 @@ function PhotoTile({
         </View>
       ) : null}
     </Pressable>
+  );
+}
+
+function PhotosToolbar({
+  gridSize,
+  onGridSize,
+  selectMode,
+  selectedCount,
+  onToggleSelect,
+  onTakePhoto,
+  colors,
+}: {
+  gridSize: 1 | 2 | 3;
+  onGridSize: (s: 1 | 2 | 3) => void;
+  selectMode: boolean;
+  selectedCount: number;
+  onToggleSelect: () => void;
+  onTakePhoto: () => void;
+  colors: ReturnType<typeof useColors>;
+}) {
+  return (
+    <View style={styles.photosToolbar}>
+      <View
+        style={[
+          styles.gridSegment,
+          { backgroundColor: colors.muted, borderColor: colors.border },
+        ]}
+      >
+        {([3, 2, 1] as const).map((s) => {
+          const active = gridSize === s;
+          const icon: keyof typeof Feather.glyphMap =
+            s === 3 ? "grid" : s === 2 ? "columns" : "square";
+          return (
+            <Pressable
+              key={s}
+              onPress={() => onGridSize(s)}
+              accessibilityRole="button"
+              accessibilityLabel={`${s}-column grid`}
+              accessibilityState={{ selected: active }}
+              style={[
+                styles.gridBtn,
+                {
+                  backgroundColor: active
+                    ? colors.background
+                    : "transparent",
+                },
+              ]}
+            >
+              <Feather
+                name={icon}
+                size={16}
+                color={active ? colors.foreground : colors.mutedForeground}
+              />
+            </Pressable>
+          );
+        })}
+      </View>
+
+      <Pressable
+        onPress={onToggleSelect}
+        accessibilityRole="button"
+        accessibilityLabel={selectMode ? "Exit select mode" : "Select photos"}
+        style={({ pressed }) => [
+          styles.toolbarBtn,
+          {
+            backgroundColor: selectMode ? colors.muted : colors.background,
+            borderColor: colors.border,
+            opacity: pressed ? 0.85 : 1,
+          },
+        ]}
+      >
+        <Feather
+          name={selectMode ? "x" : "check"}
+          size={14}
+          color={colors.foreground}
+        />
+        <Text
+          style={[styles.toolbarBtnText, { color: colors.foreground }]}
+          numberOfLines={1}
+        >
+          {selectMode
+            ? selectedCount > 0
+              ? `Cancel (${selectedCount})`
+              : "Cancel"
+            : "Select"}
+        </Text>
+      </Pressable>
+
+      <Pressable
+        onPress={onTakePhoto}
+        accessibilityRole="button"
+        accessibilityLabel="Take photo"
+        style={({ pressed }) => [
+          styles.toolbarBtnPrimary,
+          {
+            backgroundColor: colors.primary,
+            opacity: pressed ? 0.9 : 1,
+          },
+        ]}
+      >
+        <Feather name="camera" size={14} color={colors.primaryForeground} />
+        <Text
+          style={[
+            styles.toolbarBtnText,
+            { color: colors.primaryForeground },
+          ]}
+          numberOfLines={1}
+        >
+          Take Photo
+        </Text>
+      </Pressable>
+    </View>
   );
 }
 
@@ -1100,12 +1430,6 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   statDivider: { width: StyleSheet.hairlineWidth, height: 32 },
-  captureRow: {
-    flexDirection: "row",
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 4,
-  },
   pillTabsRow: {
     paddingHorizontal: 16,
     paddingTop: 14,
@@ -1142,11 +1466,93 @@ const styles = StyleSheet.create({
     rowGap: 10,
   },
   photoTile: {
-    width: "48.5%",
     aspectRatio: 1,
     borderRadius: 12,
     overflow: "hidden",
     borderWidth: 1,
+    position: "relative",
+  },
+  photosToolbar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  gridSegment: {
+    flexDirection: "row",
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: 2,
+    gap: 2,
+  },
+  gridBtn: {
+    width: 34,
+    height: 32,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  toolbarBtn: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    height: 36,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 10,
+  },
+  toolbarBtnPrimary: {
+    flex: 1.2,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    height: 36,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+  },
+  toolbarBtnText: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 13,
+  },
+  dateHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  dateCheckbox: {
+    width: 18,
+    height: 18,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dateLabel: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 14,
+  },
+  selectMark: {
+    position: "absolute",
+    top: 8,
+    left: 8,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  selectionBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 18,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    backgroundColor: "rgba(0,0,0,0.06)",
   },
   photo: { width: "100%", height: "100%" },
   photoBadge: {
