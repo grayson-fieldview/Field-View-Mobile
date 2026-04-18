@@ -1,6 +1,6 @@
 const palette = {
-  amber: "#f59e0b",
-  amberDark: "#b45309",
+  amber: "#EE8B1B",
+  amberDark: "#B86A0E",
   charcoal: "#111418",
   charcoalLight: "#1b1f25",
   charcoalMuted: "#262b33",
@@ -26,7 +26,7 @@ const colors = {
     cardForeground: "#111418",
 
     primary: palette.amber,
-    primaryForeground: "#111418",
+    primaryForeground: "#ffffff",
 
     secondary: "#f5f5f4",
     secondaryForeground: "#111418",
@@ -34,8 +34,8 @@ const colors = {
     muted: "#f5f5f4",
     mutedForeground: "#6b7280",
 
-    accent: "#fef3c7",
-    accentForeground: "#78350f",
+    accent: "#FCEAD0",
+    accentForeground: "#7A4A0F",
 
     destructive: palette.danger,
     destructiveForeground: "#ffffff",
@@ -57,7 +57,7 @@ const colors = {
     cardForeground: "#f5f5f4",
 
     primary: palette.amber,
-    primaryForeground: "#111418",
+    primaryForeground: "#ffffff",
 
     secondary: palette.charcoalMuted,
     secondaryForeground: "#f5f5f4",
@@ -65,7 +65,7 @@ const colors = {
     muted: palette.charcoalMuted,
     mutedForeground: palette.slate,
 
-    accent: "#3a2a0f",
+    accent: "#3a260f",
     accentForeground: palette.amber,
 
     destructive: palette.danger,
