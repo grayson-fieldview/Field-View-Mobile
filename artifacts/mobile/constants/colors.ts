@@ -1,6 +1,6 @@
 const palette = {
-  amber: "#EE8B1B",
-  amberDark: "#B86A0E",
+  amber: "#F09002",
+  amberDark: "#B86C00",
   charcoal: "#111418",
   charcoalLight: "#1b1f25",
   charcoalMuted: "#262b33",

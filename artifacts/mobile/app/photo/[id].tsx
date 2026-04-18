@@ -20,7 +20,7 @@ import Svg, { Path } from "react-native-svg";
 import { useData } from "@/contexts/DataContext";
 import type { AnnotationStroke, Photo } from "@/services/types";
 
-const COLORS = ["#ef4444", "#22c55e", "#3b82f6", "#EE8B1B", "#a855f7", "#111111"];
+const COLORS = ["#ef4444", "#22c55e", "#3b82f6", "#F09002", "#a855f7", "#111111"];
 const SIZES = [3, 6, 12];
 
 export default function PhotoViewerScreen() {
@@ -398,7 +398,7 @@ function ToolButton({
       style={[
         styles.toolBtn,
         {
-          backgroundColor: active ? "#EE8B1B" : "transparent",
+          backgroundColor: active ? "#F09002" : "transparent",
           opacity: disabled ? 0.4 : 1,
         },
       ]}
