@@ -61,13 +61,20 @@ export async function loadSession(): Promise<string | null> {
   if (loaded) return cookieJar.size ? serializeCookieJar() : null;
   loaded = true;
   const raw = await secureStorage.getItem(COOKIE_STORAGE_KEY);
-  if (!raw) return null;
+  console.log("[cookie-migration] loaded from storage:", raw);
+  if (!raw) {
+    console.log("[cookie-migration] after dedup: (empty)");
+    console.log("[cookie-migration] differs:", false);
+    return null;
+  }
 
   // One-time migration: dedupe any duplicate cookie names that the
   // previous append-style logic may have written. Last value wins.
   cookieJar.clear();
   ingestSerializedJar(raw);
   const cleaned = serializeCookieJar();
+  console.log("[cookie-migration] after dedup:", cleaned);
+  console.log("[cookie-migration] differs:", raw !== cleaned);
   if (cleaned !== raw) {
     secureStorage.setItem(COOKIE_STORAGE_KEY, cleaned).catch(() => {});
   }
@@ -147,6 +154,7 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
   if (cookieJar.size > 0 && Platform.OS !== "web") {
     headers["Cookie"] = serializeCookieJar();
   }
+  console.log("[cookie-outgoing]", headers["Cookie"]);
 
   let res: Response;
   try {
