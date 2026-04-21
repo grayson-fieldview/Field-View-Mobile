@@ -330,6 +330,14 @@ export default function PhotoViewerScreen() {
                   <Text style={styles.clearTxt}>Clear all</Text>
                 </Pressable>
               ) : null}
+              <Pressable
+                onPress={() => setEditing(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Save annotations"
+                style={styles.saveBtn}
+              >
+                <Text style={styles.saveTxt}>Save</Text>
+              </Pressable>
             </View>
           </>
         ) : null}
@@ -497,6 +505,18 @@ const styles = StyleSheet.create({
     color: "#991b1b",
     fontFamily: "Inter_600SemiBold",
     fontSize: 11,
+  },
+  saveBtn: {
+    marginLeft: "auto",
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: "#F09001",
+  },
+  saveTxt: {
+    color: "#fff",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 12,
   },
   metaWrap: {
     position: "absolute",
