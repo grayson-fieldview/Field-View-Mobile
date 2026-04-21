@@ -116,6 +116,7 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
   let res: Response;
   try {
     console.log("[api] →", opts.method ?? "GET", API_BASE_URL + path);
+    console.log("[api] Cookie being sent:", headers["Cookie"] || "(none)");
     res = await fetch(`${API_BASE_URL}${path}`, {
       method: opts.method ?? "GET",
       headers,
@@ -123,6 +124,8 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
       credentials: "include",
     });
     console.log("[api] ←", res.status, path);
+    const setCookieHeader = res.headers.get("set-cookie");
+    if (setCookieHeader) console.log("[api] Set-Cookie received:", setCookieHeader);
   } catch (e) {
     throw new ApiError(
       0,
@@ -295,6 +298,7 @@ export const api = {
     const headers: Record<string, string> = {};
     if (cookieJar && Platform.OS !== "web") headers["Cookie"] = cookieJar;
 
+    console.log("[api] Cookie being sent:", headers["Cookie"] || "(none)");
     const res = await fetch(`${API_BASE_URL}/api/photos/upload`, {
       method: "POST",
       body: form,
@@ -302,6 +306,7 @@ export const api = {
       credentials: "include",
     });
     const sc = res.headers.get("set-cookie");
+    if (sc) console.log("[api] Set-Cookie received:", sc);
     if (sc) parseAndPersistSetCookie(sc);
     if (!res.ok) throw new ApiError(res.status, `Upload failed (${res.status})`);
     return (await res.json()) as { url: string };
