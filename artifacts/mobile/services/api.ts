@@ -18,6 +18,8 @@ import { secureStorage } from "./secureStorage";
 export const API_BASE_URL =
   process.env.EXPO_PUBLIC_API_BASE_URL?.replace(/\/+$/, "") ?? "";
 
+console.log("[api] API_BASE_URL =", API_BASE_URL);
+
 const COOKIE_STORAGE_KEY = "fv_session_cookies";
 
 let cookieJar: string | null = null;
@@ -113,12 +115,14 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
 
   let res: Response;
   try {
+    console.log("[api] →", opts.method ?? "GET", API_BASE_URL + path);
     res = await fetch(`${API_BASE_URL}${path}`, {
       method: opts.method ?? "GET",
       headers,
       body,
       credentials: "include",
     });
+    console.log("[api] ←", res.status, path);
   } catch (e) {
     throw new ApiError(
       0,
