@@ -22,52 +22,87 @@ console.log("[api] API_BASE_URL =", API_BASE_URL);
 
 const COOKIE_STORAGE_KEY = "fv_session_cookies";
 
-let cookieJar: string | null = null;
+// Cookie jar keyed by cookie name so a new value for the same name
+// REPLACES the prior one (e.g. a rotated connect.sid). Storing as a
+// Map prevents the "connect.sid=A; connect.sid=B" duplication bug.
+const cookieJar: Map<string, string> = new Map();
 let loaded = false;
-
-/** Load the persisted cookie jar into memory (call once on app start). */
-export async function loadSession(): Promise<string | null> {
-  if (!loaded) {
-    cookieJar = await secureStorage.getItem(COOKIE_STORAGE_KEY);
-    loaded = true;
-  }
-  return cookieJar;
-}
-
-/** Clear the in-memory and on-disk cookie jar. */
-export async function clearSession(): Promise<void> {
-  cookieJar = null;
-  loaded = true;
-  await secureStorage.removeItem(COOKIE_STORAGE_KEY);
-}
-
-export function hasSession(): boolean {
-  return !!cookieJar;
-}
 
 // Attributes that should NOT be stored as cookies — these are cookie
 // metadata (Path, Expires, etc.), not name/value pairs.
 const COOKIE_ATTR_RE =
   /^(path|expires|httponly|max-age|domain|samesite|secure)$/i;
 
-function parseAndPersistSetCookie(raw: string | null): void {
-  if (!raw) return;
-  // Parse all `name=value` pairs out of the combined set-cookie header,
-  // ignoring cookie attributes and the commas inside Expires dates.
-  const pairs: string[] = [];
-  const seen = new Set<string>();
+/** Serialize the jar to a single Cookie header value. */
+function serializeCookieJar(): string {
+  const out: string[] = [];
+  for (const [name, value] of cookieJar) out.push(`${name}=${value}`);
+  return out.join("; ");
+}
+
+/**
+ * Parse a "name=value; name2=value2" Cookie-header-style string into
+ * the in-memory jar. Used by loadSession() to migrate previously
+ * persisted jars (which may contain duplicate entries from the bug
+ * this fix addresses) — last occurrence wins.
+ */
+function ingestSerializedJar(raw: string): void {
   const re = /([\w.!#$%&'*+\-^`|~]+)=([^;,]*)/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(raw)) !== null) {
     const name = m[1];
     if (COOKIE_ATTR_RE.test(name)) continue;
-    if (seen.has(name)) continue;
-    seen.add(name);
-    pairs.push(`${name}=${m[2]}`);
+    cookieJar.set(name, m[2]);
   }
-  if (pairs.length === 0) return;
-  cookieJar = pairs.join("; ");
-  secureStorage.setItem(COOKIE_STORAGE_KEY, cookieJar).catch(() => {});
+}
+
+/** Load the persisted cookie jar into memory (call once on app start). */
+export async function loadSession(): Promise<string | null> {
+  if (loaded) return cookieJar.size ? serializeCookieJar() : null;
+  loaded = true;
+  const raw = await secureStorage.getItem(COOKIE_STORAGE_KEY);
+  if (!raw) return null;
+
+  // One-time migration: dedupe any duplicate cookie names that the
+  // previous append-style logic may have written. Last value wins.
+  cookieJar.clear();
+  ingestSerializedJar(raw);
+  const cleaned = serializeCookieJar();
+  if (cleaned !== raw) {
+    secureStorage.setItem(COOKIE_STORAGE_KEY, cleaned).catch(() => {});
+  }
+  return cleaned || null;
+}
+
+/** Clear the in-memory and on-disk cookie jar. */
+export async function clearSession(): Promise<void> {
+  cookieJar.clear();
+  loaded = true;
+  await secureStorage.removeItem(COOKIE_STORAGE_KEY);
+}
+
+export function hasSession(): boolean {
+  return cookieJar.size > 0;
+}
+
+function parseAndPersistSetCookie(raw: string | null): void {
+  if (!raw) return;
+  // Parse all `name=value` pairs out of the combined set-cookie header,
+  // ignoring cookie attributes and the commas inside Expires dates.
+  // Within a single Set-Cookie response, last value wins for a given
+  // name (matches what a real browser would store after applying each
+  // Set-Cookie in order).
+  const re = /([\w.!#$%&'*+\-^`|~]+)=([^;,]*)/g;
+  let m: RegExpExecArray | null;
+  let updated = false;
+  while ((m = re.exec(raw)) !== null) {
+    const name = m[1];
+    if (COOKIE_ATTR_RE.test(name)) continue;
+    cookieJar.set(name, m[2]); // overwrite any existing entry
+    updated = true;
+  }
+  if (!updated) return;
+  secureStorage.setItem(COOKIE_STORAGE_KEY, serializeCookieJar()).catch(() => {});
 }
 
 export class ApiError extends Error {
@@ -109,8 +144,8 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
   }
   // On web the browser manages cookies via credentials: "include".
   // On native we must attach the Cookie header ourselves.
-  if (cookieJar && Platform.OS !== "web") {
-    headers["Cookie"] = cookieJar;
+  if (cookieJar.size > 0 && Platform.OS !== "web") {
+    headers["Cookie"] = serializeCookieJar();
   }
 
   let res: Response;
@@ -296,7 +331,7 @@ export const api = {
     } as unknown as Blob);
 
     const headers: Record<string, string> = {};
-    if (cookieJar && Platform.OS !== "web") headers["Cookie"] = cookieJar;
+    if (cookieJar.size > 0 && Platform.OS !== "web") headers["Cookie"] = serializeCookieJar();
 
     console.log("[api] Cookie being sent:", headers["Cookie"] || "(none)");
     const res = await fetch(`${API_BASE_URL}/api/photos/upload`, {
