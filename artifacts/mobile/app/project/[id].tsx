@@ -1,5 +1,6 @@
 import { Feather } from "@expo/vector-icons";
 import { Image } from "expo-image";
+import Svg, { Path as SvgPath } from "react-native-svg";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -1082,6 +1083,9 @@ function PhotoTile({
         contentFit="cover"
         transition={120}
       />
+      {photo.annotations && photo.annotations.length > 0 ? (
+        <AnnotationOverlay strokes={photo.annotations} />
+      ) : null}
       {selectMode ? (
         <View
           style={[
@@ -1109,6 +1113,62 @@ function PhotoTile({
       ) : null}
     </Pressable>
   );
+}
+
+function AnnotationOverlay({
+  strokes,
+}: {
+  strokes: import("@/services/types").AnnotationStroke[];
+}) {
+  // Determine the viewBox: prefer the canvas dimensions captured at draw
+  // time; otherwise fall back to the bounding box of all points so the
+  // strokes still scale into the thumbnail (legacy data path).
+  let w = 0;
+  let h = 0;
+  for (const s of strokes) {
+    if (s.canvasW && s.canvasW > w) w = s.canvasW;
+    if (s.canvasH && s.canvasH > h) h = s.canvasH;
+  }
+  if (w === 0 || h === 0) {
+    let maxX = 0;
+    let maxY = 0;
+    for (const s of strokes)
+      for (const p of s.points) {
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+      }
+    w = w || maxX + 16;
+    h = h || maxY + 16;
+  }
+  if (w <= 0 || h <= 0) return null;
+  return (
+    <Svg
+      pointerEvents="none"
+      style={StyleSheet.absoluteFill}
+      viewBox={`0 0 ${w} ${h}`}
+      preserveAspectRatio="xMidYMid slice"
+    >
+      {strokes.map((s, i) => (
+        <SvgPath
+          key={i}
+          d={pointsToPath(s.points)}
+          stroke={s.color}
+          strokeWidth={s.size}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          fill="none"
+        />
+      ))}
+    </Svg>
+  );
+}
+
+function pointsToPath(pts: { x: number; y: number }[]): string {
+  if (pts.length === 0) return "";
+  let d = `M${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
+  for (let i = 1; i < pts.length; i++)
+    d += ` L${pts[i].x.toFixed(1)} ${pts[i].y.toFixed(1)}`;
+  return d;
 }
 
 function PhotosToolbar({

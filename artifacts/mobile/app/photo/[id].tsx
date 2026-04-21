@@ -72,6 +72,8 @@ export default function PhotoViewerScreen() {
 
   const winWidth = Dimensions.get("window").width;
   const listRef = useRef<FlatList<Photo>>(null);
+  // Captured drawing-canvas size, used so thumbnails can scale strokes correctly.
+  const canvasSize = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
 
   if (!startPhoto || !currentPhoto) {
     return (
@@ -86,7 +88,13 @@ export default function PhotoViewerScreen() {
 
   const startStroke = (x: number, y: number) => {
     if (!editing) return;
-    currentStroke.current = { color, size, points: [{ x, y }] };
+    currentStroke.current = {
+      color,
+      size,
+      points: [{ x, y }],
+      canvasW: canvasSize.current.w || undefined,
+      canvasH: canvasSize.current.h || undefined,
+    };
     force((n) => n + 1);
   };
   const extendStroke = (x: number, y: number) => {
@@ -217,6 +225,14 @@ export default function PhotoViewerScreen() {
           return (
             <View
               style={{ width: winWidth, height: "100%" }}
+              onLayout={(e) => {
+                if (isCurrent) {
+                  canvasSize.current = {
+                    w: e.nativeEvent.layout.width,
+                    h: e.nativeEvent.layout.height,
+                  };
+                }
+              }}
               onStartShouldSetResponder={() => editing && isCurrent}
               onMoveShouldSetResponder={() => editing && isCurrent}
               onResponderGrant={(e) =>

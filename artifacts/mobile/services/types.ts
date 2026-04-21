@@ -30,6 +30,10 @@ export interface AnnotationStroke {
   color: string;
   size: number;
   points: { x: number; y: number }[];
+  /** Width of the canvas the stroke was drawn on (px). */
+  canvasW?: number;
+  /** Height of the canvas the stroke was drawn on (px). */
+  canvasH?: number;
 }
 
 export interface Photo {
