@@ -164,7 +164,7 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
       method: opts.method ?? "GET",
       headers,
       body,
-      credentials: "include",
+      credentials: Platform.OS === "web" ? "include" : "omit",
     });
     console.log("[api] ←", res.status, path);
     const setCookieHeader = res.headers.get("set-cookie");
@@ -346,7 +346,7 @@ export const api = {
       method: "POST",
       body: form,
       headers,
-      credentials: "include",
+      credentials: Platform.OS === "web" ? "include" : "omit",
     });
     const sc = res.headers.get("set-cookie");
     if (sc) console.log("[api] Set-Cookie received:", sc);
