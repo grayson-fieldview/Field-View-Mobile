@@ -399,7 +399,6 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     alignSelf: "center",
-    marginHorizontal: "auto",
     width: FAB_W,
     height: FAB_H,
     borderRadius: FAB_W / 2,
