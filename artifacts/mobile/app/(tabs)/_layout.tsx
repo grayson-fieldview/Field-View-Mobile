@@ -7,11 +7,13 @@ import { Feather } from "@expo/vector-icons";
 import React from "react";
 import { Platform, StyleSheet, View, useColorScheme } from "react-native";
 
+import { QuickCaptureFAB } from "@/components/QuickCaptureFAB";
 import { useColors } from "@/hooks/useColors";
 
 function NativeTabLayout() {
   return (
-    <NativeTabs>
+    <View style={{ flex: 1 }}>
+      <NativeTabs>
       <NativeTabs.Trigger name="index">
         <Icon sf={{ default: "folder", selected: "folder.fill" }} />
         <Label>Projects</Label>
@@ -28,7 +30,9 @@ function NativeTabLayout() {
         <Icon sf={{ default: "person.circle", selected: "person.circle.fill" }} />
         <Label>Profile</Label>
       </NativeTabs.Trigger>
-    </NativeTabs>
+      </NativeTabs>
+      <QuickCaptureFAB />
+    </View>
   );
 }
 
@@ -40,6 +44,7 @@ function ClassicTabLayout() {
   const isWeb = Platform.OS === "web";
 
   return (
+    <View style={{ flex: 1 }}>
     <Tabs
       screenOptions={{
         tabBarActiveTintColor: colors.primary,
@@ -123,6 +128,8 @@ function ClassicTabLayout() {
         }}
       />
     </Tabs>
+    <QuickCaptureFAB />
+    </View>
   );
 }
 

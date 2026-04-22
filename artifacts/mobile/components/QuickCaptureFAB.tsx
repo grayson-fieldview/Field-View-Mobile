@@ -135,17 +135,24 @@ export function QuickCaptureFAB() {
         onPress={openSheet}
         accessibilityRole="button"
         accessibilityLabel="Quick capture: take photos at the project closest to you"
+        // Sits half above / half over the tab bar (matches reference UI).
+        // Tab bar heights vary: iOS ~49 + safe area, Android ~56, web 84.
         style={({ pressed }) => [
           styles.fab,
           {
-            bottom: insets.bottom + (Platform.OS === "ios" ? 36 : 64),
+            bottom:
+              Platform.OS === "web"
+                ? 84 - FAB_H / 2 + 6
+                : Platform.OS === "ios"
+                  ? insets.bottom + 49 - FAB_H / 2 + 4
+                  : insets.bottom + 56 - FAB_H / 2 + 4,
             backgroundColor: colors.primary,
             transform: [{ scale: pressed ? 0.95 : 1 }],
-            shadowColor: colors.primary,
+            shadowColor: "#000",
           },
         ]}
       >
-        <Feather name="camera" size={26} color={colors.primaryForeground} />
+        <Feather name="camera" size={28} color={colors.primaryForeground} />
       </Pressable>
 
       <Modal
@@ -389,16 +396,20 @@ const FAB_H = 76;
 const styles = StyleSheet.create({
   fab: {
     position: "absolute",
+    left: 0,
+    right: 0,
     alignSelf: "center",
+    marginHorizontal: "auto",
     width: FAB_W,
     height: FAB_H,
     borderRadius: FAB_W / 2,
     alignItems: "center",
     justifyContent: "center",
-    shadowOpacity: 0.35,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 10,
+    shadowOpacity: 0.4,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 16,
+    zIndex: 1000,
   },
   scrim: {
     flex: 1,
