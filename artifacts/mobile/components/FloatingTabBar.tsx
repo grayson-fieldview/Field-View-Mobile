@@ -17,7 +17,7 @@ import { useColors } from "@/hooks/useColors";
 const PILL_HEIGHT = 64;
 const PILL_RADIUS = 32;
 const SIDE_MARGIN = 16;
-const BOTTOM_MARGIN = 12;
+const BOTTOM_MARGIN = 0;
 
 const FAB_SIZE = 64;
 // 80% of FAB sits inside the pill, 20% hangs above it.
@@ -80,6 +80,11 @@ export function FloatingTabBar({
     );
   };
 
+  // Pill extends through the home-indicator safe area so its bottom edge
+  // is flush with the bottom of the screen (no visible gap below the bar).
+  // Tab content stays in the upper visible portion via paddingBottom.
+  const pillTotalHeight = PILL_HEIGHT + insets.bottom;
+
   return (
     <View
       pointerEvents="box-none"
@@ -88,13 +93,15 @@ export function FloatingTabBar({
         {
           left: SIDE_MARGIN,
           right: SIDE_MARGIN,
-          bottom: insets.bottom + BOTTOM_MARGIN,
+          bottom: BOTTOM_MARGIN,
+          height: pillTotalHeight,
         },
       ]}
     >
       <View
         style={[
           styles.pill,
+          { height: pillTotalHeight },
           Platform.OS === "android"
             ? { elevation: 12, backgroundColor: colors.card }
             : {
@@ -120,7 +127,7 @@ export function FloatingTabBar({
           />
         ) : null}
 
-        <View style={styles.row}>
+        <View style={[styles.row, { paddingBottom: insets.bottom }]}>
           {renderTab(0)}
           {renderTab(1)}
           <View style={{ width: CENTER_GAP }} />
@@ -134,8 +141,10 @@ export function FloatingTabBar({
           position: "absolute",
           left: "50%",
           marginLeft: -FAB_SIZE / 2,
-          // 80% inside the pill (overlap = 51), 20% above its top edge.
-          bottom: PILL_HEIGHT - FAB_OVERLAP,
+          // 80% inside the pill's visible portion (overlap = 51),
+          // 20% above its top edge. Anchored to the visible top so the
+          // safe-area extension doesn't push the FAB down.
+          bottom: insets.bottom + PILL_HEIGHT - FAB_OVERLAP,
         }}
       />
     </View>
@@ -147,11 +156,9 @@ export const FLOATING_TAB_BAR_OVERLAY = PILL_HEIGHT + BOTTOM_MARGIN + 16;
 const styles = StyleSheet.create({
   outer: {
     position: "absolute",
-    height: PILL_HEIGHT,
   },
   pill: {
     flex: 1,
-    height: PILL_HEIGHT,
     borderRadius: PILL_RADIUS,
     overflow: "hidden",
   },
