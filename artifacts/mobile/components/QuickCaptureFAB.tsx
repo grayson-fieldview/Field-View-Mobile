@@ -405,9 +405,9 @@ export function QuickCaptureFAB({
 const FAB_SIZE = 64;
 const FAB_W = FAB_SIZE;
 const FAB_H = FAB_SIZE;
-// Default overlap for the standalone (non-embedded) position: 20% of the
-// FAB dips into the tab bar, the remaining 80% floats above it.
-const FAB_OVERLAP_DEFAULT = Math.round(FAB_SIZE * 0.2);
+// Default overlap for the standalone (non-embedded) position: 80% of the
+// FAB sits inside the tab bar, the remaining 20% hangs above its top edge.
+const FAB_OVERLAP_DEFAULT = Math.round(FAB_SIZE * 0.8);
 
 const styles = StyleSheet.create({
   fab: {
