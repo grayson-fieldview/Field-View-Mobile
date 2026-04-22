@@ -11,6 +11,8 @@ import {
   StyleSheet,
   Text,
   View,
+  type StyleProp,
+  type ViewStyle,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -39,7 +41,9 @@ type Nearest = {
   distance: number | null;
 };
 
-export function QuickCaptureFAB() {
+export function QuickCaptureFAB({
+  buttonStyle,
+}: { buttonStyle?: StyleProp<ViewStyle> } = {}) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -135,17 +139,23 @@ export function QuickCaptureFAB() {
         onPress={openSheet}
         accessibilityRole="button"
         accessibilityLabel="Quick capture: take photos at the project closest to you"
-        // Sits half above / half over the tab bar (matches reference UI).
-        // Tab bar heights vary: iOS ~49 + safe area, Android ~56, web 84.
         style={({ pressed }) => [
           styles.fab,
-          {
+          // Default standalone position (used when not embedded in a custom
+          // tab bar). The notched tab bar passes `buttonStyle` to dock the
+          // FAB inside its notch.
+          buttonStyle ?? {
+            position: "absolute",
+            left: "50%",
+            marginLeft: -FAB_SIZE / 2,
             bottom:
               Platform.OS === "web"
                 ? 84 - FAB_H / 2 + 6
                 : Platform.OS === "ios"
                   ? insets.bottom + 49 - FAB_H / 2 + 4
                   : insets.bottom + 56 - FAB_H / 2 + 4,
+          },
+          {
             backgroundColor: colors.primary,
             transform: [{ scale: pressed ? 0.95 : 1 }],
             shadowColor: "#000",
@@ -396,9 +406,6 @@ const FAB_H = FAB_SIZE;
 
 const styles = StyleSheet.create({
   fab: {
-    position: "absolute",
-    left: "50%",
-    marginLeft: -FAB_SIZE / 2,
     width: FAB_SIZE,
     height: FAB_SIZE,
     aspectRatio: 1,
@@ -406,10 +413,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     shadowColor: "#000",
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 8,
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 12,
     zIndex: 1000,
   },
   scrim: {
