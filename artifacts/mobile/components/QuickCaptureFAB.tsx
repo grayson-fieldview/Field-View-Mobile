@@ -390,24 +390,26 @@ export function QuickCaptureFAB() {
   );
 }
 
-const FAB_W = 64;
-const FAB_H = 76;
+const FAB_SIZE = 64;
+const FAB_W = FAB_SIZE;
+const FAB_H = FAB_SIZE;
 
 const styles = StyleSheet.create({
   fab: {
     position: "absolute",
-    left: 0,
-    right: 0,
-    alignSelf: "center",
-    width: FAB_W,
-    height: FAB_H,
-    borderRadius: FAB_W / 2,
+    left: "50%",
+    marginLeft: -FAB_SIZE / 2,
+    width: FAB_SIZE,
+    height: FAB_SIZE,
+    aspectRatio: 1,
+    borderRadius: FAB_SIZE / 2,
     alignItems: "center",
     justifyContent: "center",
-    shadowOpacity: 0.4,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 16,
+    shadowColor: "#000",
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
     zIndex: 1000,
   },
   scrim: {
