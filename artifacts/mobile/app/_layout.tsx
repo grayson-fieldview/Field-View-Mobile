@@ -1,3 +1,6 @@
+import { initSentry } from "../services/sentry";
+initSentry();
+
 import {
   Inter_400Regular,
   Inter_500Medium,

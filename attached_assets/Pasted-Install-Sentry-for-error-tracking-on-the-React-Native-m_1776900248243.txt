@@ -1,0 +1,58 @@
+Install Sentry for error tracking on the React Native mobile app. This is a production error monitoring tool.
+
+Steps:
+
+1. Install the Sentry SDK for Expo:
+   npx expo install @sentry/react-native
+
+Note: we use the Expo install command (not npm) because Sentry has an Expo config plugin that needs to register properly.
+
+2. In app.json (or app.config.js if you have one), add the Sentry plugin. Inside the "expo" object, find the "plugins" array (create one if it doesn't exist) and add "@sentry/react-native/expo":
+
+"plugins": [
+  "@sentry/react-native/expo",
+  // ... any other existing plugins
+]
+
+3. Create a new file at services/sentry.ts with this content:
+
+import * as Sentry from "@sentry/react-native";
+
+const DSN = process.env.EXPO_PUBLIC_SENTRY_DSN;
+
+export function initSentry() {
+  if (!DSN) {
+    console.warn("[sentry] EXPO_PUBLIC_SENTRY_DSN not set — Sentry disabled");
+    return;
+  }
+  Sentry.init({
+    dsn: DSN,
+    environment: __DEV__ ? "development" : "production",
+    tracesSampleRate: 0.1,
+    enableAutoSessionTracking: true,
+    // We'll opt into session replay later if we decide we want it
+  });
+  console.log("[sentry] initialized");
+}
+
+export { Sentry };
+
+4. In the app entry file (likely app/_layout.tsx), import and call initSentry() at the very top of the file, BEFORE any component code:
+
+import { initSentry } from "../services/sentry";
+initSentry();
+
+// ... rest of existing file
+
+5. In the .env file at the artifact root, add:
+
+EXPO_PUBLIC_SENTRY_DSN=https://90815a1726a1429b8a3e480d3b4c36d6@o4511266174074880.ingest.us.sentry.io/4511266194718720
+
+6. Restart Expo so the new env var is picked up and the Sentry plugin registers.
+
+Constraints:
+- Do NOT wrap any existing code with ErrorBoundary or Sentry.wrap() — keep the installation minimal for now
+- Do NOT install the additional @sentry/react-native/metro plugin or source map uploading yet — we'll do that separately when we need production-grade stack traces
+- Do NOT modify any other code
+
+Confirm when done. List the files modified. Tell me the QR code URL to reconnect Expo Go.

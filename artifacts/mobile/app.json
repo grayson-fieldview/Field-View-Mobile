@@ -62,7 +62,8 @@
           "savePhotosPermission": "Field View saves captured photos to your library.",
           "isAccessMediaLocationEnabled": true
         }
-      ]
+      ],
+      "@sentry/react-native/expo"
     ],
     "experiments": {
       "typedRoutes": true,
