@@ -1,0 +1,26 @@
+The tab bar is closer but still has several issues that make it look unpolished. Here's what needs to be fixed:
+Issues to fix:
+
+The tab bar has no visible background/container anymore. Right now the icons and labels are just floating directly on the black app background with no pill-shaped container behind them. It looks like the tab bar background got removed entirely. I need a visible rounded-pill-shaped tab bar background with a dark gray fill (something like #1C1C1E or #2A2A2C) behind the four tab icons, with horizontal margin from the screen edges (~16px on each side) and bottom margin from the safe area (~20px). The tab bar pill should be clearly visible as a distinct container.
+The notch cutout needs to be properly integrated into the pill background. Once you restore the pill background (item 1), cut a smooth concave semicircular notch into the top-center of the pill using an SVG path. The notch radius should be slightly larger than the FAB radius so there's a small gap (~4-6px) between the FAB edge and the notch edge, giving it that clean "docked" look. Use react-native-svg with a <Path> component for the pill shape with the notch carved in.
+The FAB is still sitting too low and dipping into the tab content area. In the current screenshot, the camera icon inside the FAB is roughly at the same vertical level as the tab icons (Projects folder, Map, etc.), which makes the FAB look like it's sinking. The FAB's vertical center should be positioned at or slightly above the top edge of the tab bar pill — so roughly 60-70% of the FAB sits ABOVE the tab bar, and only 30-40% dips into the notch. Raise the FAB by approximately 20-25px from its current position.
+There's a weird empty gap in the middle of the tab row. Currently there's visible empty space between Map and Tasks where the FAB sits, but the tabs aren't distributed around the FAB cleanly. Restructure the tab row as follows:
+
+Container: flexDirection: 'row', full width of pill
+Left half: flex: 1, contains Projects and Map tabs with justifyContent: 'space-around'
+Center spacer: fixed width equal to FAB diameter + ~16px padding (this creates the gap the FAB sits in)
+Right half: flex: 1, contains Tasks and Profile tabs with justifyContent: 'space-around'
+
+This ensures Projects/Map are evenly spaced on the left side and Tasks/Profile are evenly spaced on the right side, with the FAB sitting cleanly in the reserved center space.
+The list content is being obscured by the tab bar. The last project card ("test" with camera icon 0) is partially hidden behind the tab bar area. Add bottom padding to the ScrollView/FlatList equal to the tab bar height + FAB overhang + safe area (~120px total) so the last item in the list can scroll fully into view above the floating tab bar.
+Active tab indicator. The currently-selected tab (Projects) should still be blue to indicate active state, but make sure the blue matches the original design — it looks correct in the screenshot, just confirming this should be preserved.
+
+Summary of the visual target:
+
+A dark gray rounded-pill tab bar floating above the bottom of the screen with margins on all sides
+A clean concave notch carved into the top-center of the pill
+Orange circular camera FAB docked in the notch, sitting mostly above the pill
+Two tabs evenly spaced on each side of the FAB
+List content scrolls freely behind/above the floating tab bar without being cut off
+
+Please implement all of these fixes together and show me the full updated tab bar component file. If you removed the SVG background in a previous iteration, add it back.

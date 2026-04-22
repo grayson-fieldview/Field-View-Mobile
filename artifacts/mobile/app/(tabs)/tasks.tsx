@@ -64,7 +64,7 @@ export default function TasksScreen() {
         keyExtractor={(item) => item.id}
         contentContainerStyle={{
           padding: 20,
-          paddingBottom: insets.bottom + 100,
+          paddingBottom: insets.bottom + 140,
           gap: 8,
           flexGrow: 1,
         }}

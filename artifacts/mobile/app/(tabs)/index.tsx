@@ -303,7 +303,7 @@ export default function ProjectsScreen() {
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={{
           padding: 16,
-          paddingBottom: insets.bottom + 100,
+          paddingBottom: insets.bottom + 140,
           gap: 12,
           flexGrow: 1,
         }}

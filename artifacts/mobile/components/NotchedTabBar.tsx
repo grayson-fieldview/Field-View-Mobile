@@ -16,14 +16,29 @@ import { useColors } from "@/hooks/useColors";
 
 const PILL_HEIGHT = 64;
 const PILL_RADIUS = 32;
-const NOTCH_WIDTH = 88;
-const NOTCH_DEPTH = 26;
-const SIDE_MARGIN = 16;
-const BOTTOM_MARGIN_EXTRA = 12;
+
+// FAB geometry. Keep in sync with QuickCaptureFAB FAB_SIZE.
 const FAB_SIZE = 64;
-// How far the FAB sits above the pill's top edge. Roughly 70% of the
-// circle floats above the bar; the remaining ~30% dips into the notch.
-const FAB_RAISE = 44;
+const FAB_RADIUS = FAB_SIZE / 2;
+
+// Notch is a smaller circular arc (rx=ry) so the dip cradles the round FAB.
+// Gap of ~6px between FAB edge and notch edge for a clean "docked" look.
+const NOTCH_RADIUS = FAB_RADIUS + 6; // 38
+const NOTCH_HALF_CHORD = NOTCH_RADIUS - 2; // 36 → chord width ~72px
+// Depth of the notch, computed from circle geometry:
+// d = r - sqrt(r² - chord²/4) ≈ 26 with r=38, chord=72.
+const NOTCH_DEPTH = Math.round(
+  NOTCH_RADIUS - Math.sqrt(NOTCH_RADIUS ** 2 - NOTCH_HALF_CHORD ** 2),
+);
+
+// FAB sits with ~30% of its height inside the notch and ~70% above the pill.
+const FAB_OVERLAP = 20; // px of FAB dipping below pill top
+const SHADOW_TOP_PAD = 6; // breathing room above the FAB for shadow blur
+const FAB_RAISE = SHADOW_TOP_PAD + FAB_SIZE - FAB_OVERLAP; // pill top offset
+const FAB_TOP = FAB_RAISE - FAB_SIZE + FAB_OVERLAP; // = SHADOW_TOP_PAD
+
+const SIDE_MARGIN = 16;
+const BOTTOM_MARGIN_EXTRA = 16;
 
 export function NotchedTabBar({
   state,
@@ -37,10 +52,12 @@ export function NotchedTabBar({
   const pillW = Math.max(280, screenW - SIDE_MARGIN * 2);
   const cx = pillW / 2;
 
+  // Pill outline with a concave notch carved into the top-center.
   const path = [
     `M ${PILL_RADIUS} 0`,
-    `L ${cx - NOTCH_WIDTH / 2} 0`,
-    `A ${NOTCH_WIDTH / 2} ${NOTCH_DEPTH} 0 0 1 ${cx + NOTCH_WIDTH / 2} 0`,
+    `L ${cx - NOTCH_HALF_CHORD} 0`,
+    // Circular arc (rx = ry = NOTCH_RADIUS), sweep=1 dips downward.
+    `A ${NOTCH_RADIUS} ${NOTCH_RADIUS} 0 0 1 ${cx + NOTCH_HALF_CHORD} 0`,
     `L ${pillW - PILL_RADIUS} 0`,
     `A ${PILL_RADIUS} ${PILL_RADIUS} 0 0 1 ${pillW} ${PILL_RADIUS}`,
     `L ${pillW} ${PILL_HEIGHT - PILL_RADIUS}`,
@@ -88,20 +105,22 @@ export function NotchedTabBar({
         style={styles.tabBtn}
       >
         {icon}
-        <Text
-          numberOfLines={1}
-          style={[styles.label, { color }]}
-        >
+        <Text numberOfLines={1} style={[styles.label, { color }]}>
           {label}
         </Text>
       </Pressable>
     );
   };
 
-  const bottomOffset = insets.bottom + BOTTOM_MARGIN_EXTRA;
-  const pillFill = colors.card;
-  // Slight border helps the pill read against very dark backgrounds.
-  const borderColor = colors.border;
+  // Dark gray fill for the pill — distinct from the page background so the
+  // pill reads as a solid container.
+  const pillFill = "#1C1C1E";
+  const borderColor = "rgba(255,255,255,0.06)";
+
+  // Width reserved in the tab row for the FAB / notch area. Matches the
+  // chord width plus a little padding so the notch sits in clean negative
+  // space between Map and Tasks.
+  const CENTER_RESERVED = NOTCH_HALF_CHORD * 2 + 16; // 88
 
   return (
     <View
@@ -111,7 +130,7 @@ export function NotchedTabBar({
         {
           left: SIDE_MARGIN,
           right: SIDE_MARGIN,
-          bottom: bottomOffset,
+          bottom: insets.bottom + BOTTOM_MARGIN_EXTRA,
           height: PILL_HEIGHT + FAB_RAISE,
         },
       ]}
@@ -120,32 +139,35 @@ export function NotchedTabBar({
       <View
         style={[
           styles.pillWrap,
+          { width: pillW, height: PILL_HEIGHT },
           Platform.OS === "android"
             ? { elevation: 12 }
             : {
                 shadowColor: "#000",
-                shadowOpacity: 0.3,
-                shadowRadius: 12,
-                shadowOffset: { width: 0, height: 6 },
+                shadowOpacity: 0.45,
+                shadowRadius: 16,
+                shadowOffset: { width: 0, height: 8 },
               },
         ]}
       >
         <Svg width={pillW} height={PILL_HEIGHT}>
-          <Path d={path} fill={pillFill} stroke={borderColor} strokeWidth={1} />
+          <Path
+            d={path}
+            fill={pillFill}
+            stroke={borderColor}
+            strokeWidth={1}
+          />
         </Svg>
       </View>
 
-      {/* Tab buttons row, positioned over the flat portion of the pill. */}
+      {/* Tab row sits over the flat (non-notch) portion of the pill. */}
       <View
         pointerEvents="box-none"
         style={[
           styles.contentRow,
           {
-            top: FAB_RAISE,
-            height: PILL_HEIGHT,
-            // Push icons + labels into the flat portion of the bar so the
-            // notch dip doesn't pull them downward visually.
-            paddingTop: NOTCH_DEPTH * 0.55,
+            top: FAB_RAISE + NOTCH_DEPTH * 0.5,
+            height: PILL_HEIGHT - NOTCH_DEPTH * 0.5,
           },
         ]}
       >
@@ -153,25 +175,29 @@ export function NotchedTabBar({
           {renderTab(0)}
           {renderTab(1)}
         </View>
-        <View style={{ width: NOTCH_WIDTH }} />
+        <View style={{ width: CENTER_RESERVED }} />
         <View style={styles.half}>
           {renderTab(2)}
           {renderTab(3)}
         </View>
       </View>
 
-      {/* FAB docked in the notch. Top half floats above pill, bottom dips in. */}
+      {/* FAB docked in the notch — ~70% above the pill, ~30% inside. */}
       <QuickCaptureFAB
         buttonStyle={{
           position: "absolute",
           left: "50%",
-          marginLeft: -FAB_SIZE / 2,
-          top: FAB_RAISE - FAB_SIZE / 2,
+          marginLeft: -FAB_RADIUS,
+          top: FAB_TOP,
         }}
       />
     </View>
   );
 }
+
+// Total vertical footprint the floating bar consumes (pill + raise + bottom
+// gap). Screens can use TAB_BAR_OVERLAY to pad their scroll content.
+export const TAB_BAR_OVERLAY = PILL_HEIGHT + FAB_RAISE + BOTTOM_MARGIN_EXTRA;
 
 const styles = StyleSheet.create({
   outer: {
@@ -182,9 +208,7 @@ const styles = StyleSheet.create({
   pillWrap: {
     position: "absolute",
     bottom: 0,
-    left: 0,
-    right: 0,
-    alignItems: "center",
+    alignSelf: "center",
   },
   contentRow: {
     position: "absolute",
