@@ -134,9 +134,11 @@ export default function PhotoViewerScreen() {
   const onDelete = () => {
     const photoId = currentPhoto.id;
     const doIt = async () => {
+      // Navigate back FIRST so we don't briefly render the "Photo not found"
+      // fallback (the URL `id` would dangle after the photo is removed from
+      // state). The actual delete happens after the screen is dismissed.
+      router.back();
       await deletePhoto(photoId);
-      // If this was the last photo in the project, leave the screen.
-      if (projectPhotos.length <= 1) router.back();
     };
     if (Platform.OS === "web") return doIt();
     Alert.alert("Delete photo?", undefined, [
