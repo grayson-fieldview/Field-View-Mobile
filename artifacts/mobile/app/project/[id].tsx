@@ -1534,7 +1534,7 @@ const styles = StyleSheet.create({
     paddingTop: 12,
     marginTop: 4,
   },
-  statCol: { flex: 1, alignItems: "flex-start" },
+  statCol: { flex: 1, alignItems: "center" },
   statNum: {
     fontSize: 22,
     fontFamily: "Inter_700Bold",
