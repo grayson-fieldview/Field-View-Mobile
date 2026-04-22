@@ -14,6 +14,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EmptyState } from "@/components/EmptyState";
 import { LoadingScreen } from "@/components/LoadingScreen";
+import { QuickCaptureFAB } from "@/components/QuickCaptureFAB";
 import { useData } from "@/contexts/DataContext";
 import { useColors } from "@/hooks/useColors";
 
@@ -138,6 +139,8 @@ export default function TasksScreen() {
           </View>
         }
       />
+
+      <QuickCaptureFAB />
     </View>
   );
 }

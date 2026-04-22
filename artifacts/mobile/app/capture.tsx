@@ -1,7 +1,10 @@
 import { Feather } from "@expo/vector-icons";
+import { BlurView } from "expo-blur";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Haptics from "expo-haptics";
+import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
+import * as MediaLibrary from "expo-media-library";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useRef, useState } from "react";
 import {
@@ -21,6 +24,13 @@ import type { Photo } from "@/services/types";
 
 const HOLD_TO_BURST_MS = 350;
 
+type ZoomPreset = { label: string; value: number };
+const ZOOM_PRESETS: ZoomPreset[] = [
+  { label: ".5x", value: 0 },
+  { label: "1x", value: 0.05 },
+  { label: "4x", value: 0.45 },
+];
+
 export default function CaptureScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
@@ -36,12 +46,18 @@ export default function CaptureScreen() {
   >(null);
   const [facing, setFacing] = useState<"back" | "front">("back");
   const [flash, setFlash] = useState<"off" | "on" | "auto">("off");
+  const [mode, setMode] = useState<"photo" | "video">("photo");
+  const [zoomIdx, setZoomIdx] = useState(1); // default 1x
   const [bursting, setBursting] = useState(false);
+  const [recording, setRecording] = useState(false);
   const [captureCount, setCaptureCount] = useState(0);
   const [sessionCount, setSessionCount] = useState(0);
+  const [savedVideos, setSavedVideos] = useState(0);
   const [saving, setSaving] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
   const cameraRef = useRef<CameraView | null>(null);
   const burstActive = useRef(false);
@@ -96,6 +112,13 @@ export default function CaptureScreen() {
     })();
   }, []);
 
+  // Auto-clear status banners after a moment.
+  useEffect(() => {
+    if (!statusMsg) return;
+    const t = setTimeout(() => setStatusMsg(null), 2400);
+    return () => clearTimeout(t);
+  }, [statusMsg]);
+
   if (!project) {
     return (
       <View style={[styles.wrap, { backgroundColor: "#000" }]}>
@@ -149,14 +172,13 @@ export default function CaptureScreen() {
         exif: false,
       });
       if (!photo?.uri) return null;
-      const entry = {
+      return {
         uri: photo.uri,
         takenAt: new Date().toISOString(),
         latitude: locationCoord?.latitude,
         longitude: locationCoord?.longitude,
         accuracy: locationCoord?.accuracy,
       };
-      return entry;
     } catch (e) {
       setErrorMsg(
         e instanceof Error ? e.message : "Couldn't capture photo. Try again.",
@@ -165,7 +187,7 @@ export default function CaptureScreen() {
     }
   };
 
-  // Tap behavior: single capture + save immediately.
+  // Tap behavior in photo mode: single capture + save immediately.
   const singleShot = async () => {
     if (!cameraReady || saving) return;
     setSaving(true);
@@ -185,7 +207,7 @@ export default function CaptureScreen() {
     }
   };
 
-  // Hold behavior: burst until release.
+  // Hold behavior in photo mode: burst until release.
   const startBurst = async () => {
     if (!cameraReady || saving) return;
     burstActive.current = true;
@@ -231,9 +253,102 @@ export default function CaptureScreen() {
     }
   };
 
-  // Differentiate tap vs. hold using a hold timer.
+  // Video mode: tap to start, tap again to stop.
+  const toggleRecording = async () => {
+    if (!cameraRef.current || !cameraReady) return;
+    if (recording) {
+      try {
+        cameraRef.current.stopRecording();
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+
+    setRecording(true);
+    setErrorMsg(null);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+
+    try {
+      const result = await cameraRef.current.recordAsync({ maxDuration: 300 });
+      setRecording(false);
+      if (result?.uri) {
+        // Save to camera roll if available; backend video sync is not wired up yet.
+        try {
+          const perm = await MediaLibrary.requestPermissionsAsync();
+          if (perm.granted) {
+            await MediaLibrary.saveToLibraryAsync(result.uri);
+            setStatusMsg("Video saved to camera roll");
+          } else {
+            setStatusMsg("Video saved locally");
+          }
+        } catch {
+          setStatusMsg("Video saved locally");
+        }
+        setSavedVideos((n) => n + 1);
+        Haptics.notificationAsync(
+          Haptics.NotificationFeedbackType.Success,
+        ).catch(() => {});
+      }
+    } catch (e) {
+      setRecording(false);
+      setErrorMsg(
+        e instanceof Error ? e.message : "Couldn't record video. Try again.",
+      );
+    }
+  };
+
+  // Gallery import: pick photos from device and attach to this project.
+  const pickFromGallery = async () => {
+    if (importing) return;
+    setImporting(true);
+    setErrorMsg(null);
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        setErrorMsg("Photo library access denied.");
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsMultipleSelection: true,
+        selectionLimit: 20,
+        quality: 0.7,
+        exif: false,
+      });
+      if (res.canceled || res.assets.length === 0) return;
+      const now = new Date().toISOString();
+      await addPhotosBatch(
+        res.assets.map((a) => ({
+          projectId: project.id,
+          uri: a.uri,
+          takenAt: now,
+          latitude: locationCoord?.latitude,
+          longitude: locationCoord?.longitude,
+          accuracy: locationCoord?.accuracy,
+        })),
+      );
+      setSessionCount((s) => s + res.assets.length);
+      setStatusMsg(
+        `Added ${res.assets.length} photo${res.assets.length === 1 ? "" : "s"} from library`,
+      );
+      Haptics.notificationAsync(
+        Haptics.NotificationFeedbackType.Success,
+      ).catch(() => {});
+    } catch (e) {
+      setErrorMsg(
+        e instanceof Error ? e.message : "Couldn't import from gallery.",
+      );
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  // Differentiate tap vs. hold for the shutter.
   const onShutterPressIn = () => {
-    if (!cameraReady || saving) return;
+    if (!cameraReady) return;
+    if (mode === "video") return; // video uses tap-to-start, tap-to-stop
+    if (saving) return;
     tappedRef.current = true;
     holdTimer.current = setTimeout(() => {
       tappedRef.current = false;
@@ -242,6 +357,10 @@ export default function CaptureScreen() {
   };
 
   const onShutterPressOut = () => {
+    if (mode === "video") {
+      toggleRecording();
+      return;
+    }
     if (holdTimer.current) {
       clearTimeout(holdTimer.current);
       holdTimer.current = null;
@@ -254,10 +373,14 @@ export default function CaptureScreen() {
     }
   };
 
-  const toggleFacing = () =>
+  const toggleFacing = () => {
+    if (recording) return;
     setFacing((f) => (f === "back" ? "front" : "back"));
+  };
   const toggleFlash = () =>
     setFlash((f) => (f === "off" ? "on" : f === "on" ? "auto" : "off"));
+
+  const zoomValue = ZOOM_PRESETS[zoomIdx]?.value ?? 0.05;
 
   return (
     <View style={styles.wrap}>
@@ -266,23 +389,27 @@ export default function CaptureScreen() {
         style={StyleSheet.absoluteFill}
         facing={facing}
         flash={flash}
+        zoom={zoomValue}
+        mode={mode}
         onCameraReady={() => setCameraReady(true)}
       />
 
+      {/* TOP BAR: close + project + flash/flip */}
       <View style={[styles.topBar, { paddingTop: insets.top + 10 }]}>
         <Pressable
           onPress={() => router.back()}
           hitSlop={12}
-          style={styles.circleBtn}
+          style={styles.glassBtn}
+          accessibilityLabel="Close camera"
         >
-          <Feather name="x" size={22} color="#fff" />
+          <Feather name="x" size={20} color="#fff" />
         </Pressable>
 
         <View style={styles.projectBadge}>
           <Text style={styles.projectName} numberOfLines={1}>
             {project.name}
           </Text>
-          <Text style={styles.projectMeta}>
+          <Text style={styles.projectMeta} numberOfLines={1}>
             {locationCoord
               ? `GPS · ${locationCoord.latitude?.toFixed(4)}, ${locationCoord.longitude?.toFixed(4)}`
               : locationGranted === false
@@ -291,29 +418,62 @@ export default function CaptureScreen() {
           </Text>
         </View>
 
-        <Pressable
-          onPress={toggleFlash}
-          hitSlop={12}
-          style={styles.circleBtn}
-        >
-          <Feather
-            name={flash === "off" ? "zap-off" : "zap"}
-            size={20}
-            color={flash === "on" ? colors.primary : "#fff"}
-          />
-        </Pressable>
+        <View style={styles.topRightCluster}>
+          <Pressable
+            onPress={toggleFlash}
+            hitSlop={10}
+            style={styles.glassBtn}
+            accessibilityLabel={`Flash: ${flash}`}
+          >
+            <Feather
+              name={flash === "off" ? "zap-off" : "zap"}
+              size={18}
+              color={flash === "on" ? colors.primary : "#fff"}
+            />
+          </Pressable>
+          <Pressable
+            onPress={toggleFacing}
+            hitSlop={10}
+            style={[
+              styles.glassBtn,
+              { opacity: recording ? 0.4 : 1 },
+            ]}
+            accessibilityLabel="Flip camera"
+            disabled={recording}
+          >
+            <Feather name="refresh-ccw" size={18} color="#fff" />
+          </Pressable>
+        </View>
       </View>
 
+      {/* Top status pills */}
       {bursting ? (
         <View style={styles.burstIndicator}>
           <View style={styles.recDot} />
           <Text style={styles.burstText}>BURST · {captureCount}</Text>
         </View>
-      ) : sessionCount > 0 ? (
+      ) : recording ? (
+        <View style={[styles.burstIndicator, { backgroundColor: "rgba(220,38,38,0.85)" }]}>
+          <View style={styles.recDot} />
+          <Text style={styles.burstText}>REC</Text>
+        </View>
+      ) : statusMsg ? (
+        <View style={styles.sessionPill}>
+          <Feather name="check" size={14} color="#111" />
+          <Text style={styles.sessionPillText}>{statusMsg}</Text>
+        </View>
+      ) : sessionCount > 0 || savedVideos > 0 ? (
         <View style={styles.sessionPill}>
           <Feather name="check" size={14} color="#111" />
           <Text style={styles.sessionPillText}>
-            {sessionCount} photo{sessionCount === 1 ? "" : "s"} saved
+            {sessionCount > 0
+              ? `${sessionCount} photo${sessionCount === 1 ? "" : "s"}`
+              : ""}
+            {sessionCount > 0 && savedVideos > 0 ? " · " : ""}
+            {savedVideos > 0
+              ? `${savedVideos} video${savedVideos === 1 ? "" : "s"}`
+              : ""}
+            {" saved"}
           </Text>
         </View>
       ) : !cameraReady ? (
@@ -337,57 +497,189 @@ export default function CaptureScreen() {
         </View>
       ) : null}
 
-      <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 20 }]}>
-        <Pressable
-          onPress={toggleFacing}
-          hitSlop={12}
-          style={styles.sideBtn}
-        >
-          <Feather name="refresh-ccw" size={22} color="#fff" />
-        </Pressable>
+      {/* CONTROL STACK: zoom presets, mode tabs, shutter row */}
+      <View
+        style={[
+          styles.controlStack,
+          { paddingBottom: insets.bottom + 18 },
+        ]}
+      >
+        {/* Zoom presets */}
+        <View style={styles.zoomRow}>
+          <BlurView
+            intensity={Platform.OS === "ios" ? 40 : 0}
+            tint="dark"
+            style={styles.zoomGroup}
+          >
+            <View style={styles.zoomGroupInner}>
+              {ZOOM_PRESETS.map((z, i) => {
+                const active = i === zoomIdx;
+                return (
+                  <Pressable
+                    key={z.label}
+                    onPress={() => {
+                      Haptics.selectionAsync().catch(() => {});
+                      setZoomIdx(i);
+                    }}
+                    accessibilityLabel={`Zoom ${z.label}`}
+                    accessibilityState={{ selected: active }}
+                    style={[
+                      styles.zoomBtn,
+                      active && {
+                        backgroundColor: colors.primary,
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.zoomLabel,
+                        {
+                          color: active
+                            ? colors.primaryForeground
+                            : "#fff",
+                          fontFamily: active
+                            ? "Inter_700Bold"
+                            : "Inter_600SemiBold",
+                        },
+                      ]}
+                    >
+                      {z.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </BlurView>
+        </View>
 
-        <Pressable
-          onPressIn={onShutterPressIn}
-          onPressOut={onShutterPressOut}
-          disabled={!cameraReady || saving}
-          style={({ pressed }) => [
-            styles.shutter,
-            {
-              opacity: !cameraReady || saving ? 0.5 : 1,
-              transform: [{ scale: pressed || bursting ? 0.94 : 1 }],
-            },
-          ]}
-        >
-          <View
-            style={[
-              styles.shutterInner,
+        {/* Bottom main row: gallery, shutter, done */}
+        <View style={styles.bottomBar}>
+          <Pressable
+            onPress={pickFromGallery}
+            disabled={importing || recording}
+            accessibilityLabel="Import from gallery"
+            style={({ pressed }) => [
+              styles.sideBtn,
               {
-                backgroundColor: bursting ? colors.destructive : "#fff",
-                borderRadius: bursting ? 16 : 34,
-                width: bursting ? 36 : 64,
-                height: bursting ? 36 : 64,
+                opacity: importing || recording ? 0.4 : pressed ? 0.7 : 1,
               },
             ]}
-          />
-        </Pressable>
+          >
+            {importing ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Feather name="image" size={22} color="#fff" />
+            )}
+          </Pressable>
 
-        <View style={styles.sideBtn}>
-          {saving ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Pressable onPress={() => router.back()} hitSlop={12}>
-              <Feather name="check-circle" size={22} color="#fff" />
-            </Pressable>
-          )}
+          <Pressable
+            onPressIn={onShutterPressIn}
+            onPressOut={onShutterPressOut}
+            disabled={!cameraReady || (saving && mode === "photo")}
+            accessibilityLabel={
+              mode === "video"
+                ? recording
+                  ? "Stop recording"
+                  : "Start recording"
+                : "Take photo. Hold for burst."
+            }
+            style={({ pressed }) => [
+              styles.shutter,
+              {
+                borderColor: mode === "video" ? "#fff" : "#fff",
+                opacity:
+                  !cameraReady || (saving && mode === "photo") ? 0.5 : 1,
+                transform: [{ scale: pressed || bursting ? 0.94 : 1 }],
+              },
+            ]}
+          >
+            <View
+              style={[
+                styles.shutterInner,
+                mode === "video"
+                  ? recording
+                    ? styles.shutterInnerRecStop
+                    : styles.shutterInnerRec
+                  : bursting
+                    ? styles.shutterInnerBurst
+                    : styles.shutterInnerPhoto,
+              ]}
+            />
+          </Pressable>
+
+          <Pressable
+            onPress={() => router.back()}
+            disabled={saving || recording}
+            accessibilityLabel="Done"
+            style={({ pressed }) => [
+              styles.doneBtn,
+              {
+                backgroundColor: "rgba(255,255,255,0.16)",
+                opacity: saving || recording ? 0.4 : pressed ? 0.8 : 1,
+              },
+            ]}
+          >
+            {saving ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.doneText}>Done</Text>
+            )}
+          </Pressable>
         </View>
-      </View>
 
-      <View style={[styles.hintWrap, { bottom: insets.bottom + 120 }]}>
+        {/* Mode tabs (PHOTO / VIDEO) */}
+        <View style={styles.modeRow}>
+          {(["photo", "video"] as const).map((m) => {
+            const active = mode === m;
+            return (
+              <Pressable
+                key={m}
+                onPress={() => {
+                  if (recording) return;
+                  Haptics.selectionAsync().catch(() => {});
+                  setMode(m);
+                }}
+                disabled={recording}
+                accessibilityLabel={`${m} mode`}
+                accessibilityState={{ selected: active }}
+                style={styles.modeBtn}
+              >
+                <Text
+                  style={[
+                    styles.modeLabel,
+                    {
+                      color: active ? "#fff" : "rgba(255,255,255,0.55)",
+                      fontFamily: active
+                        ? "Inter_700Bold"
+                        : "Inter_600SemiBold",
+                    },
+                  ]}
+                >
+                  {m.toUpperCase()}
+                </Text>
+                {active ? (
+                  <View
+                    style={[
+                      styles.modeDot,
+                      { backgroundColor: colors.primary },
+                    ]}
+                  />
+                ) : (
+                  <View style={styles.modeDotPlaceholder} />
+                )}
+              </Pressable>
+            );
+          })}
+        </View>
+
+        {/* Hint */}
         <Text style={styles.hint}>
-          {bursting
-            ? "Hold to keep capturing…"
-            : !cameraReady
-              ? "Starting camera…"
+          {mode === "video"
+            ? recording
+              ? "Tap to stop"
+              : "Tap to record"
+            : bursting
+              ? "Hold to keep capturing…"
               : "Tap for one photo · Hold for burst"}
         </Text>
       </View>
@@ -402,20 +694,24 @@ const styles = StyleSheet.create({
     top: 0,
     left: 0,
     right: 0,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     paddingBottom: 12,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 12,
+    gap: 10,
   },
-  circleBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  glassBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     backgroundColor: "rgba(0,0,0,0.5)",
     alignItems: "center",
     justifyContent: "center",
+  },
+  topRightCluster: {
+    flexDirection: "row",
+    gap: 8,
   },
   projectBadge: {
     flex: 1,
@@ -439,14 +735,14 @@ const styles = StyleSheet.create({
   },
   burstIndicator: {
     position: "absolute",
-    top: "40%",
+    top: 110,
     alignSelf: "center",
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
     backgroundColor: "rgba(0,0,0,0.65)",
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: 100,
   },
   recDot: {
@@ -458,7 +754,7 @@ const styles = StyleSheet.create({
   burstText: {
     color: "#fff",
     fontFamily: "Inter_700Bold",
-    fontSize: 14,
+    fontSize: 13,
     letterSpacing: 1.2,
   },
   sessionPill: {
@@ -478,44 +774,131 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_600SemiBold",
     fontSize: 12,
   },
-  bottomBar: {
+  controlStack: {
     position: "absolute",
     bottom: 0,
     left: 0,
     right: 0,
-    paddingHorizontal: 40,
+    paddingHorizontal: 28,
+    gap: 10,
+  },
+  zoomRow: {
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  zoomGroup: {
+    borderRadius: 100,
+    overflow: "hidden",
+  },
+  zoomGroupInner: {
+    flexDirection: "row",
+    backgroundColor: "rgba(0,0,0,0.45)",
+    padding: 4,
+    borderRadius: 100,
+  },
+  zoomBtn: {
+    minWidth: 44,
+    height: 32,
+    paddingHorizontal: 10,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  zoomLabel: {
+    fontSize: 12,
+  },
+  bottomBar: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    marginTop: 4,
   },
   sideBtn: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
+    width: 56,
+    height: 56,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(0,0,0,0.4)",
+    backgroundColor: "rgba(0,0,0,0.45)",
   },
   shutter: {
     width: 84,
     height: 84,
     borderRadius: 42,
     borderWidth: 4,
-    borderColor: "#fff",
     alignItems: "center",
     justifyContent: "center",
   },
-  shutterInner: { backgroundColor: "#fff" },
-  hintWrap: { position: "absolute", left: 0, right: 0, alignItems: "center" },
+  shutterInner: {},
+  shutterInnerPhoto: {
+    backgroundColor: "#fff",
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+  },
+  shutterInnerBurst: {
+    backgroundColor: "#ef4444",
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+  },
+  shutterInnerRec: {
+    backgroundColor: "#ef4444",
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+  },
+  shutterInnerRecStop: {
+    backgroundColor: "#ef4444",
+    width: 30,
+    height: 30,
+    borderRadius: 6,
+  },
+  doneBtn: {
+    minWidth: 76,
+    height: 56,
+    borderRadius: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 18,
+  },
+  doneText: {
+    color: "#fff",
+    fontFamily: "Inter_700Bold",
+    fontSize: 15,
+  },
+  modeRow: {
+    flexDirection: "row",
+    alignSelf: "center",
+    gap: 24,
+    marginTop: 6,
+  },
+  modeBtn: {
+    alignItems: "center",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  modeLabel: {
+    fontSize: 12,
+    letterSpacing: 1.4,
+  },
+  modeDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    marginTop: 4,
+  },
+  modeDotPlaceholder: {
+    width: 5,
+    height: 5,
+    marginTop: 4,
+  },
   hint: {
-    color: "rgba(255,255,255,0.85)",
+    color: "rgba(255,255,255,0.7)",
     fontFamily: "Inter_500Medium",
-    fontSize: 13,
-    backgroundColor: "rgba(0,0,0,0.35)",
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 100,
-    overflow: "hidden",
+    fontSize: 11,
+    textAlign: "center",
+    marginTop: 4,
   },
   permTitle: {
     color: "#fff",
