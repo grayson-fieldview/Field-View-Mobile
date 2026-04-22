@@ -148,12 +148,14 @@ export function QuickCaptureFAB({
             position: "absolute",
             left: "50%",
             marginLeft: -FAB_SIZE / 2,
+            // FAB floats with ~80% of its height above the tab bar and
+            // only ~20% (≈13px) overlapping into it.
             bottom:
               Platform.OS === "web"
-                ? 84 - FAB_H / 2 + 6
+                ? 84 - FAB_OVERLAP_DEFAULT
                 : Platform.OS === "ios"
-                  ? insets.bottom + 49 - FAB_H / 2 + 4
-                  : insets.bottom + 56 - FAB_H / 2 + 4,
+                  ? insets.bottom + 49 - FAB_OVERLAP_DEFAULT
+                  : insets.bottom + 56 - FAB_OVERLAP_DEFAULT,
           },
           {
             backgroundColor: colors.primary,
@@ -403,6 +405,9 @@ export function QuickCaptureFAB({
 const FAB_SIZE = 64;
 const FAB_W = FAB_SIZE;
 const FAB_H = FAB_SIZE;
+// Default overlap for the standalone (non-embedded) position: 20% of the
+// FAB dips into the tab bar, the remaining 80% floats above it.
+const FAB_OVERLAP_DEFAULT = Math.round(FAB_SIZE * 0.2);
 
 const styles = StyleSheet.create({
   fab: {
