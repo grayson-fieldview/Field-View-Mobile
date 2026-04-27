@@ -1,0 +1,72 @@
+User reports that photos taken on the mobile app are not appearing on the web app for the same project. Need to diagnose where the upload pipeline is breaking. The expected flow is:
+
+User taps the camera/capture button on mobile
+Photo is captured (or selected from library)
+Photo is uploaded to AWS S3 (via the backend's signed-URL endpoint or direct API)
+A photo record is created in the database, associated with the project and account
+The photo URL (CloudFront-fronted) is stored in the database
+When the web app loads the project, the photo appears in the project's media[]
+
+Do not fix anything yet — diagnose first. I want to understand where in the pipeline things break before deciding on a fix.
+Investigation steps:
+
+Find the mobile capture/upload flow:
+
+Locate the screen that handles photo capture (likely artifacts/mobile/app/capture.tsx based on a TS error reference earlier)
+Locate the screen or function that handles photo upload (could be the same screen, could be a service)
+Trace the full code path: capture → local storage → upload trigger → API call → response handling
+Show me each step with file paths and line numbers
+
+
+Find the API call(s) that mobile makes to upload photos:
+
+In artifacts/mobile/services/api.ts, find any methods related to photo upload (e.g., uploadPhoto, createMedia, getUploadUrl, presignedUrl, etc.)
+What endpoints do they hit? What HTTP methods? What request body shape?
+Compare to what the web app does for the same operation. Is the web app at app.field-view.com using the same endpoint, or different ones?
+
+
+Check the backend route handlers (in the web/server code, not mobile):
+
+Find the upload endpoints the mobile app is hitting
+Confirm they exist, are exported in the routes file, and require the same auth as the mobile app provides
+Check whether they expect accountId and projectId in the request, and whether mobile sends those
+Check whether the upload writes to S3 directly or goes through a presigned URL flow
+
+
+Check the mobile photo state and persistence:
+
+When a photo is taken on mobile, is it stored locally first, then uploaded later (queued)? Or uploaded immediately?
+In artifacts/mobile/services/storage.ts, check the photos AsyncStorage key — are mobile-captured photos sitting there with uploaded: false or remote: false and never getting flushed to the server?
+Is there a background sync mechanism? If yes, where, and is it running?
+
+
+Check for offline queue handling:
+
+The product spec includes "burst-fire mobile capture (50+ photos queuing locally before upload)" — was this ever fully implemented?
+If queueing exists, where is the queue flushed to the server?
+Are there any queued/orphaned photos sitting in local state that haven't been uploaded?
+
+
+Check error handling:
+
+When a mobile upload fails, what happens? Silent failure? Error toast? Retry?
+Are there any .catch(() => {}) or similar patterns that swallow upload errors?
+
+
+Check the data shape:
+
+When mobile uploads a photo, does it send accountId and projectId correctly?
+The web's per-account billing migration last week added an accountId column on photos — does mobile know about that? Is it sending it?
+This is a likely culprit if mobile was built before the per-account migration.
+
+
+
+Output:
+
+Full data flow diagram of mobile photo upload (what file calls what, what API hits what, what backend route writes where)
+Where the pipeline appears to break (most likely → least likely)
+Evidence for each hypothesis (file paths, line numbers, code snippets)
+What additional info you'd need to confirm — typically observing the network call from mobile and the backend log when an upload happens
+Whether photos are even attempting to upload, or whether they're getting stuck client-side
+
+Do not modify code. Diagnosis only.
