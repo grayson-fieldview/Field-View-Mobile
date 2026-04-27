@@ -259,31 +259,8 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         // Always replace remote photos for this project (even with empty list,
         // so stale deletions on the web propagate); keep local-only rows.
         console.log("[photos] received from backend:", detail.media?.length ?? 0);
-        console.log("[photos-debug] route id:", id, typeof id);
-        console.log("[photos-debug] mappedProject.id / idStr:", mappedProject.id, idStr);
-        console.log(
-          "[photos-debug] raw first media item:",
-          JSON.stringify(detail.media?.[0]),
-        );
         const mappedMedia = (detail.media ?? []).map(mapBackendMedia);
         console.log("[photos] after mapping:", mappedMedia.length);
-        console.log(
-          "[photos-debug] first photo:",
-          JSON.stringify(mappedMedia[0]),
-        );
-        console.log(
-          "[photos-debug] first photo projectId:",
-          mappedMedia[0]?.projectId,
-          typeof mappedMedia[0]?.projectId,
-        );
-        console.log(
-          "[photos-debug] match check (=== route id):",
-          mappedMedia[0]?.projectId === id,
-        );
-        console.log(
-          "[photos-debug] match check (=== idStr):",
-          mappedMedia[0]?.projectId === idStr,
-        );
         const keptLocalPhotos = photosRef.current.filter(
           (p) => !(p.remote && p.projectId === idStr),
         );
