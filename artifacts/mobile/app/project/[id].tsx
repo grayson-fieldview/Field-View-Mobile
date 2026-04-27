@@ -132,6 +132,36 @@ export default function ProjectDetailScreen() {
     return list.sort((a, b) => b.sortKey - a.sortKey);
   }, [projectPhotos]);
 
+  // TEMP DIAGNOSTIC — remove after photo-grid bug is fixed.
+  useEffect(() => {
+    console.log(
+      "[render-debug] route id:",
+      JSON.stringify(id),
+      "typeof:",
+      typeof id,
+      "isArray:",
+      Array.isArray(id),
+    );
+    console.log("[render-debug] photos from context length:", photos.length);
+    console.log(
+      "[render-debug] first 3 projectIds in photos:",
+      photos.slice(0, 3).map(
+        (p) => `${JSON.stringify(p.projectId)}(${typeof p.projectId})`,
+      ),
+    );
+    console.log("[render-debug] projectPhotos.length:", projectPhotos.length);
+    console.log("[render-debug] photoGroups.length:", photoGroups.length);
+    console.log(
+      "[render-debug] first projectPhoto:",
+      JSON.stringify(projectPhotos[0]),
+    );
+    console.log(
+      "[render-debug] grid gate (projectPhotos.length === 0):",
+      projectPhotos.length === 0,
+    );
+    console.log("[render-debug] active tab:", tab);
+  }, [id, photos, projectPhotos, photoGroups, tab]);
+
   const exitSelectMode = () => {
     setSelected(new Set());
   };
