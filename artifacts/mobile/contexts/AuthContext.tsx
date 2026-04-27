@@ -28,12 +28,6 @@ interface AuthState {
   user: AuthUser | null;
   ready: boolean;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (
-    firstName: string,
-    lastName: string,
-    email: string,
-    password: string,
-  ) => Promise<void>;
   signOut: () => Promise<void>;
   requestPasswordReset: (email: string) => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -96,41 +90,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(toAuthUser(me));
   }, []);
 
-  const signUp = useCallback(
-    async (
-      firstName: string,
-      lastName: string,
-      email: string,
-      password: string,
-    ) => {
-      if (!firstName.trim()) throw new Error("Please enter your first name.");
-      if (!lastName.trim()) throw new Error("Please enter your last name.");
-      if (!/^\S+@\S+\.\S+$/.test(email.trim()))
-        throw new Error("Enter a valid email address.");
-      if (password.length < 8)
-        throw new Error("Password must be at least 8 characters.");
-
-      const regRes = await api.register({
-        firstName: firstName.trim(),
-        lastName: lastName.trim(),
-        email: email.trim(),
-        password,
-      });
-      let me = normalizeUser(regRes);
-      // Some backends require a follow-up login after register.
-      if (!me) {
-        await api.login(email.trim(), password).catch(() => null);
-        me = normalizeUser(await api.me().catch(() => null));
-      }
-      if (!me)
-        throw new Error(
-          "Account created but sign-in failed — please try signing in.",
-        );
-      setUser(toAuthUser(me));
-    },
-    [],
-  );
-
   const signOut = useCallback(async () => {
     await api.logout().catch(() => null);
     await clearSession();
@@ -151,12 +110,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       user,
       ready,
       signIn,
-      signUp,
       signOut,
       requestPasswordReset,
       refreshUser,
     }),
-    [user, ready, signIn, signUp, signOut, requestPasswordReset, refreshUser],
+    [user, ready, signIn, signOut, requestPasswordReset, refreshUser],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

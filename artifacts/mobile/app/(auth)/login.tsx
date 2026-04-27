@@ -3,7 +3,6 @@ import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import {
-  Alert,
   Pressable,
   StyleSheet,
   Text,
@@ -68,16 +67,6 @@ export default function LoginScreen() {
         <Text style={[styles.subtitle, { color: colors.mutedForeground }]}>
           Sign in to your account to continue
         </Text>
-
-        <GoogleButton
-          onPress={() =>
-            Alert.alert(
-              "Google sign-in",
-              "Available soon — please use your email and password.",
-            )
-          }
-        />
-        <OrDivider />
 
         <FieldLabel>Email</FieldLabel>
         <View
@@ -165,22 +154,6 @@ export default function LoginScreen() {
           size="lg"
           style={{ marginTop: 16 }}
         />
-
-        <View style={styles.footer}>
-          <Text
-            style={{
-              color: colors.mutedForeground,
-              fontFamily: "Inter_400Regular",
-            }}
-          >
-            Don't have an account?{" "}
-          </Text>
-          <Pressable onPress={() => router.push("/(auth)/signup")} hitSlop={8}>
-            <Text style={[styles.linkInline, { color: colors.primary }]}>
-              Start your free trial
-            </Text>
-          </Pressable>
-        </View>
       </View>
     </KeyboardAwareScrollViewCompat>
   );
@@ -198,78 +171,6 @@ function BrandHeader() {
       <Text style={[styles.brandWord, { color: colors.foreground }]}>
         Field View
       </Text>
-    </View>
-  );
-}
-
-function GoogleButton({ onPress }: { onPress: () => void }) {
-  const colors = useColors();
-  return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.googleBtn,
-        {
-          backgroundColor: colors.card,
-          borderColor: colors.border,
-          opacity: pressed ? 0.9 : 1,
-        },
-      ]}
-      accessibilityRole="button"
-      accessibilityLabel="Continue with Google"
-    >
-      <GoogleG />
-      <Text style={[styles.googleText, { color: colors.foreground }]}>
-        Continue with Google
-      </Text>
-    </Pressable>
-  );
-}
-
-function GoogleG() {
-  // Simple monochrome G to avoid pulling in another asset.
-  return (
-    <View
-      style={{
-        width: 18,
-        height: 18,
-        borderRadius: 9,
-        borderWidth: 2,
-        borderColor: "#5f6368",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
-      <Text
-        style={{
-          color: "#5f6368",
-          fontFamily: "Inter_700Bold",
-          fontSize: 11,
-          marginTop: -1,
-        }}
-      >
-        G
-      </Text>
-    </View>
-  );
-}
-
-function OrDivider() {
-  const colors = useColors();
-  return (
-    <View style={styles.divider}>
-      <View style={[styles.divLine, { backgroundColor: colors.border }]} />
-      <Text
-        style={{
-          color: colors.mutedForeground,
-          fontFamily: "Inter_500Medium",
-          fontSize: 12,
-          letterSpacing: 1,
-        }}
-      >
-        OR
-      </Text>
-      <View style={[styles.divLine, { backgroundColor: colors.border }]} />
     </View>
   );
 }
@@ -331,24 +232,6 @@ const styles = StyleSheet.create({
     marginTop: 6,
     marginBottom: 18,
   },
-  googleBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-    paddingVertical: 13,
-    paddingHorizontal: 16,
-    borderWidth: 1,
-    borderRadius: 12,
-  },
-  googleText: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
-  divider: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    marginVertical: 16,
-  },
-  divLine: { flex: 1, height: StyleSheet.hairlineWidth },
   label: {
     fontSize: 14,
     fontFamily: "Inter_600SemiBold",
@@ -365,11 +248,4 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_600SemiBold",
     fontSize: 13,
   },
-  footer: {
-    flexDirection: "row",
-    justifyContent: "center",
-    flexWrap: "wrap",
-    marginTop: 16,
-  },
-  linkInline: { fontFamily: "Inter_600SemiBold" },
 });

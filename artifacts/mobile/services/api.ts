@@ -9,7 +9,7 @@ import { secureStorage } from "./secureStorage";
  * deployment by flipping one env var.
  *
  * Auth: session cookies (express-session on the backend). On native
- * platforms we parse Set-Cookie from login/register responses, persist
+ * platforms we parse Set-Cookie from login responses, persist
  * the cookie jar in expo-secure-store (Keychain), and attach it as the
  * Cookie header on every subsequent request. On web we rely on
  * credentials: "include" and the browser's native cookie jar.
@@ -294,17 +294,6 @@ export const api = {
     apiFetch<BackendUser | { user: BackendUser } | null>("/api/login", {
       method: "POST",
       json: { email, password },
-    }),
-
-  register: (data: {
-    email: string;
-    password: string;
-    firstName: string;
-    lastName: string;
-  }) =>
-    apiFetch<BackendUser | { user: BackendUser } | null>("/api/register", {
-      method: "POST",
-      json: data,
     }),
 
   logout: () =>

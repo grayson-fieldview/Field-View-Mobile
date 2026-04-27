@@ -16,7 +16,6 @@ const KEYS = {
   tasks: "@fv/tasks",
   checklists: "@fv/checklists",
   shares: "@fv/shares",
-  users: "@fv/registered_users",
 } as const;
 
 async function readJson<T>(key: string, fallback: T): Promise<T> {
@@ -42,12 +41,6 @@ export const storage = {
   getToken: () => AsyncStorage.getItem(KEYS.authToken),
   setToken: (t: string | null) =>
     t ? AsyncStorage.setItem(KEYS.authToken, t) : AsyncStorage.removeItem(KEYS.authToken),
-
-  // Local registered users (so signup/login works offline)
-  getRegisteredUsers: () =>
-    readJson<Array<User & { password: string }>>(KEYS.users, []),
-  setRegisteredUsers: (users: Array<User & { password: string }>) =>
-    writeJson(KEYS.users, users),
 
   // Data
   getProjects: () => readJson<Project[]>(KEYS.projects, []),
