@@ -1,0 +1,57 @@
+A bug was observed in the mobile app: the "John Smith" project shows "75 photos" in the project list/card view, but when opening the project detail screen, no photos are displayed. The photo count and the actual photo grid are out of sync.
+Do not fix anything yet — diagnose first. I want to understand the root cause before deciding on a fix.
+Investigation steps:
+
+Identify the data source for the count vs the grid. Find:
+
+Where the "75 photos" count is coming from (likely a project list API endpoint that returns aggregated counts, or a derived field on the project object)
+Where the photo grid in the project detail screen is fetching from (likely a separate /api/projects/:id/photos call or similar)
+Are they the same endpoint? Different endpoints? If different, what does each one return?
+
+
+Check the project detail screen's photo fetch:
+
+Find the screen file (likely artifacts/mobile/app/projects/[id].tsx or similar)
+What API call does it make to load photos?
+Is the response being parsed correctly?
+Are there any filters being applied (date range, user, archived status, deleted status) that could exclude photos?
+Is pagination involved? Is it stuck on page 0 with no items?
+
+
+Check the network/API layer:
+
+In artifacts/mobile/services/api.ts, find any getProjectPhotos, getPhotos, listPhotos or similar method
+What URL does it hit? What query params?
+Does it match the backend route?
+
+
+Check for state management issues:
+
+Is the photos array initialized as empty [] and never populated?
+Is there a loading state that's stuck on true so photos never render?
+Is there an error state that's silently swallowing the error?
+Look for any .catch(() => []) or similar patterns that hide failures
+
+
+Check for environment/auth issues:
+
+Is the mobile app pointing at production (app.field-view.com) or a dev/local backend?
+Could the photos exist in production but not in whatever backend mobile is hitting?
+Is the auth session valid for the photos endpoint specifically (vs. the projects endpoint)?
+
+
+Check for offline/cache layer:
+
+In artifacts/mobile/services/storage.ts, the photos AsyncStorage key — is the app reading from local cache instead of the network? Is the cache empty?
+Is there a "stale-while-revalidate" pattern that returns empty cache before the network response lands?
+
+
+
+Output:
+
+Root cause hypothesis (most likely → least likely)
+Evidence for each hypothesis (file paths, line numbers, code snippets)
+What additional info you'd need to confirm (e.g., "I'd need to see the actual network response from /api/projects/8/photos to confirm")
+Proposed diagnostic next step — should we add logging? Inspect a network response? Check the database?
+
+Do not modify code yet. Diagnosis only.
