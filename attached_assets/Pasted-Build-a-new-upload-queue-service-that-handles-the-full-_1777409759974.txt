@@ -1,0 +1,90 @@
+Build a new upload queue service that handles the full lifecycle of uploading photos to S3 and recording them in the backend. Photos are added to the queue when captured, the queue uploads them in the background with retries, and notifies subscribers when state changes.
+The queue must satisfy these requirements (locked-in design decisions):
+
+Background, optimistic uploads: captured photos appear immediately in the UI marked as "uploading," upload happens async in background
+3 concurrent uploads max at any time
+Retry forever with exponential backoff (1s, 5s, 30s, 5min, 30min, 2hr, then every 6hr until success). Never give up.
+Auto-refresh expired sign URLs: if api.uploadToS3 throws UploadExpiredError, request a new sign URL via api.signUploads and retry that file
+Persist queue across app restarts: queue state stored in AsyncStorage so a kill-and-relaunch resumes pending uploads
+Resume on network reconnection: when network state changes from offline → online, immediately retry failed items
+Photos stored in app's private cache directory (NOT the iOS Photos app, NOT the Documents directory). Use expo-file-system's cacheDirectory for the file path so iOS auto-purges when storage is tight.
+
+Implementation:
+
+Create new file: artifacts/mobile/services/uploadQueue.ts
+Define a QueuedUpload interface:
+tsinterface QueuedUpload {
+  id: string;                    // unique queue item ID (different from final media.id)
+  localUri: string;              // path in app's cache directory
+  projectId: string;
+  originalName: string;
+  mimeType: string;
+  fileSize: number;
+  latitude?: number;
+  longitude?: number;
+  status: "pending" | "uploading" | "uploaded" | "failed";
+  attemptCount: number;          // total attempts so far
+  nextRetryAt?: number;          // unix ms timestamp
+  lastError?: string;            // for debugging
+  createdAt: number;             // unix ms
+  uploadedMediaId?: number;      // backend media.id once successful
+}
+
+AsyncStorage key: @fv/upload_queue — stores QueuedUpload[]
+Public API of the queue (export these):
+
+enqueueUpload(item: Omit<QueuedUpload, "id" | "status" | "attemptCount" | "createdAt">): Promise<QueuedUpload> — adds an item to the queue and triggers the processor. Returns the created queue item with generated id and initial status "pending".
+getQueue(): Promise<QueuedUpload[]> — returns current queue state
+subscribe(listener: (queue: QueuedUpload[]) => void): () => void — register a callback that fires whenever queue state changes; returns unsubscribe function
+retryItem(id: string): Promise<void> — manually retry a specific item (resets nextRetryAt to now)
+removeItem(id: string): Promise<void> — remove an item (e.g. user cancels)
+startProcessor(): void — begins the background loop. Should be called once at app startup.
+
+
+Internal processor logic:
+
+Runs continuously (e.g., setInterval every 2 seconds) when started
+Pulls all items where status is "pending" or ("failed" and nextRetryAt <= Date.now())
+Caps in-flight uploads to 3 concurrent (track active item IDs in a Set)
+For each available slot, picks the oldest eligible item, marks it "uploading", and starts processing
+
+
+Single-item upload flow (processItem(item)):
+
+Step 1: call api.signUploads([{originalName, mimeType, fileSize}]) → get back [{key, uploadUrl, publicUrl}]
+Step 2: call api.uploadToS3(uploadUrl, localUri, mimeType, fileSize)
+
+If throws UploadExpiredError: re-call api.signUploads for this file, get fresh URL, retry the PUT once. If second attempt fails, treat as a normal failure (back to the queue with backoff).
+
+
+Step 3: call api.createMedia(projectId, [{key, publicUrl, originalName, mimeType, latitude, longitude}]) → get back the created media record
+On success: mark item as "uploaded", store uploadedMediaId, optionally trigger DataContext refresh (we'll wire this in step 3, leave as a TODO for now)
+On any failure: mark "failed", increment attemptCount, set nextRetryAt = now + backoffDelay(attemptCount), store lastError
+
+
+Backoff function:
+tsconst BACKOFF_MS = [
+  1_000,       // attempt 1 → 1s
+  5_000,       // attempt 2 → 5s
+  30_000,      // attempt 3 → 30s
+  5 * 60_000,  // attempt 4 → 5min
+  30 * 60_000, // attempt 5 → 30min
+  2 * 60 * 60_000, // attempt 6 → 2hr
+];
+function backoffDelay(attemptCount: number): number {
+  // attemptCount is 1-indexed (first failure = 1)
+  return BACKOFF_MS[Math.min(attemptCount - 1, BACKOFF_MS.length - 1)] ?? 6 * 60 * 60_000;
+}
+After all defined steps, default to retry every 6 hours forever.
+Network state monitoring: Use @react-native-community/netinfo (already a peer dep of expo modules; if not installed, install it). On network state change from disconnected → connected, immediately reset nextRetryAt to now for all "failed" items so the processor picks them up on next tick.
+Persistence: every queue mutation (enqueue, status change, retry timestamp update) must immediately persist the full queue array to AsyncStorage. Use a debounced write (100ms) to avoid excessive writes during rapid status changes.
+Logging: add console.log lines with [upload-queue] prefix for: enqueue, item start, item success, item failure (with status code/message), retry scheduled (with delay), expired-URL refresh attempts. Keep the originalName in logs so we can correlate with specific files.
+Do NOT yet call startProcessor() anywhere or call enqueueUpload() from any screen. Wiring into the capture flow is the next step. This is the queue infrastructure only.
+
+Verification after applying:
+
+TypeScript compiles cleanly (no new errors beyond the 2 pre-existing)
+rg 'enqueueUpload\|uploadQueue' artifacts/mobile confirms the new file exists and is not yet referenced from any other file
+The exported public API matches what's specified above
+
+Show me the diff before applying. Flag any design decisions you make that aren't explicit in the spec — there will be some (how to handle the subscriber list, whether to use a Set vs Map for in-flight tracking, exact debounce mechanism, etc.). Don't ask permission for those, just decide and tell me what you chose.
