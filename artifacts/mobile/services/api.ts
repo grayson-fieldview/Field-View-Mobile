@@ -323,6 +323,26 @@ export class UploadExpiredError extends Error {
   }
 }
 
+export interface BackendAccount {
+  id: string;
+  ownerId: string;
+  name?: string;
+  subscriptionStatus?: string;
+}
+
+export interface DeleteUserResponse {
+  success: boolean;
+  deletedAt?: string;
+  restoreDeadline?: string;
+}
+
+export interface DeleteAccountResponse {
+  success: boolean;
+  deletedAt?: string;
+  restoreDeadline?: string;
+  message?: string;
+}
+
 // ----- Endpoint wrappers -----
 export const api = {
   base: API_BASE_URL,
@@ -347,6 +367,38 @@ export const api = {
     apiFetch<BackendProjectDetail>(`/api/projects/${id}`),
 
   tasks: () => apiFetch<BackendTask[]>("/api/tasks"),
+
+  // ----- Account / membership -----
+
+  /**
+   * Fetches the current user's account record. Used to derive isOwner =
+   * account.ownerId === user.id. Best-guess shape per the web backend
+   * contract — adjust if reality differs.
+   */
+  getAccount: () =>
+    apiFetch<BackendAccount>("/api/account"),
+
+  /**
+   * Soft-delete the current user (leaves the team). Backend invalidates the
+   * session; client must signOut + clear local state after this resolves.
+   */
+  deleteCurrentUser: () =>
+    apiFetch<DeleteUserResponse>("/api/users/me", {
+      method: "DELETE",
+      json: { confirm: true },
+    }),
+
+  /**
+   * Soft-delete the entire account (owner only). Requires the literal
+   * string "DELETE" plus the owner's password. Backend returns 401 for
+   * wrong password, 400 for OAuth-only owners (with a /forgot-password
+   * hint in the message), 403 for non-owners.
+   */
+  deleteAccount: (confirmText: string, password: string) =>
+    apiFetch<DeleteAccountResponse>("/api/account", {
+      method: "DELETE",
+      json: { confirmText, password },
+    }),
 
   /**
    * Step 1: ask the backend for presigned S3 PUT URLs for 1–20 files. The

@@ -19,6 +19,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { DataProvider } from "@/contexts/DataContext";
+import { ToastProvider } from "@/contexts/ToastContext";
 import { UploadStatusProvider } from "@/contexts/UploadStatusContext";
 import { startProcessor as startUploadQueueProcessor } from "@/services/uploadQueue";
 
@@ -99,11 +100,13 @@ export default function RootLayout() {
             <KeyboardProvider>
               <AuthProvider>
                 <DataProvider>
-                  <UploadStatusProvider>
-                    <AuthGate>
-                      <RootLayoutNav />
-                    </AuthGate>
-                  </UploadStatusProvider>
+                  <ToastProvider>
+                    <UploadStatusProvider>
+                      <AuthGate>
+                        <RootLayoutNav />
+                      </AuthGate>
+                    </UploadStatusProvider>
+                  </ToastProvider>
                 </DataProvider>
               </AuthProvider>
             </KeyboardProvider>

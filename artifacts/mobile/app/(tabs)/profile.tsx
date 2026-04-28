@@ -1,9 +1,11 @@
 import { Feather } from "@expo/vector-icons";
-import React from "react";
+import React, { useEffect, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -11,43 +13,168 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "@/components/Button";
+import { DeleteAccountConfirmModal } from "@/components/DeleteAccountConfirmModal";
 import { useAuth } from "@/contexts/AuthContext";
 import { useData } from "@/contexts/DataContext";
+import { useToast } from "@/contexts/ToastContext";
 import { useColors } from "@/hooks/useColors";
+import { ApiError, api } from "@/services/api";
 
 export default function ProfileScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const { user, signOut } = useAuth();
-  const { projects, photos, tasks } = useData();
+  const { projects, photos, tasks, clearAll } = useData();
+  const { showToast } = useToast();
+
+  // Owner detection. null = still loading; false = not owner / fetch failed.
+  const [isOwner, setIsOwner] = useState<boolean | null>(null);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!user) {
+      setIsOwner(null);
+      return;
+    }
+    (async () => {
+      try {
+        const account = await api.getAccount();
+        if (cancelled) return;
+        setIsOwner(
+          !!account?.ownerId && String(account.ownerId) === String(user.id),
+        );
+      } catch (e) {
+        // Network error or endpoint missing — fail safe to non-owner so we
+        // never accidentally show "Delete account" to someone who isn't.
+        if (!cancelled) {
+          console.log("[profile] /api/account fetch failed:", e);
+          setIsOwner(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
   const onSignOut = () => {
     if (Platform.OS === "web") {
       signOut();
       return;
     }
-    Alert.alert("Sign out?", "You’ll need to sign in again to access your projects.", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Sign out", style: "destructive", onPress: signOut },
-    ]);
+    Alert.alert(
+      "Sign out?",
+      "You’ll need to sign in again to access your projects.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Sign out", style: "destructive", onPress: signOut },
+      ],
+    );
+  };
+
+  const finishDeletion = async (toastMessage: string) => {
+    setSigningOut(true);
+    try {
+      await clearAll();
+    } finally {
+      // Even if clearAll partially fails, we still sign out — the backend
+      // already invalidated the session.
+      await signOut();
+      showToast(toastMessage);
+    }
+  };
+
+  const handleLeaveTeam = () => {
+    Alert.alert(
+      "Leave team?",
+      "You'll lose access to all projects, photos, and data on this team. You can rejoin within 30 days by signing back in. After 30 days, your account will be permanently deleted.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Leave team",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await api.deleteCurrentUser();
+              await finishDeletion(
+                "You've left the team. Sign back in within 30 days to restore your access.",
+              );
+            } catch (e) {
+              const msg =
+                e instanceof Error
+                  ? e.message
+                  : "Couldn't leave the team. Please try again.";
+              showToast(msg);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const handleDeleteAccountStart = () => {
+    Alert.alert(
+      "Delete account?",
+      "This permanently deletes the entire account, all projects, all photos, all team members, and your subscription. After 30 days, all data is destroyed and cannot be recovered.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Continue",
+          style: "destructive",
+          onPress: () => setShowDeleteModal(true),
+        },
+      ],
+    );
+  };
+
+  const handleDeleteAccountConfirm = async (password: string) => {
+    try {
+      await api.deleteAccount("DELETE", password);
+    } catch (e) {
+      // OAuth-only owners get 400 with a /forgot-password hint. Surface that
+      // separately rather than as an inline password error, since the issue
+      // isn't actually the password they typed.
+      if (e instanceof ApiError && e.status === 400) {
+        const bodyMsg =
+          (e.body && typeof e.body === "object" && "message" in e.body
+            ? String((e.body as { message?: string }).message ?? "")
+            : "") || e.message;
+        if (/forgot[- ]?password|set.*password|no password/i.test(bodyMsg)) {
+          setShowDeleteModal(false);
+          Alert.alert(
+            "Set a password first",
+            "You need to set a password before deleting the account. Visit field-view.com/forgot-password to set a password, then return here.",
+            [{ text: "OK" }],
+          );
+          return;
+        }
+      }
+      // Anything else (401 wrong password, 403 not owner, network) is
+      // re-thrown so the modal can render it inline / bubble it up.
+      throw e;
+    }
+    // Success — close modal, then clean up + sign out.
+    setShowDeleteModal(false);
+    await finishDeletion(
+      "Account deleted. Sign in within 30 days to restore.",
+    );
   };
 
   return (
-    <View
-      style={[
-        styles.wrap,
-        {
-          backgroundColor: colors.background,
-          paddingTop: insets.top + (Platform.OS === "web" ? 67 : 12),
-          paddingBottom: insets.bottom + 100,
-        },
-      ]}
+    <ScrollView
+      style={[styles.wrap, { backgroundColor: colors.background }]}
+      contentContainerStyle={{
+        paddingTop: insets.top + (Platform.OS === "web" ? 67 : 12),
+        paddingBottom: insets.bottom + 100,
+      }}
     >
       <View style={styles.headerBlock}>
-        <View
-          style={[styles.avatar, { backgroundColor: colors.primary }]}
-        >
-          <Text style={[styles.avatarText, { color: colors.primaryForeground }]}>
+        <View style={[styles.avatar, { backgroundColor: colors.primary }]}>
+          <Text
+            style={[styles.avatarText, { color: colors.primaryForeground }]}
+          >
             {(user?.name || "?").slice(0, 1).toUpperCase()}
           </Text>
         </View>
@@ -66,9 +193,13 @@ export default function ProfileScreen() {
       </View>
 
       <View style={styles.section}>
-        <Row icon="cloud" label="Sync backend" value={
-          process.env.EXPO_PUBLIC_API_URL ? "Connected" : "Offline (local)"
-        } />
+        <Row
+          icon="cloud"
+          label="Sync backend"
+          value={
+            process.env.EXPO_PUBLIC_API_URL ? "Connected" : "Offline (local)"
+          }
+        />
         <Row icon="shield" label="Privacy" value="Photos stored on device" />
         <Row icon="info" label="Version" value="1.0.0" />
       </View>
@@ -76,7 +207,59 @@ export default function ProfileScreen() {
       <View style={{ paddingHorizontal: 20, marginTop: 24 }}>
         <Button title="Sign out" variant="secondary" onPress={onSignOut} />
       </View>
-    </View>
+
+      {/* Danger Zone — sits at the absolute bottom of the scroll view. */}
+      <View
+        style={[
+          styles.dangerZone,
+          {
+            borderColor: colors.destructive,
+            backgroundColor: "rgba(220,38,38,0.06)",
+          },
+        ]}
+      >
+        <Text style={[styles.dangerHeader, { color: colors.destructive }]}>
+          Danger Zone
+        </Text>
+        {isOwner === null ? (
+          <View style={styles.dangerLoading}>
+            <ActivityIndicator color={colors.mutedForeground} />
+          </View>
+        ) : isOwner ? (
+          <>
+            <Button
+              title="Delete account"
+              variant="danger"
+              onPress={handleDeleteAccountStart}
+              disabled={signingOut}
+            />
+            <Text
+              style={[
+                styles.dangerHelper,
+                { color: colors.mutedForeground },
+              ]}
+            >
+              This permanently deletes the entire account and all data after a
+              30-day grace period. To leave the team without deleting the
+              account, transfer ownership first.
+            </Text>
+          </>
+        ) : (
+          <Button
+            title="Leave team"
+            variant="danger"
+            onPress={handleLeaveTeam}
+            disabled={signingOut}
+          />
+        )}
+      </View>
+
+      <DeleteAccountConfirmModal
+        visible={showDeleteModal}
+        onCancel={() => setShowDeleteModal(false)}
+        onConfirm={handleDeleteAccountConfirm}
+      />
+    </ScrollView>
   );
 }
 
@@ -165,4 +348,27 @@ const styles = StyleSheet.create({
   rowLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
   rowLabel: { fontSize: 15, fontFamily: "Inter_500Medium" },
   rowValue: { fontSize: 14, fontFamily: "Inter_400Regular" },
+  dangerZone: {
+    marginTop: 32,
+    marginHorizontal: 20,
+    padding: 18,
+    borderRadius: 16,
+    borderWidth: 1,
+    gap: 12,
+  },
+  dangerHeader: {
+    fontSize: 12,
+    fontFamily: "Inter_700Bold",
+    letterSpacing: 1.2,
+    textTransform: "uppercase",
+  },
+  dangerLoading: {
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  dangerHelper: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    lineHeight: 18,
+  },
 });

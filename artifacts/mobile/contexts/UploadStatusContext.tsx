@@ -6,9 +6,8 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { useToast } from "@/contexts/ToastContext";
 import {
   type QueuedUpload,
   subscribe as subscribeUploadQueue,
@@ -24,7 +23,6 @@ const UploadStatusContext = createContext<UploadStatusContextValue | undefined>(
 
 const TOAST_FAILURE_MESSAGE =
   "Some photos failed to upload — they'll retry automatically.";
-const TOAST_AUTO_DISMISS_MS = 4_000;
 
 export function UploadStatusProvider({
   children,
@@ -32,7 +30,7 @@ export function UploadStatusProvider({
   children: React.ReactNode;
 }) {
   const [queue, setQueue] = useState<QueuedUpload[]>([]);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const { showToast } = useToast();
 
   // Toast trigger bookkeeping. We only want to fire the toast on the FIRST
   // failure that happens during this session — not for items that were
@@ -58,21 +56,14 @@ export function UploadStatusProvider({
         }
         if (newlyFailed) {
           hasShownFailureToastRef.current = true;
-          setToastMessage(TOAST_FAILURE_MESSAGE);
+          showToast(TOAST_FAILURE_MESSAGE);
         }
       }
       seenFirstUpdateRef.current = true;
       prevFailedIdsRef.current = currentFailedIds;
     });
     return unsub;
-  }, []);
-
-  // Auto-dismiss the toast after a few seconds.
-  useEffect(() => {
-    if (!toastMessage) return;
-    const t = setTimeout(() => setToastMessage(null), TOAST_AUTO_DISMISS_MS);
-    return () => clearTimeout(t);
-  }, [toastMessage]);
+  }, [showToast]);
 
   const byId = useMemo(() => {
     const m = new Map<string, QueuedUpload>();
@@ -85,12 +76,6 @@ export function UploadStatusProvider({
   return (
     <UploadStatusContext.Provider value={value}>
       {children}
-      {toastMessage ? (
-        <ToastBanner
-          message={toastMessage}
-          onDismiss={() => setToastMessage(null)}
-        />
-      ) : null}
     </UploadStatusContext.Provider>
   );
 }
@@ -105,56 +90,3 @@ export function useUploadStatus(uploadQueueId?: string): QueuedUpload | null {
   if (!ctx || !uploadQueueId) return null;
   return ctx.byId.get(uploadQueueId) ?? null;
 }
-
-function ToastBanner({
-  message,
-  onDismiss,
-}: {
-  message: string;
-  onDismiss: () => void;
-}) {
-  const insets = useSafeAreaInsets();
-  return (
-    <View
-      pointerEvents="box-none"
-      style={[styles.toastWrap, { top: insets.top + 12 }]}
-    >
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${message} Tap to dismiss.`}
-        onPress={onDismiss}
-        style={styles.toast}
-      >
-        <Text style={styles.toastText}>{message}</Text>
-      </Pressable>
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  toastWrap: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    alignItems: "center",
-    paddingHorizontal: 16,
-  },
-  toast: {
-    backgroundColor: "rgba(28,28,30,0.95)",
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    maxWidth: 480,
-    shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    elevation: 6,
-  },
-  toastText: {
-    color: "#fff",
-    fontSize: 14,
-    fontFamily: "Inter_500Medium",
-    textAlign: "center",
-  },
-});

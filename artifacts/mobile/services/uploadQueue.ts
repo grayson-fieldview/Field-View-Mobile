@@ -334,6 +334,19 @@ export async function removeItem(id: string): Promise<void> {
   }
 }
 
+/**
+ * Wipe the entire queue (used when a user signs out via account deletion or
+ * leaving the team — we don't want pending uploads to fire under the next
+ * user's session).
+ */
+export async function clearAll(): Promise<void> {
+  await ensureLoaded();
+  if (queue.length === 0) return;
+  console.log(`[upload-queue] clearAll: dropping ${queue.length} item(s)`);
+  queue = [];
+  schedulePersist();
+}
+
 export function startProcessor(): void {
   if (tickInterval) return; // idempotent
   void ensureLoaded().then(() => {

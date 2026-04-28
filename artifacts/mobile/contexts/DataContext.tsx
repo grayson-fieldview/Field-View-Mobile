@@ -27,6 +27,7 @@ import type {
   Task,
 } from "@/services/types";
 import {
+  clearAll as clearUploadQueueAll,
   enqueueUpload,
   removeItem as removeUploadQueueItem,
   subscribe as subscribeUploadQueue,
@@ -92,6 +93,8 @@ interface DataState {
     recipientEmail: string,
   ) => Promise<ShareLink>;
   revokeShare: (id: string) => Promise<void>;
+  /** Wipe all local data (used by account-deletion / leave-team flows). */
+  clearAll: () => Promise<void>;
 }
 
 const DataContext = createContext<DataState | undefined>(undefined);
@@ -608,6 +611,23 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     [shares, persistShares],
   );
 
+  const clearAll: DataState["clearAll"] = useCallback(async () => {
+    // Wipe in-memory + persisted local data. Used by account-deletion and
+    // leave-team flows to ensure a deleted user's data doesn't linger and
+    // that the next sign-in starts from a clean slate. Ordinary sign-out
+    // does NOT call this — it preserves the offline-first cache.
+    await Promise.all([
+      persistProjects([]),
+      persistPhotos([]),
+      persistTasks([]),
+      persistChecklists([]),
+      persistShares([]),
+      clearUploadQueueAll().catch(() => {}),
+    ]);
+    setSyncError(null);
+    lastSyncRef.current = 0;
+  }, [persistProjects, persistPhotos, persistTasks, persistChecklists, persistShares]);
+
   const value = useMemo<DataState>(
     () => ({
       projects,
@@ -635,6 +655,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       deleteChecklist,
       createShare,
       revokeShare,
+      clearAll,
     }),
     [
       projects,
@@ -662,6 +683,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       deleteChecklist,
       createShare,
       revokeShare,
+      clearAll,
     ],
   );
 
