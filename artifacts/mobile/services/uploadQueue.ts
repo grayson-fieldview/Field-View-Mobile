@@ -33,6 +33,7 @@ export interface QueuedUpload {
   lastError?: string;
   createdAt: number;
   uploadedMediaId?: number;
+  uploadedUrl?: string;
 }
 
 export type EnqueueInput = Omit<
@@ -205,6 +206,7 @@ async function processItem(item: QueuedUpload): Promise<void> {
     updateItem(item.id, {
       status: "uploaded",
       uploadedMediaId: Number.isFinite(mediaId) ? mediaId : undefined,
+      uploadedUrl: created.url,
       lastError: undefined,
       nextRetryAt: undefined,
     });

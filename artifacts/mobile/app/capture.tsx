@@ -1,6 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
 import { CameraView, useCameraPermissions } from "expo-camera";
+import * as FileSystem from "expo-file-system/legacy";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
@@ -30,6 +31,76 @@ const ZOOM_PRESETS: ZoomPreset[] = [
   { label: "1x", value: 0.05 },
   { label: "4x", value: 0.45 },
 ];
+
+const MIME_BY_EXT: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  heic: "image/heic",
+  heif: "image/heic",
+  gif: "image/gif",
+  webp: "image/webp",
+  mp4: "video/mp4",
+  mov: "video/quicktime",
+  avi: "video/x-msvideo",
+};
+
+interface PreparedUpload {
+  localUri: string;
+  originalName: string;
+  mimeType: string;
+  fileSize: number;
+}
+
+/**
+ * Copies a captured (or imported) file from its temporary location into the
+ * app's private cache directory under `fieldview/photos/`. Returns metadata
+ * suitable for the upload queue. Returns null on web (no cacheDirectory) or
+ * if the copy fails — callers should fall back to using the source uri
+ * without enqueueing.
+ */
+async function prepareForUpload(
+  sourceUri: string,
+  fallbackMime = "image/jpeg",
+): Promise<PreparedUpload | null> {
+  try {
+    if (!FileSystem.cacheDirectory) {
+      // Web or sandboxed env — no stable cache dir to copy into.
+      return null;
+    }
+    const dir = `${FileSystem.cacheDirectory}fieldview/photos/`;
+    await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(
+      () => {
+        /* already exists */
+      },
+    );
+
+    // Derive extension from source uri (strip query string if any).
+    const qIdx = sourceUri.indexOf("?");
+    const cleanUri = qIdx >= 0 ? sourceUri.slice(0, qIdx) : sourceUri;
+    const dotIdx = cleanUri.lastIndexOf(".");
+    const rawExt = dotIdx > 0 ? cleanUri.slice(dotIdx + 1).toLowerCase() : "";
+    const safeExt = /^[a-z0-9]{1,4}$/.test(rawExt) ? rawExt : "jpg";
+    const mimeType = MIME_BY_EXT[safeExt] ?? fallbackMime;
+
+    const originalName = `${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}.${safeExt}`;
+    const localUri = `${dir}${originalName}`;
+
+    await FileSystem.copyAsync({ from: sourceUri, to: localUri });
+    const info = await FileSystem.getInfoAsync(localUri);
+    const fileSize = (info as { size?: number }).size ?? 0;
+
+    console.log(
+      `[capture] prepared ${originalName} (${mimeType}, ${fileSize} bytes) at ${localUri}`,
+    );
+    return { localUri, originalName, mimeType, fileSize };
+  } catch (e) {
+    console.log("[capture] prepareForUpload failed:", e);
+    return null;
+  }
+}
 
 export default function CaptureScreen() {
   const colors = useColors();
@@ -196,7 +267,18 @@ export default function CaptureScreen() {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
       const entry = await captureOnce();
       if (entry) {
-        await addPhoto({ projectId: project.id, ...entry });
+        const prepared = await prepareForUpload(entry.uri);
+        await addPhoto({
+          projectId: project.id,
+          uri: prepared?.localUri ?? entry.uri,
+          takenAt: entry.takenAt,
+          latitude: entry.latitude,
+          longitude: entry.longitude,
+          accuracy: entry.accuracy,
+          originalName: prepared?.originalName,
+          mimeType: prepared?.mimeType,
+          fileSize: prepared?.fileSize,
+        });
         setSessionCount((s) => s + 1);
         Haptics.notificationAsync(
           Haptics.NotificationFeedbackType.Success,
@@ -232,14 +314,23 @@ export default function CaptureScreen() {
     if (buffer.current.length === 0) return;
     setSaving(true);
     try {
+      const prepared = await Promise.all(
+        buffer.current.map(async (b) => ({
+          b,
+          p: await prepareForUpload(b.uri),
+        })),
+      );
       await addPhotosBatch(
-        buffer.current.map((b) => ({
+        prepared.map(({ b, p }) => ({
           projectId: project.id,
-          uri: b.uri,
+          uri: p?.localUri ?? b.uri,
           takenAt: b.takenAt,
           latitude: b.latitude,
           longitude: b.longitude,
           accuracy: b.accuracy,
+          originalName: p?.originalName,
+          mimeType: p?.mimeType,
+          fileSize: p?.fileSize,
         })),
       );
       setSessionCount((s) => s + buffer.current.length);
@@ -318,14 +409,23 @@ export default function CaptureScreen() {
       });
       if (res.canceled || res.assets.length === 0) return;
       const now = new Date().toISOString();
+      const prepared = await Promise.all(
+        res.assets.map(async (a) => ({
+          a,
+          p: await prepareForUpload(a.uri, a.mimeType ?? "image/jpeg"),
+        })),
+      );
       await addPhotosBatch(
-        res.assets.map((a) => ({
+        prepared.map(({ a, p }) => ({
           projectId: project.id,
-          uri: a.uri,
+          uri: p?.localUri ?? a.uri,
           takenAt: now,
           latitude: locationCoord?.latitude,
           longitude: locationCoord?.longitude,
           accuracy: locationCoord?.accuracy,
+          originalName: p?.originalName,
+          mimeType: p?.mimeType,
+          fileSize: p?.fileSize,
         })),
       );
       setSessionCount((s) => s + res.assets.length);

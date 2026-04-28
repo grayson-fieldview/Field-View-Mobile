@@ -1,0 +1,79 @@
+Wire the upload queue (services/uploadQueue.ts) into the photo capture flow and DataContext so captured photos automatically upload in the background. The queue infrastructure is already built — this step connects it to the rest of the app.
+What needs to happen:
+
+Photos captured via camera, burst mode, or library import flow into the queue automatically
+Photos appear in the project gallery immediately (optimistic UI) marked as "uploading"
+When uploads succeed, the corresponding photo updates to show the real CloudFront URL and is marked as remote/uploaded
+The upload queue processor starts at app launch
+Captured photos are saved to the app's private cache directory (NOT iOS Photos app, NOT documents directory) so iOS auto-purges when storage is tight
+
+Implementation steps:
+Step 1: Start the processor at app launch
+In artifacts/mobile/app/_layout.tsx (or wherever the root layout is), call startProcessor() from services/uploadQueue once at app initialization. Use a useEffect with empty deps. Import the function and add the call.
+Step 2: Save captured photos to cache directory
+In artifacts/mobile/app/capture.tsx, after a photo is captured (or imported from library), copy/move the file from its temporary location into the app's private cache directory using expo-file-system. Use FileSystem.cacheDirectory + "fieldview/photos/" + filename as the target. Create the subdirectory if it doesn't exist (FileSystem.makeDirectoryAsync(..., { intermediates: true })).
+The reason: photos taken with expo-camera land in a temp location that iOS may purge between sessions. Moving them to cacheDirectory/fieldview/photos/ puts them in a deterministic location that survives app restarts but iOS still auto-purges under storage pressure.
+Generate filenames using a timestamp + random suffix to avoid collisions: ${Date.now()}-${random}.jpg (or .heic, .mp4 based on actual file extension).
+Step 3: Capture metadata for upload
+For each captured photo, gather:
+
+localUri — the new path in cache directory
+originalName — generated filename (e.g., "1777408888566-abc123.jpg")
+mimeType — derived from file extension or what the camera returned
+fileSize — use FileSystem.getInfoAsync(uri, { size: true }) to get the size in bytes
+latitude / longitude — if available from device GPS (use expo-location if not already available; if it is, capture current position when shutter fires)
+projectId — from current project context
+
+If GPS coordinates aren't available (permission denied, no signal indoors), proceed without them — they're optional fields.
+Step 4: Modify addPhoto and addPhotosBatch in contexts/DataContext.tsx
+Currently both functions just save photos locally with uploaded: false and stop there. Update them to:
+
+Save the photo locally (existing behavior — keep this)
+Immediately call enqueueUpload({...}) with the metadata for each photo
+The local photo's id field can stay as the locally-generated newId for now; we'll reconcile with the backend mediaId when the upload succeeds
+
+Add a new field to the local Photo type if needed: uploadQueueId?: string — links the local photo to its queue item so we can correlate when uploads complete.
+Step 5: Subscribe DataContext to upload queue events
+In DataContext.tsx, add a useEffect (or run inside the provider mount) that:
+
+Calls subscribe(...) from uploadQueue
+When the queue updates, find any items with status "uploaded" and a corresponding local photo (matched by uploadQueueId)
+For matched items: update the local photo to set uploaded: true, remote: true, remoteUrl: <CloudFront URL from queue item — but the queue stores uploadedMediaId not the URL, so we need to also fetch the project to get the real Media record OR have the queue store more data>
+
+Wait — design issue I want you to think through here: the queue currently only stores uploadedMediaId after success, not the publicUrl. The DataContext needs the URL to display the photo. Two options:
+
+Option A: Extend QueuedUpload to also store uploadedUrl after success, so DataContext can read it directly from the queue
+Option B: After upload success, DataContext calls loadProjectDetail(projectId) to refresh the full project from the backend, which will pull in the new media record with its URL
+
+Recommend Option A for these reasons: avoids an extra network round-trip per upload, lets the optimistic UI update immediately on success without flickering, and the data is right there in the createMedia response anyway.
+Update processItem in uploadQueue.ts to also store uploadedUrl: created.url when marking an item as "uploaded". Add uploadedUrl?: string to the QueuedUpload interface.
+Step 6: Handle the local-vs-remote photo reconciliation
+When an upload succeeds:
+
+Find the local Photo with matching uploadQueueId
+Update it: uri → uploadedUrl (CloudFront), uploaded: true, remote: true, remoteUrl: uploadedUrl
+Optionally, delete the local cache file after a delay (or let iOS handle eviction — for now, leave the local file alone, iOS will purge as needed)
+
+Photos with status "uploading" or "failed" should display in the gallery normally (using the local file:// URI as uri) so the user sees them immediately. The UI distinction (showing an "uploading" indicator vs "failed" badge) is the next step (Prompt 4) — for now just make sure the photos render.
+Step 7: Permission handling
+If expo-location isn't already in the project, install it via expo install expo-location. Request permission on first capture. If denied, proceed without GPS — don't block the upload.
+Step 8: Error handling
+If saving to cache directory fails (disk full, permission issue), surface a clear error to the user but DO NOT crash. Log it with [capture] prefix.
+If enqueueUpload throws (shouldn't normally — it's just AsyncStorage), log it but don't break the local-save path. Photo should still appear in gallery even if queueing fails.
+What NOT to do in this step:
+
+Don't build the failure UX UI (icons, toasts) — that's Prompt 4
+Don't add a "retry" button anywhere visible — Prompt 4
+Don't change the upload queue's processor logic — it's already correct
+Don't add background task registration for true background uploads when app is closed — that's iOS-specific complexity for a later iteration
+
+Verification after applying:
+
+TypeScript compiles cleanly (no new errors beyond the 2 pre-existing)
+Run the app in Expo Go, sign in, navigate to a project, take a photo
+Check Metro console: should see [capture] logs for the file copy, then [upload-queue] logs for enqueue → starting → uploaded
+Photo should appear in project gallery immediately (optimistic)
+After ~2-5 seconds, photo's URL should switch from file:// to https://d14rk4r8qyh1ff.cloudfront.net/...
+Open the web app on app.field-view.com, navigate to the same project — photo should be visible
+
+Show me the design + implementation plan first (which files you'll modify, what the data flow will look like). Then show the diff. Then apply. Flag any design decisions you make that aren't explicit in the spec.

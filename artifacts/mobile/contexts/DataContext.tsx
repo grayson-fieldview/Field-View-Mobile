@@ -26,6 +26,19 @@ import type {
   ShareLink,
   Task,
 } from "@/services/types";
+import {
+  enqueueUpload,
+  removeItem as removeUploadQueueItem,
+  subscribe as subscribeUploadQueue,
+} from "@/services/uploadQueue";
+
+/** Shape callers pass to addPhoto/addPhotosBatch. The optional upload-meta
+ *  fields trigger background enqueue when all three are present. */
+type AddPhotoInput = Omit<Photo, "id" | "uploaded" | "uploadQueueId"> & {
+  originalName?: string;
+  mimeType?: string;
+  fileSize?: number;
+};
 
 interface DataState {
   projects: Project[];
@@ -49,10 +62,8 @@ interface DataState {
   updateProject: (id: string, patch: Partial<Project>) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
 
-  addPhoto: (input: Omit<Photo, "id" | "uploaded">) => Promise<Photo>;
-  addPhotosBatch: (
-    inputs: Array<Omit<Photo, "id" | "uploaded">>,
-  ) => Promise<Photo[]>;
+  addPhoto: (input: AddPhotoInput) => Promise<Photo>;
+  addPhotosBatch: (inputs: AddPhotoInput[]) => Promise<Photo[]>;
   deletePhoto: (id: string) => Promise<void>;
   updatePhoto: (id: string, patch: Partial<Photo>) => Promise<void>;
 
@@ -339,8 +350,38 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
   const addPhoto: DataState["addPhoto"] = useCallback(
     async (input) => {
-      const photo: Photo = { ...input, id: newId(), uploaded: false };
-      await persistPhotos([photo, ...photos]);
+      const { originalName, mimeType, fileSize, ...photoFields } = input;
+      let uploadQueueId: string | undefined;
+      if (
+        originalName &&
+        mimeType &&
+        typeof fileSize === "number" &&
+        fileSize > 0
+      ) {
+        try {
+          const queued = await enqueueUpload({
+            localUri: input.uri,
+            projectId: input.projectId,
+            originalName,
+            mimeType,
+            fileSize,
+            latitude: input.latitude,
+            longitude: input.longitude,
+          });
+          uploadQueueId = queued.id;
+        } catch (e) {
+          console.log("[DataContext] enqueueUpload failed:", e);
+        }
+      }
+      const photo: Photo = {
+        ...photoFields,
+        id: newId(),
+        uploaded: false,
+        uploadQueueId,
+      };
+      const next = [photo, ...photos];
+      photosRef.current = next;
+      await persistPhotos(next);
       return photo;
     },
     [photos, persistPhotos],
@@ -348,16 +389,104 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
   const addPhotosBatch: DataState["addPhotosBatch"] = useCallback(
     async (inputs) => {
-      const created: Photo[] = inputs.map((i) => ({
-        ...i,
-        id: newId(),
-        uploaded: false,
-      }));
-      await persistPhotos([...created, ...photos]);
+      const queueIds = await Promise.all(
+        inputs.map(async (i) => {
+          if (
+            i.originalName &&
+            i.mimeType &&
+            typeof i.fileSize === "number" &&
+            i.fileSize > 0
+          ) {
+            try {
+              const queued = await enqueueUpload({
+                localUri: i.uri,
+                projectId: i.projectId,
+                originalName: i.originalName,
+                mimeType: i.mimeType,
+                fileSize: i.fileSize,
+                latitude: i.latitude,
+                longitude: i.longitude,
+              });
+              return queued.id;
+            } catch (e) {
+              console.log("[DataContext] enqueueUpload failed:", e);
+              return undefined;
+            }
+          }
+          return undefined;
+        }),
+      );
+      const created: Photo[] = inputs.map((i, idx) => {
+        const { originalName, mimeType, fileSize, ...photoFields } = i;
+        void originalName;
+        void mimeType;
+        void fileSize;
+        return {
+          ...photoFields,
+          id: newId(),
+          uploaded: false,
+          uploadQueueId: queueIds[idx],
+        };
+      });
+      const next = [...created, ...photos];
+      photosRef.current = next;
+      await persistPhotos(next);
       return created;
     },
     [photos, persistPhotos],
   );
+
+  // Reconcile photos with successful background uploads. The queue stores
+  // uploadedUrl on success; we swap the local cache uri for the CloudFront
+  // url on the matching local Photo (matched by uploadQueueId) and remove
+  // the queue item so it doesn't accumulate.
+  const reconciledQueueIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const unsub = subscribeUploadQueue((queue) => {
+      const uploaded = queue.filter(
+        (it) =>
+          it.status === "uploaded" &&
+          it.uploadedUrl &&
+          !reconciledQueueIdsRef.current.has(it.id),
+      );
+      if (uploaded.length === 0) return;
+
+      let next = photosRef.current;
+      let changed = false;
+      for (const item of uploaded) {
+        reconciledQueueIdsRef.current.add(item.id);
+        const url = item.uploadedUrl as string;
+        const idx = next.findIndex((p) => p.uploadQueueId === item.id);
+        if (idx === -1) {
+          // No matching local photo — possibly deleted, or app restarted.
+          // Just garbage-collect the queue item.
+          removeUploadQueueItem(item.id).catch(() => {});
+          continue;
+        }
+        next = next.map((p, i) =>
+          i === idx
+            ? {
+                ...p,
+                uri: url,
+                remoteUrl: url,
+                uploaded: true,
+                remote: true,
+              }
+            : p,
+        );
+        changed = true;
+        console.log(
+          `[DataContext] reconciled photo ${next[idx].id} ← queue ${item.id}`,
+        );
+        removeUploadQueueItem(item.id).catch(() => {});
+      }
+      if (changed) {
+        photosRef.current = next;
+        void persistPhotos(next);
+      }
+    });
+    return unsub;
+  }, [persistPhotos]);
 
   const deletePhoto: DataState["deletePhoto"] = useCallback(
     async (id) => {

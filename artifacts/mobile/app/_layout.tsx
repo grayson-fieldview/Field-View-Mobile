@@ -19,6 +19,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { DataProvider } from "@/contexts/DataContext";
+import { startProcessor as startUploadQueueProcessor } from "@/services/uploadQueue";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -80,6 +81,12 @@ export default function RootLayout() {
       SplashScreen.hideAsync();
     }
   }, [fontsLoaded, fontError]);
+
+  // Start the background upload queue processor once at app launch. The
+  // function is idempotent so re-runs during fast-refresh are safe.
+  useEffect(() => {
+    startUploadQueueProcessor();
+  }, []);
 
   if (!fontsLoaded && !fontError) return null;
 

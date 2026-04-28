@@ -47,6 +47,8 @@ export interface Photo {
   accuracy?: number;
   note?: string;
   uploaded: boolean;
+  /** Links a local photo to its background-upload queue item until reconciled. */
+  uploadQueueId?: string;
   tags?: string[];
   remote?: boolean;
   annotations?: AnnotationStroke[];
