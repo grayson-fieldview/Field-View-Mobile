@@ -19,6 +19,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { DataProvider } from "@/contexts/DataContext";
+import { UploadStatusProvider } from "@/contexts/UploadStatusContext";
 import { startProcessor as startUploadQueueProcessor } from "@/services/uploadQueue";
 
 SplashScreen.preventAutoHideAsync();
@@ -98,9 +99,11 @@ export default function RootLayout() {
             <KeyboardProvider>
               <AuthProvider>
                 <DataProvider>
-                  <AuthGate>
-                    <RootLayoutNav />
-                  </AuthGate>
+                  <UploadStatusProvider>
+                    <AuthGate>
+                      <RootLayoutNav />
+                    </AuthGate>
+                  </UploadStatusProvider>
                 </DataProvider>
               </AuthProvider>
             </KeyboardProvider>

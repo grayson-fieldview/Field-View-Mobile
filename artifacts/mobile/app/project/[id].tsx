@@ -4,6 +4,8 @@ import Svg, { Path as SvgPath } from "react-native-svg";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActionSheetIOS,
+  ActivityIndicator,
   Alert,
   Modal,
   Platform,
@@ -21,7 +23,12 @@ import { EmptyState } from "@/components/EmptyState";
 import { Input } from "@/components/Input";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { useData } from "@/contexts/DataContext";
+import { useUploadStatus } from "@/contexts/UploadStatusContext";
 import { useColors } from "@/hooks/useColors";
+import {
+  removeItem as removeUploadQueueItem,
+  retryItem as retryUploadQueueItem,
+} from "@/services/uploadQueue";
 
 type TabKey = "photos" | "tasks" | "checklists" | "team";
 
@@ -1008,6 +1015,60 @@ export default function ProjectDetailScreen() {
   );
 }
 
+function showFailedUploadActionSheet(
+  uploadQueueId: string,
+  onRemoveLocalPhoto: () => void,
+) {
+  const confirmRemove = () => {
+    Alert.alert(
+      "Remove this photo?",
+      "It hasn't been uploaded yet and will be lost.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Remove",
+          style: "destructive",
+          // deletePhoto (passed via onRemoveLocalPhoto) also clears the queue
+          // item, so we don't need a separate removeUploadQueueItem call here.
+          onPress: onRemoveLocalPhoto,
+        },
+      ],
+    );
+  };
+  if (Platform.OS === "ios") {
+    ActionSheetIOS.showActionSheetWithOptions(
+      {
+        title: "Upload failed",
+        options: ["Cancel", "Retry now", "Remove from queue"],
+        cancelButtonIndex: 0,
+        destructiveButtonIndex: 2,
+      },
+      (idx) => {
+        if (idx === 1) {
+          void retryUploadQueueItem(uploadQueueId);
+        } else if (idx === 2) {
+          confirmRemove();
+        }
+      },
+    );
+  } else {
+    Alert.alert("Upload failed", undefined, [
+      {
+        text: "Retry now",
+        onPress: () => {
+          void retryUploadQueueItem(uploadQueueId);
+        },
+      },
+      {
+        text: "Remove from queue",
+        style: "destructive",
+        onPress: confirmRemove,
+      },
+      { text: "Cancel", style: "cancel" },
+    ]);
+  }
+}
+
 function PhotoTile({
   photo,
   borderColor,
@@ -1034,6 +1095,15 @@ function PhotoTile({
   // Suppress the onPress that fires when a long-press releases.
   const longPressed = useRef(false);
 
+  const queueItem = useUploadStatus(photo.uploadQueueId);
+  const uploadStatus: "uploading" | "failed" | null = !queueItem
+    ? null
+    : queueItem.status === "failed"
+      ? "failed"
+      : queueItem.status === "pending" || queueItem.status === "uploading"
+        ? "uploading"
+        : null;
+
   const handleLongPress = () => {
     if (selectMode) return;
     longPressed.current = true;
@@ -1052,17 +1122,30 @@ function PhotoTile({
       longPressed.current = false;
       return;
     }
-    if (selectMode) onToggleSelected();
-    else onOpen();
+    if (selectMode) {
+      onToggleSelected();
+      return;
+    }
+    if (uploadStatus === "failed" && photo.uploadQueueId) {
+      showFailedUploadActionSheet(photo.uploadQueueId, onDelete);
+      return;
+    }
+    // Uploading photos still open the detail screen — they're viewable
+    // immediately because the local file is already there.
+    onOpen();
   };
+
+  const accessibilityLabel = selectMode
+    ? `Photo. ${selected ? "Selected" : "Not selected"}. Tap to toggle.`
+    : uploadStatus === "uploading"
+      ? "Photo. Uploading. Tap to open, long press to delete."
+      : uploadStatus === "failed"
+        ? "Photo. Upload failed. Tap to retry or remove."
+        : "Photo. Tap to open, long press to delete.";
 
   return (
     <Pressable
-      accessibilityLabel={
-        selectMode
-          ? `Photo. ${selected ? "Selected" : "Not selected"}. Tap to toggle.`
-          : "Photo. Tap to open, long press to delete."
-      }
+      accessibilityLabel={accessibilityLabel}
       accessibilityRole={selectMode ? "checkbox" : "imagebutton"}
       accessibilityState={selectMode ? { checked: selected } : undefined}
       onPress={handlePress}
@@ -1085,6 +1168,9 @@ function PhotoTile({
       />
       {photo.annotations && photo.annotations.length > 0 ? (
         <AnnotationOverlay strokes={photo.annotations} />
+      ) : null}
+      {uploadStatus === "uploading" ? (
+        <View pointerEvents="none" style={styles.uploadingDim} />
       ) : null}
       {selectMode ? (
         <View
@@ -1109,6 +1195,16 @@ function PhotoTile({
       {photo.annotations && photo.annotations.length > 0 ? (
         <View style={[styles.photoBadge, { right: 6, left: undefined }]}>
           <Feather name="edit-2" size={10} color="#fff" />
+        </View>
+      ) : null}
+      {uploadStatus === "uploading" ? (
+        <View style={styles.uploadingBadge}>
+          <ActivityIndicator size="small" color="#fff" />
+        </View>
+      ) : null}
+      {uploadStatus === "failed" ? (
+        <View style={styles.failedBadge}>
+          <Feather name="alert-triangle" size={12} color="#fff" />
         </View>
       ) : null}
     </Pressable>
@@ -1680,6 +1776,32 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     paddingHorizontal: 6,
     paddingVertical: 3,
+  },
+  uploadingDim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.2)",
+  },
+  uploadingBadge: {
+    position: "absolute",
+    bottom: 6,
+    right: 6,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: "rgba(0,0,0,0.65)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  failedBadge: {
+    position: "absolute",
+    bottom: 6,
+    right: 6,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: "#dc2626",
+    alignItems: "center",
+    justifyContent: "center",
   },
   taskRow: {
     flexDirection: "row",

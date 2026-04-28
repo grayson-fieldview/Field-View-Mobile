@@ -490,6 +490,12 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
   const deletePhoto: DataState["deletePhoto"] = useCallback(
     async (id) => {
+      // If the photo had a pending background upload, cancel it first so the
+      // queue doesn't keep retrying a file we've thrown away.
+      const photo = photos.find((p) => p.id === id);
+      if (photo?.uploadQueueId) {
+        removeUploadQueueItem(photo.uploadQueueId).catch(() => {});
+      }
       await persistPhotos(photos.filter((p) => p.id !== id));
     },
     [photos, persistPhotos],
