@@ -1,0 +1,25 @@
+The Settings screen Danger Zone is showing "Leave team" instead of "Delete account" for a user who IS the account owner. There's also an "Unauthorized" toast appearing at the top of the screen. Investigate before fixing.
+Context:
+
+User signed in: support@field-view.com (Grayson Test account)
+This user IS the owner of their own account
+The mobile app should show "Delete account" but is showing "Leave team"
+"Unauthorized" toast appearing suggests an API call is returning 401
+
+Investigation steps:
+
+Check GET /api/account response shape. The mobile code expects { id, ownerId, name, subscriptionStatus }. Check what the actual backend returns. If it differs (e.g., owner_id vs ownerId, or wrapped in { account: {...} }), the comparison account.ownerId === user.id would fail.
+Check whether GET /api/account even succeeds for this user. Add temporary logging to the Settings screen (or wherever the owner-detection fetch happens) to log:
+
+The full URL being hit
+The response status code
+The response body (or error)
+The current user's id from auth context
+The result of the comparison
+
+
+Investigate the "Unauthorized" toast. Search the mobile codebase for where toasts say "Unauthorized" — likely an apiFetch error handler or a 401 catch-all. Find what API call is generating it. Check Metro logs to see which request is returning 401.
+Check if GET /api/account requires elevated permissions. It's possible the backend route exists but uses requireWriteAccess (which would 401 a trialing account on read) or has owner-only access. The endpoint should be readable by any authenticated user since they need to know who owns their own account.
+
+Add diagnostic logging only — do NOT change business logic yet. Show me the proposed logging diff before applying. After I run it on device, I'll send Metro logs and we'll fix from there.
+Also independently: run rg "Unauthorized" artifacts/mobile and tell me everywhere that string appears as user-facing text. That'll narrow down which API call is generating the toast.
