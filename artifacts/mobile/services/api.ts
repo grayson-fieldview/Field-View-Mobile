@@ -286,6 +286,43 @@ export interface BackendProjectDetail {
   reports?: unknown[];
 }
 
+// ----- Photo upload (3-step presigned-URL flow) -----
+
+export interface SignUploadFile {
+  originalName: string;
+  mimeType: string;
+  fileSize: number;
+}
+
+export interface SignUploadResponse {
+  key: string;
+  uploadUrl: string;
+  publicUrl: string;
+}
+
+export interface CreateMediaFile {
+  key: string;
+  publicUrl: string;
+  originalName: string;
+  mimeType: string;
+  latitude?: number;
+  longitude?: number;
+}
+
+export type CreateMediaResponse = BackendMedia;
+
+/**
+ * Thrown by `api.uploadToS3` when the presigned URL has expired (S3 returns
+ * HTTP 403 with `SignatureDoesNotMatch` in the response body). Callers should
+ * re-request a fresh signed URL via `api.signUploads` and retry the PUT.
+ */
+export class UploadExpiredError extends Error {
+  constructor(message = "Upload URL expired (S3 SignatureDoesNotMatch)") {
+    super(message);
+    this.name = "UploadExpiredError";
+  }
+}
+
 // ----- Endpoint wrappers -----
 export const api = {
   base: API_BASE_URL,
@@ -311,37 +348,92 @@ export const api = {
 
   tasks: () => apiFetch<BackendTask[]>("/api/tasks"),
 
-  uploadPhoto: async (
-    projectId: string,
-    uri: string,
-    metadata: Record<string, unknown>,
-  ): Promise<{ url: string }> => {
-    if (!API_BASE_URL) throw new ApiError(0, "No API base URL configured");
-    if (!loaded) await loadSession();
-    const form = new FormData();
-    form.append("projectId", projectId);
-    form.append("metadata", JSON.stringify(metadata));
-    form.append("file", {
-      uri,
-      name: `photo-${Date.now()}.jpg`,
-      type: "image/jpeg",
-    } as unknown as Blob);
-
-    const headers: Record<string, string> = {};
-    if (cookieJar.size > 0 && Platform.OS !== "web") headers["Cookie"] = serializeCookieJar();
-
-    console.log("[api] Cookie being sent:", headers["Cookie"] || "(none)");
-    const res = await fetch(`${API_BASE_URL}/api/photos/upload`, {
+  /**
+   * Step 1: ask the backend for presigned S3 PUT URLs for 1–20 files. The
+   * response array order matches the input order 1:1.
+   */
+  signUploads: (files: SignUploadFile[]) =>
+    apiFetch<SignUploadResponse[]>("/api/uploads/sign", {
       method: "POST",
-      body: form,
-      headers,
-      credentials: Platform.OS === "web" ? "include" : "omit",
-    });
-    const sc = res.headers.get("set-cookie");
-    if (sc) console.log("[api] Set-Cookie received:", sc);
-    if (sc) parseAndPersistSetCookie(sc);
-    if (!res.ok) throw new ApiError(res.status, `Upload failed (${res.status})`);
-    return (await res.json()) as { url: string };
+      json: { files },
+    }),
+
+  /**
+   * Step 2: PUT raw file bytes directly to the presigned S3 URL. Reads the
+   * local file via the React Native fetch(uri) → blob() bridge and uploads
+   * the blob with the matching Content-Type and Content-Length headers.
+   * Throws `UploadExpiredError` on 403 + SignatureDoesNotMatch so callers
+   * can re-request a fresh signed URL and retry.
+   */
+  uploadToS3: async (
+    uploadUrl: string,
+    fileUri: string,
+    mimeType: string,
+    fileSize: number,
+  ): Promise<void> => {
+    let body: Blob;
+    try {
+      const fileRes = await fetch(fileUri);
+      body = await fileRes.blob();
+    } catch (e) {
+      throw new ApiError(
+        0,
+        `Failed to read local file: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+
+    let res: Response;
+    try {
+      console.log("[api] → PUT (s3)", uploadUrl.split("?")[0]);
+      res = await fetch(uploadUrl, {
+        method: "PUT",
+        body,
+        headers: {
+          "Content-Type": mimeType,
+          "Content-Length": String(fileSize),
+        },
+      });
+      console.log("[api] ← (s3)", res.status);
+    } catch (e) {
+      throw new ApiError(
+        0,
+        `S3 upload network failure: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+
+    if (res.status === 403) {
+      const text = await res.text().catch(() => "");
+      if (text.includes("SignatureDoesNotMatch")) {
+        throw new UploadExpiredError();
+      }
+      throw new ApiError(403, `S3 upload forbidden: ${text.slice(0, 200)}`);
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new ApiError(
+        res.status,
+        `S3 upload failed (${res.status}): ${text.slice(0, 200)}`,
+      );
+    }
+  },
+
+  /**
+   * Step 3: record successfully-uploaded media in the database, attaching
+   * them to a project. Returns the created Media rows.
+   */
+  createMedia: (
+    projectId: string,
+    files: CreateMediaFile[],
+    caption?: string | null,
+    tags?: string[],
+  ) => {
+    const body: Record<string, unknown> = { files };
+    if (caption !== undefined) body.caption = caption;
+    if (tags !== undefined) body.tags = tags;
+    return apiFetch<CreateMediaResponse[]>(
+      `/api/projects/${projectId}/media`,
+      { method: "POST", json: body },
+    );
   },
 };
 
