@@ -11,10 +11,12 @@
     "splash": {
       "image": "./assets/images/icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#F09001"
     },
     "ios": {
       "supportsTablet": false,
+      "bundleIdentifier": "com.fieldview.app",
+      "icon": "./assets/images/icon.png",
       "infoPlist": {
         "NSCameraUsageDescription": "Field View uses the camera to capture project photos with burst mode for rapid documentation.",
         "NSLocationWhenInUseUsageDescription": "Field View tags your photos with GPS coordinates so you can map site locations.",
@@ -23,6 +25,12 @@
       }
     },
     "android": {
+      "package": "com.fieldview.app",
+      "icon": "./assets/images/icon.png",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/icon.png",
+        "backgroundColor": "#F09001"
+      },
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.ACCESS_FINE_LOCATION",
