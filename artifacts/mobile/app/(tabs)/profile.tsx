@@ -1,4 +1,5 @@
 import { Feather } from "@expo/vector-icons";
+import * as Linking from "expo-linking";
 import React, { useState } from "react";
 import {
   Alert,
@@ -29,6 +30,14 @@ export default function ProfileScreen() {
   const isOwner = user?.isOwner ?? false;
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+
+  const openExternal = async (url: string) => {
+    try {
+      await Linking.openURL(url);
+    } catch {
+      showToast("Couldn't open the link. Try again.");
+    }
+  };
 
   const onSignOut = () => {
     if (Platform.OS === "web") {
@@ -164,15 +173,17 @@ export default function ProfileScreen() {
       </View>
 
       <View style={styles.section}>
-        <Row
-          icon="cloud"
-          label="Sync backend"
-          value={
-            process.env.EXPO_PUBLIC_API_URL ? "Connected" : "Offline (local)"
-          }
-        />
-        <Row icon="shield" label="Privacy" value="Photos stored on device" />
         <Row icon="info" label="Version" value="1.0.0" />
+        <Row
+          icon="shield"
+          label="Privacy Policy"
+          onPress={() => openExternal("https://field-view.com/privacy")}
+        />
+        <Row
+          icon="file-text"
+          label="Terms of Service"
+          onPress={() => openExternal("https://field-view.com/terms")}
+        />
       </View>
 
       <View style={{ paddingHorizontal: 20, marginTop: 24 }}>
@@ -253,13 +264,15 @@ function Row({
   icon,
   label,
   value,
+  onPress,
 }: {
   icon: keyof typeof Feather.glyphMap;
   label: string;
-  value: string;
+  value?: string;
+  onPress?: () => void;
 }) {
   const colors = useColors();
-  return (
+  const body = (
     <View style={[styles.row, { borderBottomColor: colors.border }]}>
       <View style={styles.rowLeft}>
         <Feather name={icon} size={18} color={colors.mutedForeground} />
@@ -267,11 +280,31 @@ function Row({
           {label}
         </Text>
       </View>
-      <Text style={[styles.rowValue, { color: colors.mutedForeground }]}>
-        {value}
-      </Text>
+      {onPress ? (
+        <Feather
+          name="chevron-right"
+          size={18}
+          color={colors.mutedForeground}
+        />
+      ) : (
+        <Text style={[styles.rowValue, { color: colors.mutedForeground }]}>
+          {value}
+        </Text>
+      )}
     </View>
   );
+  if (onPress) {
+    return (
+      <Pressable
+        onPress={onPress}
+        accessibilityRole="link"
+        accessibilityLabel={label}
+      >
+        {body}
+      </Pressable>
+    );
+  }
+  return body;
 }
 
 const styles = StyleSheet.create({
