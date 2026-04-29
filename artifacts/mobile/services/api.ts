@@ -203,17 +203,6 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
     } catch {
       /* ignore */
     }
-    console.log(
-      "[api] !ok",
-      res.status,
-      path,
-      "ct=",
-      contentType,
-      "body=",
-      typeof parsed === "string"
-        ? parsed.slice(0, 500)
-        : JSON.stringify(parsed)?.slice(0, 500),
-    );
     throw new ApiError(res.status, message, parsed);
   }
 
@@ -230,11 +219,7 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
     );
   }
 
-  const data = (await res.json()) as T;
-  if (path === "/api/account") {
-    console.log("[api] /api/account 200 body =", JSON.stringify(data));
-  }
-  return data;
+  return (await res.json()) as T;
 }
 
 // ----- Types returned by the backend -----
@@ -244,6 +229,8 @@ export interface BackendUser {
   firstName?: string;
   lastName?: string;
   name?: string;
+  /** Owner flag from /api/auth/user (web backend, deployed 2026-04-28). */
+  isOwner?: boolean;
   [key: string]: unknown;
 }
 
@@ -338,13 +325,6 @@ export class UploadExpiredError extends Error {
   }
 }
 
-export interface BackendAccount {
-  id: string;
-  ownerId: string;
-  name?: string;
-  subscriptionStatus?: string;
-}
-
 export interface DeleteUserResponse {
   success: boolean;
   deletedAt?: string;
@@ -384,14 +364,6 @@ export const api = {
   tasks: () => apiFetch<BackendTask[]>("/api/tasks"),
 
   // ----- Account / membership -----
-
-  /**
-   * Fetches the current user's account record. Used to derive isOwner =
-   * account.ownerId === user.id. Best-guess shape per the web backend
-   * contract — adjust if reality differs.
-   */
-  getAccount: () =>
-    apiFetch<BackendAccount>("/api/account"),
 
   /**
    * Soft-delete the current user (leaves the team). Backend invalidates the

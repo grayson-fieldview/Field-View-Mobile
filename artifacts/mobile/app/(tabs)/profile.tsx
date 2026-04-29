@@ -1,7 +1,6 @@
 import { Feather } from "@expo/vector-icons";
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import {
-  ActivityIndicator,
   Alert,
   Platform,
   Pressable,
@@ -27,72 +26,9 @@ export default function ProfileScreen() {
   const { projects, photos, tasks, clearAll } = useData();
   const { showToast } = useToast();
 
-  // Owner detection. null = still loading; false = not owner / fetch failed.
-  const [isOwner, setIsOwner] = useState<boolean | null>(null);
+  const isOwner = user?.isOwner ?? false;
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!user) {
-      setIsOwner(null);
-      return;
-    }
-    (async () => {
-      console.log(
-        "[owner-detect] start url=",
-        (api.base ?? "") + "/api/account",
-        "user.id=",
-        user.id,
-        "(type",
-        typeof user.id,
-        ")",
-      );
-      try {
-        const account = await api.getAccount();
-        if (cancelled) return;
-        console.log(
-          "[owner-detect] response =",
-          JSON.stringify(account),
-        );
-        const rawOwnerId = (account as { ownerId?: unknown })?.ownerId;
-        console.log(
-          "[owner-detect] ownerId=",
-          rawOwnerId,
-          "(type",
-          typeof rawOwnerId,
-          ") user.id=",
-          user.id,
-          "(type",
-          typeof user.id,
-          ") equal?=",
-          String(rawOwnerId) === String(user.id),
-        );
-        setIsOwner(
-          !!account?.ownerId && String(account.ownerId) === String(user.id),
-        );
-      } catch (e) {
-        if (!cancelled) {
-          const status = e instanceof ApiError ? e.status : "n/a";
-          const body = e instanceof ApiError ? e.body : null;
-          console.log(
-            "[owner-detect] FAIL status=",
-            status,
-            "message=",
-            e instanceof Error ? e.message : String(e),
-            "body=",
-            typeof body === "string"
-              ? body.slice(0, 500)
-              : JSON.stringify(body),
-          );
-          setIsOwner(false);
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [user]);
 
   const onSignOut = () => {
     if (Platform.OS === "web") {
@@ -256,11 +192,7 @@ export default function ProfileScreen() {
         <Text style={[styles.dangerHeader, { color: colors.destructive }]}>
           Danger Zone
         </Text>
-        {isOwner === null ? (
-          <View style={styles.dangerLoading}>
-            <ActivityIndicator color={colors.mutedForeground} />
-          </View>
-        ) : isOwner ? (
+        {isOwner ? (
           <>
             <Button
               title="Delete account"
@@ -396,10 +328,6 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_700Bold",
     letterSpacing: 1.2,
     textTransform: "uppercase",
-  },
-  dangerLoading: {
-    paddingVertical: 12,
-    alignItems: "center",
   },
   dangerHelper: {
     fontSize: 13,

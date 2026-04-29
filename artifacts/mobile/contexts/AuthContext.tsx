@@ -22,6 +22,8 @@ export interface AuthUser {
   firstName?: string;
   lastName?: string;
   name: string;
+  /** True when this user owns their account (can delete the whole account). */
+  isOwner: boolean;
 }
 
 interface AuthState {
@@ -46,6 +48,7 @@ function toAuthUser(raw: BackendUser | null): AuthUser | null {
     firstName: raw.firstName,
     lastName: raw.lastName,
     name: raw.name ? String(raw.name) : combined || String(raw.email),
+    isOwner: raw.isOwner === true,
   };
 }
 
