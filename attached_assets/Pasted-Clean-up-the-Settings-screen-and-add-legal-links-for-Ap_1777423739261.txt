@@ -1,0 +1,39 @@
+Clean up the Settings screen and add legal links for App Store compliance.
+Changes to apply in app/(tabs)/profile.tsx:
+
+Remove the "Sync backend — Offline (local)" row entirely. It's misleading — the upload pipeline actively syncs photos to S3. Remove the row, the icon, the value display, and any state/effect that computed the offline status if it's not used elsewhere in the file.
+Remove the "Privacy — Photos stored on device" row entirely. It's misleading — photos are stored in AWS S3 via the upload pipeline. Remove the row and any associated state.
+Keep the "Version" row unchanged.
+Keep the "Sign out" button unchanged.
+Add a new "Legal" section between the Version row and the Sign out button. Two rows in this order:
+a. Privacy Policy — opens https://field-view.com/privacy in the device browser via React Native's Linking.openURL (or expo-linking's openURL if already installed). Use a shield icon (e.g., shield from lucide-react-native or whatever icon library is already imported in the file). Include a chevron-right indicator on the right edge to signal external navigation.
+b. Terms of Service — opens https://field-view.com/terms in the device browser. Use a document icon (e.g., file-text). Include chevron-right.
+Match the visual style of the existing Settings rows (icon left, label center, indicator right). Same row height, same padding, same separator pattern.
+Final layout order from top to bottom:
+
+User avatar + name + email (existing)
+Stats row: Projects / Photos / Tasks (existing)
+Version (kept)
+NEW: Privacy Policy row
+NEW: Terms of Service row
+Sign out button (kept)
+Danger Zone (kept)
+
+
+
+Do not:
+
+Add any other Settings sections (no Notifications, no Calendars, no Tags, no Edit Profile, no Dark Mode, no Billing — these are deferred)
+Modify the Danger Zone, the existing isOwner logic, or the deletion flows
+Change the Sign out behavior
+Touch the user info or stats sections at the top
+
+Verification after applying:
+
+TypeScript compiles cleanly
+Restart Expo, confirm clean Metro bundle
+On device: Settings tab shows the cleaner layout without the two misleading rows
+Tapping Privacy Policy opens https://field-view.com/privacy in mobile Safari/Chrome
+Tapping Terms of Service opens https://field-view.com/terms in mobile Safari/Chrome
+
+Show me the diff before applying.
