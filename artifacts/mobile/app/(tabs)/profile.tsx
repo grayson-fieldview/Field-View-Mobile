@@ -39,17 +39,52 @@ export default function ProfileScreen() {
       return;
     }
     (async () => {
+      console.log(
+        "[owner-detect] start url=",
+        (api.base ?? "") + "/api/account",
+        "user.id=",
+        user.id,
+        "(type",
+        typeof user.id,
+        ")",
+      );
       try {
         const account = await api.getAccount();
         if (cancelled) return;
+        console.log(
+          "[owner-detect] response =",
+          JSON.stringify(account),
+        );
+        const rawOwnerId = (account as { ownerId?: unknown })?.ownerId;
+        console.log(
+          "[owner-detect] ownerId=",
+          rawOwnerId,
+          "(type",
+          typeof rawOwnerId,
+          ") user.id=",
+          user.id,
+          "(type",
+          typeof user.id,
+          ") equal?=",
+          String(rawOwnerId) === String(user.id),
+        );
         setIsOwner(
           !!account?.ownerId && String(account.ownerId) === String(user.id),
         );
       } catch (e) {
-        // Network error or endpoint missing — fail safe to non-owner so we
-        // never accidentally show "Delete account" to someone who isn't.
         if (!cancelled) {
-          console.log("[profile] /api/account fetch failed:", e);
+          const status = e instanceof ApiError ? e.status : "n/a";
+          const body = e instanceof ApiError ? e.body : null;
+          console.log(
+            "[owner-detect] FAIL status=",
+            status,
+            "message=",
+            e instanceof Error ? e.message : String(e),
+            "body=",
+            typeof body === "string"
+              ? body.slice(0, 500)
+              : JSON.stringify(body),
+          );
           setIsOwner(false);
         }
       }

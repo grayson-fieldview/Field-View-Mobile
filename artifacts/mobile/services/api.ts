@@ -203,6 +203,17 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
     } catch {
       /* ignore */
     }
+    console.log(
+      "[api] !ok",
+      res.status,
+      path,
+      "ct=",
+      contentType,
+      "body=",
+      typeof parsed === "string"
+        ? parsed.slice(0, 500)
+        : JSON.stringify(parsed)?.slice(0, 500),
+    );
     throw new ApiError(res.status, message, parsed);
   }
 
@@ -219,7 +230,11 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
     );
   }
 
-  return (await res.json()) as T;
+  const data = (await res.json()) as T;
+  if (path === "/api/account") {
+    console.log("[api] /api/account 200 body =", JSON.stringify(data));
+  }
+  return data;
 }
 
 // ----- Types returned by the backend -----
