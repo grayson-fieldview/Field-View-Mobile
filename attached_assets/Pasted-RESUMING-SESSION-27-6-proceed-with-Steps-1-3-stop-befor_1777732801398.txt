@@ -1,0 +1,115 @@
+RESUMING SESSION 27.6 — proceed with Steps 1-3, stop before any build.
+
+User has provided:
+- EXPO_TOKEN secret in Replit Mobile (use process.env.EXPO_TOKEN)
+- Bundle ID com.fieldview.app is FREE (not registered yet — EAS will
+  auto-register it at first build time)
+- Apple Team ID: D92J7GZBAY
+- Apple Team Name: Field View LLC
+
+EXECUTE these steps:
+
+STEP 1: Install expo-dev-client (use pnpm workspace command per your
+diagnose recommendation):
+
+  pnpm --filter @workspace/mobile exec npx expo install expo-dev-client
+
+  Confirm:
+  - package.json updated (expo-dev-client added to devDependencies)
+  - pnpm-lock.yaml updated
+  - Show the diff
+
+STEP 2: Initialize EAS project using EXPO_TOKEN
+
+  Use the EXPO_TOKEN secret. The standard incantation:
+  
+  EXPO_TOKEN=$EXPO_TOKEN npx eas init --non-interactive
+  
+  If --non-interactive doesn't work for eas init (it may require
+  interactive approval), fall back to:
+  
+  EXPO_TOKEN=$EXPO_TOKEN npx eas init
+  
+  This should:
+  - Authenticate via the token (no login prompt)
+  - Create an Expo project under the graysonfieldview account
+  - Add expo.extra.eas.projectId to app.json
+  
+  Show:
+  - The full eas init output (redact the token if it appears)
+  - The diff to app.json (the new projectId line)
+  - The projectId value
+
+STEP 3: Install eas-cli as devDependency, then create eas.json
+
+  Install:
+  pnpm --filter @workspace/mobile add -D eas-cli
+  
+  Create eas.json at the mobile package root with three profiles:
+  
+  {
+    "cli": {
+      "version": ">= 14.0.0",
+      "appVersionSource": "remote"
+    },
+    "build": {
+      "development": {
+        "developmentClient": true,
+        "distribution": "internal",
+        "ios": {
+          "simulator": false
+        },
+        "channel": "development"
+      },
+      "preview": {
+        "distribution": "internal",
+        "ios": {
+          "simulator": false
+        },
+        "channel": "preview"
+      },
+      "production": {
+        "channel": "production",
+        "autoIncrement": true
+      }
+    },
+    "submit": {
+      "production": {}
+    }
+  }
+  
+  Note: "ios.simulator": false means we're targeting physical devices
+  for development/preview. Grayson tests on his actual iPhone, not a
+  simulator.
+
+  Show the file contents and confirm location.
+
+STEP 4: STOP HERE.
+
+The first eas build run requires:
+- Apple Developer credentials (Apple ID + app-specific password OR
+  Apple session)
+- Bundle ID auto-registration confirmation
+- Distribution certificate generation
+- Provisioning profile generation
+- Push notification certificate (we'll skip for now, add later in 27.7)
+
+These prompt for credentials interactively or require additional
+secrets. We'll handle that as a separate handoff. Do NOT run
+eas build in this session.
+
+DELIVERABLE
+1. expo-dev-client install confirmation (package.json + lock diff)
+2. eas init output + projectId
+3. eas-cli install confirmation
+4. eas.json full contents
+5. Pre-build credential checklist for the human:
+   - Apple ID email associated with Developer Program
+   - Apple ID app-specific password (https://appleid.apple.com → Sign-In
+     and Security → App-Specific Passwords) — we'll use this rather than
+     interactive Apple session login since it works better with EAS
+     automation
+   - Confirm Team ID D92J7GZBAY is correct
+   - Confirm bundle ID com.fieldview.app should be auto-registered
+
+Do NOT run eas build. Do NOT push to git.
