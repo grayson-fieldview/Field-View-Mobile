@@ -55,8 +55,7 @@ export default function ProjectsScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { projects, photos, tasks, ready, syncing, syncError, refresh } =
-    useData();
+  const { projects, photos, tasks, ready, syncError, refresh } = useData();
 
   // Refresh whenever the screen gains focus. The DataContext throttles this
   // internally so it's safe to call frequently.
@@ -68,6 +67,12 @@ export default function ProjectsScreen() {
 
   const [sortMode, setSortMode] = useState<SortMode>("nearby");
   const [query, setQuery] = useState("");
+  // Track ONLY user-initiated pull-to-refresh. Bound to the FlatList's
+  // `refreshing` prop so iOS doesn't animate the RefreshControl inset
+  // for programmatic background refreshes (focus/foreground), which
+  // produced a glitchy empty gap at the top of the list on back-nav.
+  // The global DataContext `syncing` state is intentionally NOT used here.
+  const [pullRefreshing, setPullRefreshing] = useState(false);
   const [userLoc, setUserLoc] = useState<{ lat: number; lng: number } | null>(
     null,
   );
@@ -298,8 +303,15 @@ export default function ProjectsScreen() {
       <FlatList
         data={filteredAndSorted}
         keyExtractor={(item) => item.id}
-        refreshing={syncing}
-        onRefresh={() => refresh({ force: true })}
+        refreshing={pullRefreshing}
+        onRefresh={async () => {
+          setPullRefreshing(true);
+          try {
+            await refresh({ force: true });
+          } finally {
+            setPullRefreshing(false);
+          }
+        }}
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={{
           padding: 16,
