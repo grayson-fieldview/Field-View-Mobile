@@ -127,6 +127,10 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   // Hydrate local cache on first mount so the app works offline immediately.
   useEffect(() => {
     (async () => {
+      // Drop orphaned cache keys from earlier schema versions (e.g. the v1
+      // projects key that could be left in a truncated state by an older
+      // build of loadProjectDetail). Fire-and-forget; failures are harmless.
+      storage.pruneLegacyKeys();
       const [p, ph, ts, cl, sh] = await Promise.all([
         storage.getProjects(),
         storage.getPhotos(),
@@ -267,9 +271,19 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         if (!detail?.project) return;
         const mappedProject = mapBackendProject(detail.project);
         const idStr = String(mappedProject.id);
-        await persistProjects(
-          mergeById(projectsRef.current, [mappedProject]),
-        );
+        // Single-row upsert. DO NOT use mergeById here: mergeById assumes
+        // `incoming` is the FULL backend list and drops every remote row
+        // that's missing from it. Calling it with a one-element array
+        // (just this project) silently wipes every other remote project
+        // from in-memory state AND AsyncStorage, producing the "list shows
+        // only the project I came from" bug after navigating back.
+        const existingProjects = projectsRef.current;
+        const upserted = existingProjects.some((p) => p.id === mappedProject.id)
+          ? existingProjects.map((p) =>
+              p.id === mappedProject.id ? mappedProject : p,
+            )
+          : [mappedProject, ...existingProjects];
+        await persistProjects(upserted);
         // Always replace remote photos for this project (even with empty list,
         // so stale deletions on the web propagate); keep local-only rows.
         console.log("[photos] received from backend:", detail.media?.length ?? 0);

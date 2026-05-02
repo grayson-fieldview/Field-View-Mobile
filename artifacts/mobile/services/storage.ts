@@ -11,12 +11,19 @@ import type {
 const KEYS = {
   user: "@fv/user",
   authToken: "@fv/token",
-  projects: "@fv/projects",
+  // Bumped to v2 to recover from a bug where loadProjectDetail wrote a
+  // truncated projects array (only the just-viewed project + local-only
+  // rows) into AsyncStorage. v1 caches are orphaned on next launch and
+  // re-hydrated empty so the auth-ready force-refresh repopulates from
+  // the server. Safe to delete the cleanup below after a release or two.
+  projects: "@fv/projects/v2",
   photos: "@fv/photos",
   tasks: "@fv/tasks",
   checklists: "@fv/checklists",
   shares: "@fv/shares",
 } as const;
+
+const LEGACY_KEYS = ["@fv/projects"] as const;
 
 async function readJson<T>(key: string, fallback: T): Promise<T> {
   try {
@@ -60,5 +67,14 @@ export const storage = {
 
   clearSession: async () => {
     await AsyncStorage.multiRemove([KEYS.user, KEYS.authToken]);
+  },
+
+  /** Best-effort cleanup of orphaned cache keys from previous schema versions. */
+  pruneLegacyKeys: async () => {
+    try {
+      await AsyncStorage.multiRemove(LEGACY_KEYS as unknown as string[]);
+    } catch {
+      /* ignore */
+    }
   },
 };
