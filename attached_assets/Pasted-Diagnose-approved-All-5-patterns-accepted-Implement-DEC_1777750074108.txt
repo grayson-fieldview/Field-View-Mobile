@@ -1,0 +1,100 @@
+Diagnose approved. All 5 patterns accepted. Implement.
+
+DECISIONS LOCKED IN
+- Sticky bottom bar, sibling to ScrollView in styles.wrap, position absolute,
+  paddingBottom: insets.bottom. ~64pt height + safe area.
+- Extend services/api.ts (NOT new file). Add BackendTimesheetEntry type
+  alongside BackendProject. Add api.clockIn / api.clockOut /
+  api.activeTimesheet entries.
+- New contexts/TimesheetContext.tsx mirroring DataContext + UploadStatusContext
+  patterns. Insert provider between DataProvider and ToastProvider in _layout.tsx.
+- Three render states on project detail screen:
+  1. active === null → orange "Clock In" button
+  2. active.projectId === thisProjectId → "Clocked in · Xh Ym" + "Clock Out"
+  3. active.projectId !== thisProjectId → muted gray, "Clocked in to {otherProject.name}",
+     small link "Clock out of {otherProject.name} first"
+- Toast variants: skip for v1. Use prefix-based messages. Tech debt noted for
+  later session.
+- No polling. Foreground refresh via AppState only. setActive(result) on
+  successful mutations.
+- No notes field in v1 UI. (Backend accepts notes? but UI doesn't expose.)
+
+IMPLEMENTATION ORDER
+
+PART A — services/api.ts
+1. Add BackendTimesheetEntry interface alongside BackendProject /
+   BackendTask. Match the Drizzle schema from server/lib (clock_in,
+   clock_out, project_id, source, etc., camelCased).
+2. Add three entries on the api object:
+   - clockIn: (projectId, notes?) → POST /api/timesheets/clock-in
+   - clockOut: (notes?) → POST /api/timesheets/clock-out
+   - activeTimesheet: () → GET /api/timesheets/active
+
+PART B — contexts/TimesheetContext.tsx (new file)
+1. Mirror UploadStatusContext + DataContext pattern.
+2. State: active, ready, loading.
+3. Actions: refresh, clockIn(projectId, notes?), clockOut(notes?).
+4. On mount once auth.ready && auth.user → call refresh() once.
+5. AppState listener: on "active" (foreground) → refresh().
+6. After clockIn success → setActive(result), no extra GET.
+7. After clockOut success → setActive(null).
+8. On any error → showToast with prefix-based message + log to console.
+9. Type-only import: import type { BackendTimesheetEntry } from "../services/api"
+
+PART C — app/_layout.tsx
+1. Wrap providers: Auth → Data → Timesheet → Toast → UploadStatus
+   (Timesheet inside Data so it can resolve project name; outside Toast
+   so it can call showToast — wait, that's contradictory).
+   
+   Actually: TimesheetProvider needs to call showToast → must be INSIDE
+   ToastProvider. Provider order: Auth → Data → Toast → Timesheet → UploadStatus.
+   Adjust if my reading is wrong; you have the layout file.
+
+PART D — app/project/[id].tsx
+1. Import useTimesheet, useData (for resolving other project name).
+2. Render sticky bottom bar as sibling AFTER the ScrollView, inside
+   styles.wrap.
+3. Three states (per spec above).
+4. Live timer in State 2: useEffect + setInterval(60_000), clean up on
+   unmount and on entry change.
+5. Format: "Xh Ym" (zero-padded for h, no decimals). Use existing
+   formatHours from shared lib if it exists; otherwise inline.
+6. Tap targets ≥44pt.
+7. Backend already snapshots rate at clock-out — do NOT show cost on
+   mobile. Mobile is for the worker, not the manager.
+
+VERIFICATION ON GRAYSON'S iPHONE
+
+Pre-test setup (Grayson confirms before testing):
+- His admin user has timesheet_enabled=true on web Team page (verify
+  before testing — he may not have toggled himself on)
+- He's logged into the mobile app (already confirmed)
+
+Test sequence:
+1. Open Janet Wexler project → sticky bar shows orange "Clock In"
+2. Tap Clock In → bar transitions to State 2 with timer
+3. Timer reads "0h 0m" → wait 60s → reads "0h 1m"
+4. Navigate back to projects list, return to Janet Wexler → bar still
+   shows State 2 (refresh-on-focus or context retains state)
+5. Background app for 30s, foreground → bar still in State 2 (AppState
+   refresh works)
+6. Open a different project (Brad & Lauren Whitfield) → bar shows
+   State 3, "Clocked in to Janet Wexler"
+7. From State 3, tap "Clock out of Janet Wexler first" → confirm
+   dialog, tap Confirm → State 1 returns on Brad & Lauren
+8. Open web manager-timesheets dashboard → verify the entry appears
+   with correct project and time range
+
+DELIVERABLE
+1. List of files touched with diff stats (lines added)
+2. Provider order in _layout.tsx (corrected if my guess was wrong)
+3. Confirmation toast prefix conventions (e.g., what the success and
+   error messages read exactly)
+4. Confirmation timer formatting matches "Xh Ym"
+5. Wait for Grayson to test on iPhone before declaring done
+
+WARN GRAYSON: this connects to PROD via the mobile app's prod API base
+URL. Real time entries will be created in his prod RDS. He's the only
+user with timesheet_enabled today, so it's safe, but flag it explicitly.
+
+Do not push to git. Do not run any tests beyond what hot-reload shows.

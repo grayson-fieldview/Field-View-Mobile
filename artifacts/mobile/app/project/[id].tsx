@@ -23,6 +23,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { Input } from "@/components/Input";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { useData } from "@/contexts/DataContext";
+import { useTimesheet } from "@/contexts/TimesheetContext";
 import { useUploadStatus } from "@/contexts/UploadStatusContext";
 import { useColors } from "@/hooks/useColors";
 import {
@@ -260,7 +261,7 @@ export default function ProjectDetailScreen() {
 
       <ScrollView
         contentContainerStyle={{
-          paddingBottom: insets.bottom + 100,
+          paddingBottom: insets.bottom + 120,
         }}
       >
         <View style={styles.heroWrap}>
@@ -987,6 +988,12 @@ export default function ProjectDetailScreen() {
         ) : null}
       </ScrollView>
 
+      <ClockBar
+        thisProjectId={String(project.id)}
+        colors={colors}
+        bottomInset={insets.bottom}
+      />
+
       <TaskModal
         visible={showTaskModal}
         onClose={() => setShowTaskModal(false)}
@@ -1011,6 +1018,190 @@ export default function ProjectDetailScreen() {
           setShowShareModal(false);
         }}
       />
+    </View>
+  );
+}
+
+function formatElapsed(startIso: string, nowMs: number): string {
+  const start = Date.parse(startIso);
+  if (!Number.isFinite(start)) return "0h 0m";
+  const ms = Math.max(0, nowMs - start);
+  const totalMins = Math.floor(ms / 60000);
+  const h = Math.floor(totalMins / 60);
+  const m = totalMins % 60;
+  return `${h}h ${m}m`;
+}
+
+function ClockBar({
+  thisProjectId,
+  colors,
+  bottomInset,
+}: {
+  thisProjectId: string;
+  colors: ReturnType<typeof useColors>;
+  bottomInset: number;
+}) {
+  const { active, ready, loading, clockIn, clockOut } = useTimesheet();
+  const { projects } = useData();
+  const [now, setNow] = useState(() => Date.now());
+
+  const isClockedInHere =
+    !!active && String(active.projectId) === thisProjectId;
+
+  // Live-update the elapsed timer every 60s while clocked into THIS project.
+  useEffect(() => {
+    if (!isClockedInHere || !active) return;
+    setNow(Date.now()); // immediate refresh on mount/transition
+    const t = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, [isClockedInHere, active?.id, active]);
+
+  const onClockIn = () => {
+    void clockIn(thisProjectId);
+  };
+
+  const confirmClockOut = (otherName?: string) => {
+    const title = otherName
+      ? `Clock out of ${otherName}?`
+      : "Clock out?";
+    if (Platform.OS === "web") {
+      void clockOut();
+      return;
+    }
+    Alert.alert(title, undefined, [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Clock out",
+        style: "destructive",
+        onPress: () => {
+          void clockOut();
+        },
+      },
+    ]);
+  };
+
+  // Render a stable-height container even before first fetch so the bar
+  // doesn't pop in suddenly.
+  const containerStyle = [
+    styles.clockBar,
+    {
+      backgroundColor: colors.card,
+      borderTopColor: colors.border,
+      paddingBottom: bottomInset + 10,
+    },
+  ];
+
+  if (!ready) {
+    return (
+      <View style={containerStyle}>
+        <ActivityIndicator color={colors.mutedForeground} />
+      </View>
+    );
+  }
+
+  // State 1: not clocked in anywhere → orange Clock In button.
+  if (!active) {
+    return (
+      <View style={containerStyle}>
+        <Pressable
+          onPress={onClockIn}
+          disabled={loading}
+          accessibilityRole="button"
+          accessibilityLabel="Clock in to this project"
+          style={({ pressed }) => [
+            styles.clockBtn,
+            {
+              backgroundColor: "#F97316",
+              opacity: loading ? 0.6 : pressed ? 0.85 : 1,
+            },
+          ]}
+        >
+          {loading ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <>
+              <Feather name="play-circle" size={18} color="#fff" />
+              <Text style={styles.clockBtnTxt}>Clock In</Text>
+            </>
+          )}
+        </Pressable>
+      </View>
+    );
+  }
+
+  // State 2: clocked into THIS project.
+  if (isClockedInHere) {
+    return (
+      <View style={containerStyle}>
+        <View style={styles.clockStatusCol}>
+          <Text style={[styles.clockStatusLbl, { color: colors.mutedForeground }]}>
+            CLOCKED IN
+          </Text>
+          <Text style={[styles.clockStatusVal, { color: colors.foreground }]}>
+            {formatElapsed(active.clockIn, now)}
+          </Text>
+        </View>
+        <Pressable
+          onPress={() => confirmClockOut()}
+          disabled={loading}
+          accessibilityRole="button"
+          accessibilityLabel="Clock out"
+          style={({ pressed }) => [
+            styles.clockBtn,
+            styles.clockBtnInline,
+            {
+              backgroundColor: colors.foreground,
+              opacity: loading ? 0.6 : pressed ? 0.85 : 1,
+            },
+          ]}
+        >
+          {loading ? (
+            <ActivityIndicator color={colors.background} />
+          ) : (
+            <>
+              <Feather name="stop-circle" size={18} color={colors.background} />
+              <Text style={[styles.clockBtnTxt, { color: colors.background }]}>
+                Clock Out
+              </Text>
+            </>
+          )}
+        </Pressable>
+      </View>
+    );
+  }
+
+  // State 3: clocked into ANOTHER project.
+  const otherProject = projects.find(
+    (p) => String(p.id) === String(active.projectId),
+  );
+  const otherName = otherProject?.name ?? "another project";
+  return (
+    <View style={containerStyle}>
+      <View style={styles.clockStatusCol}>
+        <Text style={[styles.clockStatusLbl, { color: colors.mutedForeground }]}>
+          CLOCKED IN TO
+        </Text>
+        <Text
+          style={[styles.clockStatusVal, { color: colors.foreground }]}
+          numberOfLines={1}
+        >
+          {otherName}
+        </Text>
+        <Pressable
+          onPress={() => confirmClockOut(otherName)}
+          disabled={loading}
+          hitSlop={14}
+          accessibilityRole="button"
+          accessibilityLabel={`Clock out of ${otherName} first`}
+        >
+          <Text style={[styles.clockLink, { color: colors.primary }]}>
+            Clock out of {otherName} first
+          </Text>
+        </Pressable>
+      </View>
+      {loading ? (
+        <ActivityIndicator color={colors.mutedForeground} />
+      ) : null}
     </View>
   );
 }
@@ -1643,6 +1834,63 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   statDivider: { width: StyleSheet.hairlineWidth, height: 32 },
+  clockBar: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    minHeight: 64,
+    paddingTop: 10,
+    paddingHorizontal: 16,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    shadowColor: "#000",
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: -2 },
+    elevation: 8,
+  },
+  clockBtn: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingHorizontal: 16,
+  },
+  clockBtnInline: {
+    flex: 0,
+    paddingHorizontal: 18,
+  },
+  clockBtnTxt: {
+    color: "#fff",
+    fontSize: 15,
+    fontFamily: "Inter_700Bold",
+    letterSpacing: 0.2,
+  },
+  clockStatusCol: {
+    flex: 1,
+    gap: 2,
+  },
+  clockStatusLbl: {
+    fontSize: 10,
+    fontFamily: "Inter_600SemiBold",
+    letterSpacing: 1,
+  },
+  clockStatusVal: {
+    fontSize: 16,
+    fontFamily: "Inter_700Bold",
+    letterSpacing: -0.2,
+  },
+  clockLink: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    marginTop: 2,
+  },
   pillTabsRow: {
     paddingHorizontal: 16,
     paddingTop: 14,

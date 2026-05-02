@@ -280,6 +280,20 @@ export interface BackendTask {
   project?: { name?: string };
 }
 
+export interface BackendTimesheetEntry {
+  id: number | string;
+  userId: string;
+  projectId: number | string;
+  accountId?: string;
+  clockIn: string;
+  clockOut: string | null;
+  source?: string | null;
+  notes?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  [key: string]: unknown;
+}
+
 export interface BackendProjectDetail {
   project: BackendProject;
   media?: BackendMedia[];
@@ -362,6 +376,22 @@ export const api = {
     apiFetch<BackendProjectDetail>(`/api/projects/${id}`),
 
   tasks: () => apiFetch<BackendTask[]>("/api/tasks"),
+
+  // ----- Timesheets (manual clock-in/out) -----
+  activeTimesheet: () =>
+    apiFetch<BackendTimesheetEntry | null>("/api/timesheets/active"),
+
+  clockIn: (projectId: string | number, notes?: string) =>
+    apiFetch<BackendTimesheetEntry>("/api/timesheets/clock-in", {
+      method: "POST",
+      json: notes !== undefined ? { projectId, notes } : { projectId },
+    }),
+
+  clockOut: (notes?: string) =>
+    apiFetch<BackendTimesheetEntry>("/api/timesheets/clock-out", {
+      method: "POST",
+      json: notes !== undefined ? { notes } : {},
+    }),
 
   // ----- Account / membership -----
 
