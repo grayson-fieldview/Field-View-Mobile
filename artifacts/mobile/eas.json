@@ -10,12 +10,18 @@
       "ios": {
         "simulator": false
       },
+      "env": {
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true"
+      },
       "channel": "development"
     },
     "preview": {
       "distribution": "internal",
       "ios": {
         "simulator": false
+      },
+      "env": {
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true"
       },
       "channel": "preview"
     },
