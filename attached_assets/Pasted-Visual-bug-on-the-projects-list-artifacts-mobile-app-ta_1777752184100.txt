@@ -1,0 +1,48 @@
+Visual bug on the projects list (artifacts/mobile/app/(tabs)/index.tsx).
+
+When user navigates back from a project detail screen to the projects
+list, all projects DO load correctly (the upstream wipe bug is fixed),
+but there's a brief empty gap at the top of the FlatList that looks
+like a refresh indicator gap. It feels glitchy.
+
+Likely cause: useFocusEffect → refresh() fires every focus, which
+flips DataContext.syncing to true briefly, which is bound to the
+FlatList's `refreshing` prop, causing iOS to render space for a
+RefreshControl spinner even when no actual fetch is happening (because
+of the 4s throttle).
+
+DIAGNOSE — DO NOT WRITE CODE YET
+
+1. In artifacts/mobile/app/(tabs)/index.tsx, paste the FlatList
+   props related to refreshing — specifically:
+   - `refreshing={...}` 
+   - `onRefresh={...}`
+   - `refreshControl={...}` (if used instead)
+
+2. In contexts/DataContext.tsx refresh() / doSync() — confirm exactly
+   when syncing is set to true. Specifically:
+   - Is syncing=true set BEFORE the throttle check, or AFTER?
+   - If before, even no-op throttled refreshes flip syncing momentarily
+   - That would be the cause — the FlatList sees refreshing=true for a
+     few ms and reserves space for a spinner
+
+3. Look at the FlatList's `ListHeaderComponent` and `contentContainerStyle`
+   — is there padding or any element that would create gap-like space
+   when refreshing kicks in?
+
+4. iOS-specific: when `refreshing` flips false→true→false rapidly, does
+   iOS render a momentary inset for the RefreshControl even if it never
+   visually appears? (This is a known RN/iOS quirk.)
+
+REPORT findings before fixing. Most likely fix is one of:
+(a) Move syncing=true inside the throttle check so it's only set when an
+    actual fetch happens (cleanest fix)
+(b) Decouple the FlatList's refreshing prop from syncing — use a separate
+    state that only toggles for user-initiated pull-to-refresh, not
+    every focus refresh
+(c) Suppress the focus-refresh on the projects list specifically — let
+    foreground refresh + initial load handle data freshness
+
+Don't propose a fix yet. Just diagnose.
+
+Do not push to git.
