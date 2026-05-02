@@ -1194,10 +1194,10 @@ function ClockBar({
           ]}
         >
           {loading ? (
-            <ActivityIndicator color="#F97316" />
+            <ActivityIndicator color="#ef9003" />
           ) : (
             <>
-              <Feather name="play-circle" size={18} color="#F97316" />
+              <Feather name="play-circle" size={18} color="#ef9003" />
               <Text style={styles.clockBarQuietTxt}>Clock In</Text>
             </>
           )}
@@ -1943,14 +1943,15 @@ const styles = StyleSheet.create({
   // an icon + label sitting on the card background.
   clockBarTapArea: {
     flex: 1,
-    minHeight: 56,
+    minHeight: 44,
+    paddingVertical: 6,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 8,
   },
   clockBarQuietTxt: {
-    color: "#F97316",
+    color: "#ef9003",
     fontSize: 15,
     fontFamily: "Inter_700Bold",
     letterSpacing: 0.2,
