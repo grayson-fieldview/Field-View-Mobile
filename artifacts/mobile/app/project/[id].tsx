@@ -16,6 +16,13 @@ import {
   Text,
   View,
 } from "react-native";
+import Animated, {
+  useAnimatedScrollHandler,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+  type SharedValue,
+} from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "@/components/Button";
@@ -23,7 +30,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { Input } from "@/components/Input";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { useData } from "@/contexts/DataContext";
-import { useTimesheet } from "@/contexts/TimesheetContext";
+import { useTimesheet, type TimesheetState } from "@/contexts/TimesheetContext";
 import { useUploadStatus } from "@/contexts/UploadStatusContext";
 import { useColors } from "@/hooks/useColors";
 import {
@@ -88,6 +95,41 @@ export default function ProjectDetailScreen() {
   const [showTaskModal, setShowTaskModal] = useState(false);
   const [showChecklistModal, setShowChecklistModal] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
+
+  // ---- Clock bar auto-hide on scroll (State 1 only) ----
+  // Shared values live on the UI thread so the scroll handler doesn't
+  // round-trip to JS for every frame. `autoHideEnabled` is flipped from JS
+  // when the timesheet state transitions in/out of State 1; the worklet
+  // reads it directly.
+  const clockBarTranslateY = useSharedValue(0);
+  const lastScrollY = useSharedValue(0);
+  const autoHideEnabled = useSharedValue(0); // 0 = bar pinned, 1 = may hide
+
+  const SCROLL_DELTA_THRESHOLD = 10;
+  const SCROLL_TOP_PIN = 20;
+  const HIDE_OFFSET = 120; // bar height + safe inset, off-screen target
+
+  const scrollHandler = useAnimatedScrollHandler({
+    onScroll: (e) => {
+      "worklet";
+      const y = e.contentOffset.y;
+      // Always pin to visible at the top of the scroll, even in State 1.
+      if (y < SCROLL_TOP_PIN) {
+        clockBarTranslateY.value = withTiming(0, { duration: 180 });
+        lastScrollY.value = y;
+        return;
+      }
+      if (autoHideEnabled.value !== 1) return;
+      const dy = y - lastScrollY.value;
+      if (dy > SCROLL_DELTA_THRESHOLD) {
+        clockBarTranslateY.value = withTiming(HIDE_OFFSET, { duration: 180 });
+        lastScrollY.value = y;
+      } else if (dy < -SCROLL_DELTA_THRESHOLD) {
+        clockBarTranslateY.value = withTiming(0, { duration: 180 });
+        lastScrollY.value = y;
+      }
+    },
+  });
 
   // Photos tab UI state.
   const [gridSize, setGridSize] = useState<1 | 2 | 3>(2);
@@ -259,10 +301,12 @@ export default function ProjectDetailScreen() {
     <View style={[styles.wrap, { backgroundColor: colors.background }]}>
       <Stack.Screen options={{ headerShown: false }} />
 
-      <ScrollView
+      <Animated.ScrollView
         contentContainerStyle={{
           paddingBottom: insets.bottom + 120,
         }}
+        onScroll={scrollHandler}
+        scrollEventThrottle={16}
       >
         <View style={styles.heroWrap}>
           {heroPhoto ? (
@@ -986,12 +1030,15 @@ export default function ProjectDetailScreen() {
             )}
           </View>
         ) : null}
-      </ScrollView>
+      </Animated.ScrollView>
 
       <ClockBar
         thisProjectId={String(project.id)}
         colors={colors}
         bottomInset={insets.bottom}
+        translateY={clockBarTranslateY}
+        lastScrollY={lastScrollY}
+        autoHideEnabled={autoHideEnabled}
       />
 
       <TaskModal
@@ -1036,17 +1083,48 @@ function ClockBar({
   thisProjectId,
   colors,
   bottomInset,
+  translateY,
+  lastScrollY,
+  autoHideEnabled,
 }: {
   thisProjectId: string;
   colors: ReturnType<typeof useColors>;
   bottomInset: number;
+  translateY: SharedValue<number>;
+  lastScrollY: SharedValue<number>;
+  autoHideEnabled: SharedValue<number>;
 }) {
-  const { active, ready, loading, clockIn, clockOut } = useTimesheet();
+  const { active, ready, loading, clockIn, clockOut } =
+    useTimesheet() as TimesheetState;
   const { projects } = useData();
   const [now, setNow] = useState(() => Date.now());
 
   const isClockedInHere =
     !!active && String(active.projectId) === thisProjectId;
+  // Auto-hide is enabled ONLY in State 1 (no active entry). State 2 and 3
+  // keep the bar pinned regardless of scroll.
+  const shouldAutoHide = ready && !active;
+
+  // Sync the worklet-side autoHideEnabled flag whenever the JS-side state
+  // transitions, and reset position so the bar never appears stuck off-screen
+  // after a transition (e.g. user clocks out after scrolling deep).
+  useEffect(() => {
+    if (shouldAutoHide) {
+      // Just entered State 1 — clear stale scroll-direction memory and snap
+      // the bar back into view.
+      lastScrollY.value = 0;
+      translateY.value = withTiming(0, { duration: 180 });
+      autoHideEnabled.value = 1;
+    } else {
+      // State 2 or 3 — pin visible.
+      autoHideEnabled.value = 0;
+      translateY.value = withTiming(0, { duration: 180 });
+    }
+  }, [shouldAutoHide, translateY, lastScrollY, autoHideEnabled]);
+
+  const animatedBarStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: translateY.value }],
+  }));
 
   // Live-update the elapsed timer every 60s while clocked into THIS project.
   useEffect(() => {
@@ -1093,46 +1171,45 @@ function ClockBar({
 
   if (!ready) {
     return (
-      <View style={containerStyle}>
+      <Animated.View style={[containerStyle, animatedBarStyle]}>
         <ActivityIndicator color={colors.mutedForeground} />
-      </View>
+      </Animated.View>
     );
   }
 
-  // State 1: not clocked in anywhere → orange Clock In button.
+  // State 1: not clocked in anywhere → quiet, full-bar tappable area with
+  // orange icon + label on the card background. Subordinate to the primary
+  // photo workflow above it; auto-hides on scroll-down.
   if (!active) {
     return (
-      <View style={containerStyle}>
+      <Animated.View style={[containerStyle, animatedBarStyle]}>
         <Pressable
           onPress={onClockIn}
           disabled={loading}
           accessibilityRole="button"
           accessibilityLabel="Clock in to this project"
           style={({ pressed }) => [
-            styles.clockBtn,
-            {
-              backgroundColor: "#F97316",
-              opacity: loading ? 0.6 : pressed ? 0.85 : 1,
-            },
+            styles.clockBarTapArea,
+            { opacity: loading ? 0.6 : pressed ? 0.6 : 1 },
           ]}
         >
           {loading ? (
-            <ActivityIndicator color="#fff" />
+            <ActivityIndicator color="#F97316" />
           ) : (
             <>
-              <Feather name="play-circle" size={18} color="#fff" />
-              <Text style={styles.clockBtnTxt}>Clock In</Text>
+              <Feather name="play-circle" size={18} color="#F97316" />
+              <Text style={styles.clockBarQuietTxt}>Clock In</Text>
             </>
           )}
         </Pressable>
-      </View>
+      </Animated.View>
     );
   }
 
   // State 2: clocked into THIS project.
   if (isClockedInHere) {
     return (
-      <View style={containerStyle}>
+      <Animated.View style={[containerStyle, animatedBarStyle]}>
         <View style={styles.clockStatusCol}>
           <Text style={[styles.clockStatusLbl, { color: colors.mutedForeground }]}>
             CLOCKED IN
@@ -1166,7 +1243,7 @@ function ClockBar({
             </>
           )}
         </Pressable>
-      </View>
+      </Animated.View>
     );
   }
 
@@ -1176,7 +1253,7 @@ function ClockBar({
   );
   const otherName = otherProject?.name ?? "another project";
   return (
-    <View style={containerStyle}>
+    <Animated.View style={[containerStyle, animatedBarStyle]}>
       <View style={styles.clockStatusCol}>
         <Text style={[styles.clockStatusLbl, { color: colors.mutedForeground }]}>
           CLOCKED IN TO
@@ -1202,7 +1279,7 @@ function ClockBar({
       {loading ? (
         <ActivityIndicator color={colors.mutedForeground} />
       ) : null}
-    </View>
+    </Animated.View>
   );
 }
 
@@ -1861,6 +1938,22 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     gap: 8,
     paddingHorizontal: 16,
+  },
+  // Quiet State 1: the whole bar is the tap target. No filled button — just
+  // an icon + label sitting on the card background.
+  clockBarTapArea: {
+    flex: 1,
+    minHeight: 56,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  clockBarQuietTxt: {
+    color: "#F97316",
+    fontSize: 15,
+    fontFamily: "Inter_700Bold",
+    letterSpacing: 0.2,
   },
   clockBtnInline: {
     flex: 0,

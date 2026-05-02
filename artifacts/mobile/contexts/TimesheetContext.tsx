@@ -14,7 +14,7 @@ import { useToast } from "@/contexts/ToastContext";
 import { ApiError, api } from "@/services/api";
 import type { BackendTimesheetEntry } from "@/services/api";
 
-interface TimesheetState {
+export interface TimesheetState {
   active: BackendTimesheetEntry | null;
   ready: boolean;
   loading: boolean;
