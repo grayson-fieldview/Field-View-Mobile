@@ -1,0 +1,76 @@
+Device registration confirmed via eas device:list:
+- UDID: 00008150-000434680AE9401C
+- Team: Field View LLC (D92J7GZBAY)
+
+Now execute the first iOS Dev Build.
+
+CRITICAL: Do NOT use script -c, do NOT interpolate secrets into command
+strings, do NOT log full command lines. Pass secrets ONLY via env var
+inheritance. Reference: yesterday's leak of EXPO_APPLE_APP_SPECIFIC_PASSWORD
+via script -c "FOO=$FOO ..." style. That secret has been rotated. Do not
+repeat that pattern.
+
+EXECUTE:
+
+Step 1: Sanity check the eas-cli has cached Apple credentials
+  
+  pnpm --filter @workspace/mobile exec eas whoami
+  
+  Should print "graysonfieldview" or similar without prompting.
+  Paste output (no secret risk here).
+
+Step 2: Run the build in non-interactive mode with --no-wait
+  
+  Use this exact command pattern (env vars inherited, NOT echoed):
+  
+  cd artifacts/mobile && pnpm exec eas build --profile development --platform ios --non-interactive --no-wait
+  
+  Note: NO leading "EXPO_TOKEN=$EXPO_TOKEN ..." prefix on the command.
+  The secrets are already in process env (Replit Secrets are inherited).
+  Echoing them on the command line is what caused the leak last time.
+  
+  Expected behavior:
+  - Authenticates via cached Apple credentials from device:create earlier
+  - Auto-registers bundle ID com.fieldview.app to team if needed
+  - Generates Distribution Certificate
+  - Generates Provisioning Profile (using the registered iPhone UDID)
+  - Submits build to EAS cloud
+  - Returns immediately with a build URL (not blocking on the 15-25 min build)
+  
+  PASTE the build URL to chat as soon as it's available
+  (https://expo.dev/.../builds/<id>).
+
+Step 3: Optional — fetch build status once after URL is shown
+  
+  pnpm --filter @workspace/mobile exec eas build:list --limit 1
+  
+  Just to confirm the build was queued. Paste the status (in queue / in
+  progress / etc).
+
+Step 4: STOP. Do NOT poll continuously. Do NOT push to git.
+  
+  The user can monitor build progress at the URL. When the build
+  completes, EAS sends an email + the URL displays a QR code that
+  installs the .ipa on Grayson's registered iPhone via Safari.
+
+KNOWN POTENTIAL ISSUES TO WATCH FOR
+
+1. New Architecture (newArchEnabled: true). All native modules
+   reportedly compatible, but watch for build errors here first.
+
+2. React Compiler experimental babel plugin. Could cause Metro bundle
+   step issues.
+
+3. First-time Apple cert/profile generation may surface an
+   interactive prompt if Apple session expired since device:create.
+   If so, surface the prompt clearly — DO NOT try to bypass with
+   script -c. Tell the user to re-run from Replit Shell themselves.
+
+DELIVERABLE
+1. eas whoami output
+2. Build URL (paste as soon as available)
+3. eas build:list status confirmation
+4. Anything unexpected
+
+Do NOT push to git. Do NOT modify replit.md. Build progress will be
+monitored by the user at the URL.
