@@ -21,7 +21,8 @@
         "NSCameraUsageDescription": "Field View uses the camera to capture project photos with burst mode for rapid documentation.",
         "NSLocationWhenInUseUsageDescription": "Field View tags your photos with GPS coordinates so you can map site locations.",
         "NSPhotoLibraryUsageDescription": "Field View saves captured photos to your library.",
-        "NSPhotoLibraryAddUsageDescription": "Field View saves captured photos to your library."
+        "NSPhotoLibraryAddUsageDescription": "Field View saves captured photos to your library.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
@@ -32,6 +33,17 @@
         "backgroundColor": "#F09001"
       },
       "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.ACCESS_MEDIA_LOCATION",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_AUDIO",
         "android.permission.CAMERA",
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
@@ -88,6 +100,12 @@
         "projectId": "46b7825e-2da3-4165-84a1-6cd822ffbaa6"
       }
     },
-    "owner": "graysonfieldview"
+    "owner": "graysonfieldview",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/46b7825e-2da3-4165-84a1-6cd822ffbaa6"
+    }
   }
 }
