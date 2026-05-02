@@ -1,0 +1,138 @@
+SESSION 27 — Mobile timesheets diagnose + multi-session plan.
+
+This is a DIAGNOSE-ONLY session. No code changes. The output is a plan,
+not features. Mobile timesheets is iOS background location, which is
+where unscoped mobile projects go to die. We're going to scope carefully
+before writing any production code.
+
+CONTEXT
+Web timesheets shipped Sessions 22-26 (time_entries table, 7 API
+endpoints, manager dashboard with manual entry/edit/audit, CSV export).
+Backend is fully ready. Mobile needs to do two things eventually:
+  1. Manual clock-in/clock-out (worker taps a button on a project)
+  2. Geofence-based auto clock-in/out (worker arrives at jobsite, gets
+     clocked in; leaves, gets prompted to clock out)
+
+Priority: iOS first. Android in a later session.
+
+DIAGNOSE — answer all of these. No code changes. No installs.
+
+1. CODEBASE ORIENTATION
+   a. Tech stack: confirm React Native + Expo. What Expo SDK version?
+   b. Is this Expo Go or Expo Dev Build / Bare? Background location
+      requires Dev Build or Bare — Expo Go does NOT support background
+      tasks. If Expo Go, flag this as the first hard blocker.
+   c. List all native config files: app.json / app.config.js /
+      eas.json / Info.plist / AndroidManifest.xml — paste the relevant
+      excerpts.
+
+2. AUTHENTICATION + API ACCESS
+   a. How does the mobile app authenticate with the backend? Same
+      session cookie as web? JWT? Different auth flow?
+   b. Where is the API base URL configured? Does the mobile app point
+      at app.field-view.com or a separate mobile API?
+   c. How are API errors handled / displayed currently? Existing toast
+      pattern, snackbar, alert?
+
+3. EXISTING LOCATION USAGE
+   a. Does the app currently use ANY location features? Photo geotagging?
+      Project location display? Maps?
+   b. What permissions are requested today? Search Info.plist for
+      NS*UsageDescription strings, AndroidManifest for ACCESS_*_LOCATION
+      permissions.
+   c. Is expo-location installed? Version? How is it used currently?
+
+4. EXISTING NAVIGATION / UI PATTERNS
+   a. What navigation library? React Navigation? What version?
+   b. What's the current "project detail" screen? File path. Paste a
+      brief overview of its structure (header, content sections).
+   c. Where would a clock-in/out button naturally live? Top of project
+      detail? A sticky bar at the bottom? A new tab?
+   d. What component library / design system? Tamagui? React Native
+      Paper? Custom?
+
+5. BACKGROUND TASK CAPABILITY
+   a. Is expo-background-fetch / expo-task-manager installed?
+   b. Are there any existing background tasks (push notification
+      handlers, sync workers)?
+   c. For iOS: would we need to add UIBackgroundModes (location) to
+      Info.plist? Confirm we have control over this (Bare or Dev Build,
+      not Expo Go).
+
+6. PUSH NOTIFICATIONS
+   a. Are push notifications set up? Provider? Expo Push?
+   b. We'll want notifications for "Clock-in confirmed," "Did you mean
+      to leave?", etc. Is the infrastructure there?
+
+7. BUILD + DEPLOY PIPELINE
+   a. Is this app currently in TestFlight / App Store? Status?
+   b. What's the build process? EAS Build? Local Xcode?
+   c. How does Grayson currently test on his own device?
+   d. What's the iteration cycle for a code change → on-device test?
+      (Critical for geofencing dev — needs frequent on-device testing.)
+
+8. THE FUNDAMENTAL iOS BACKGROUND-LOCATION CONSTRAINTS
+   Document these as facts the plan must respect:
+   a. iOS limits ~20 active geofences per app, system-wide
+   b. iOS requires "Always" permission for background geofence triggers
+      ("When in Use" only fires while app is foregrounded)
+   c. Geofence triggers fire even when app is backgrounded or killed,
+      but the response window is limited
+   d. iOS may delay or coalesce geofence events to save battery
+   e. Geofences typically need 100m+ radius for reliable triggering
+      (smaller radii get unreliable fast)
+   f. Cold-start from a geofence event: app gets ~10-30 seconds to
+      respond before iOS suspends it
+   
+   Confirm by reviewing Apple's "Region Monitoring" docs (don't fetch,
+   just confirm you know these constraints).
+
+PROPOSE A SESSION PLAN
+
+Based on what you find, propose a multi-session plan for mobile
+timesheets. My current rough thinking:
+
+  Session 28: Manual clock-in/out UI + API integration. Pure foreground
+              feature, no location. Should be 1 session if backend is
+              clean (which it is).
+  
+  Session 29: Foreground location + permissions UX. Request "When in
+              Use" first, then escalate to "Always" with proper
+              educational pre-prompt. No geofencing yet.
+  
+  Session 30: Single geofence registration on a single test project.
+              Prove the basic loop: enter → API call → exit → API call.
+              No rotation, no production polish.
+  
+  Session 31: Geofence rotation strategy (the ~20 limit). Design and
+              implement "nearest N projects" rotation when user opens
+              the app or moves significantly.
+  
+  Session 32: Exit-confirmation UX (notification → confirm clock-out).
+              Three-strikes rule for auto-confirmation if ignored.
+  
+  Session 33: Edge cases — permission denied, location services off,
+              app force-quit by user, background app refresh disabled,
+              entering a project mid-active-entry on another project.
+  
+  Session 34: TestFlight build + on-device testing on Grayson's actual
+              jobsites. This will reveal everything we missed.
+
+Adjust this plan based on what you find in diagnose. Specifically,
+flag if:
+  - Expo Go is in use (massive scope addition: switch to Dev Build first)
+  - Auth model differs from web (need a session before 28 to wire it)
+  - Push notifications missing (need a session before 32)
+  - Background location plumbing missing (need a session before 30)
+
+DELIVERABLE
+1. All 8 diagnostic items answered with file paths and excerpts where
+   relevant
+2. Proposed session plan (28 onward), with any pre-requisite sessions
+   you identified
+3. Top 3 risks you see in this multi-session arc
+4. Rough estimate: how many sessions until a TestFlight beta is in
+   Grayson's hand for real-world testing?
+
+Do not write any code. Do not modify any files. Do not install anything.
+Pure investigation.
