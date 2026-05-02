@@ -398,11 +398,15 @@ export const api = {
   activeTimesheet: () =>
     apiFetch<BackendTimesheetEntry | null>("/api/timesheets/active"),
 
-  clockIn: (projectId: string | number, notes?: string) =>
-    apiFetch<BackendTimesheetEntry>("/api/timesheets/clock-in", {
+  clockIn: (projectId: string | number, notes?: string) => {
+    const body = notes !== undefined ? { projectId, notes } : { projectId };
+    // TEMP debug — remove after verification.
+    console.log("[CLOCK-IN DEBUG] body:", JSON.stringify(body, null, 2));
+    return apiFetch<BackendTimesheetEntry>("/api/timesheets/clock-in", {
       method: "POST",
-      json: notes !== undefined ? { projectId, notes } : { projectId },
-    }),
+      json: body,
+    });
+  },
 
   clockOut: (notes?: string) =>
     apiFetch<BackendTimesheetEntry>("/api/timesheets/clock-out", {
