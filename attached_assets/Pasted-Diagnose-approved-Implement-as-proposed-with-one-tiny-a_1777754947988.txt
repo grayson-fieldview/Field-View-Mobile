@@ -1,0 +1,52 @@
+Diagnose approved. Implement as proposed with one tiny adjustment.
+
+ADJUSTMENT
+Drop the line referencing commit 33046be. The commit hash will be
+out-of-date by the time this code is read by anyone. Keep the comment
+focused on the WHY (RN can't set Origin → custom header is the
+mechanism) without coupling to a specific commit.
+
+Suggested simpler comment:
+
+  // CSRF defense: the web backend's CSRF middleware allows mobile
+  // requests through on presence of this custom header. RN's native
+  // fetch can't reliably set Origin, so the Origin allowlist used
+  // for web isn't usable here. Mobile MUST ship this before web
+  // CSRF flips to enforce mode, or every state-changing call 403s.
+  // Header value is versioned so future deprecations don't brick
+  // older mobile builds.
+
+IMPLEMENT
+1. Make the change to artifacts/mobile/services/api.ts as proposed
+2. Do NOT modify the S3 PUT on line 457 (would invalidate SigV4 sig)
+3. Do NOT modify the file URI fetch on line 445
+4. Restart the Metro workflow if needed (or leave it — JS-only
+   change, hot reload should pick it up)
+
+VERIFY ON GRAYSON'S iPHONE
+
+Hot reload (tap Reload JS on the FieldView app) should pick up the
+new header. To verify it's actually being sent on POST requests:
+
+Add a temporary console.log RIGHT BEFORE the fetch call in apiFetch:
+
+  console.log("[API DEBUG] outgoing", { 
+    url: path, 
+    method: opts.method ?? "GET", 
+    hasClientHeader: !!headers["X-FieldView-Client"] 
+  });
+
+Have Grayson tap Clock In on his iPhone. Watch Metro's console for
+the [API DEBUG] line. Confirm hasClientHeader: true on the POST.
+Then REMOVE the temp console.log immediately. Confirm removal in the
+report.
+
+DELIVERABLE
+1. Diff for services/api.ts (just the production change, NOT the
+   temp log)
+2. Confirmation Metro picked up the change (Grayson will report
+   if Reload JS works or if a full Metro restart was needed)
+3. Confirmation [API DEBUG] showed hasClientHeader: true on POST
+4. Confirmation temp console.log was removed
+
+Do not push to git.

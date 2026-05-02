@@ -154,7 +154,24 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
   if (cookieJar.size > 0 && Platform.OS !== "web") {
     headers["Cookie"] = serializeCookieJar();
   }
+  // CSRF defense: the web backend's CSRF middleware allows mobile
+  // requests through on presence of this custom header. RN's native
+  // fetch can't reliably set Origin, so the Origin allowlist used
+  // for web isn't usable here. Mobile MUST ship this before web
+  // CSRF flips to enforce mode, or every state-changing call 403s.
+  // Header value is versioned so future deprecations don't brick
+  // older mobile builds.
+  const method = opts.method ?? "GET";
+  if (method !== "GET" && method !== "HEAD") {
+    headers["X-FieldView-Client"] = "mobile-1";
+  }
   console.log("[cookie-outgoing]", headers["Cookie"]);
+  // TEMP debug — remove after Grayson confirms hasClientHeader:true on POST.
+  console.log("[API DEBUG] outgoing", {
+    url: path,
+    method,
+    hasClientHeader: !!headers["X-FieldView-Client"],
+  });
 
   let res: Response;
   try {
