@@ -8,10 +8,6 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 
-import {
-  ClockInPromptBanner,
-  useClockInPromptActive,
-} from "@/components/ClockInPromptBanner";
 import { FloatingTabBar } from "@/components/FloatingTabBar";
 import {
   LocationBannerProvider,
@@ -45,35 +41,33 @@ function TabLayoutInner() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const locBannerActive = useLocationBannerActive();
-  const promptBannerActive = useClockInPromptActive();
-  const anyBannerActive = locBannerActive || promptBannerActive;
 
+  // The S31a confirmation banner (and its mount/inset gate) was
+  // removed in S31b. Silent-auto clock-in fires a notification
+  // instead of a foreground banner, so the only banner left to
+  // gate the safe-area-top is LocationPermissionBanner.
+  //
   // Tab screens already pad their scroll content with `insets.top + 12`
-  // internally. When ANY banner consumes the safe-area-top above them,
-  // we need to zero out their `insets.top` reading to avoid stacking
-  // another status-bar of dead space below the banner. Bottom inset is
-  // preserved so the FloatingTabBar still clears the home indicator.
+  // internally. When the location banner consumes the safe-area-top
+  // above them, we zero out their `insets.top` reading to avoid
+  // stacking another status-bar of dead space below the banner.
+  // Bottom inset is preserved so the FloatingTabBar still clears the
+  // home indicator.
   const adjustedInsets = useMemo(
-    () => ({ ...insets, top: anyBannerActive ? 0 : insets.top }),
-    [insets, anyBannerActive],
+    () => ({ ...insets, top: locBannerActive ? 0 : insets.top }),
+    [insets, locBannerActive],
   );
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
-      {anyBannerActive ? (
+      {locBannerActive ? (
         <View
           style={{
             paddingTop: insets.top,
             backgroundColor: colors.background,
           }}
         >
-          {/* ClockInPromptBanner renders ABOVE LocationPermissionBanner
-              when both are visible — it's a time-sensitive positive
-              action (a clock-in offer the user is about to miss),
-              while the location banner is a passive re-engagement
-              nudge. Order matches priority. */}
-          {promptBannerActive ? <ClockInPromptBanner /> : null}
-          {locBannerActive ? <LocationPermissionBanner /> : null}
+          <LocationPermissionBanner />
         </View>
       ) : null}
       <SafeAreaInsetsContext.Provider value={adjustedInsets}>

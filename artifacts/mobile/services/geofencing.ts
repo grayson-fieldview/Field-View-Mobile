@@ -2,6 +2,7 @@ import * as Location from "expo-location";
 import { AppState, Platform } from "react-native";
 
 import { api, ApiError } from "./api";
+import { fireClockInReceipt } from "./notifications";
 
 /**
  * iOS geofencing registration service.
@@ -9,11 +10,12 @@ import { api, ApiError } from "./api";
  * Maintains the iOS-registered geofence set in sync with the user's
  * recent-active projects, capped at the iOS hard limit of 20 regions.
  *
- * Session 31a scope: registration + real enter event handler with the
- * four-stage filter chain (proximity, GPS uncertainty, per-region
- * debounce, already-clocked-in suppression) + foreground prompt
- * emitter. Exit events, background push notifications, and the
- * AsyncStorage-persisted task log are deferred to S31b/S32.
+ * Session 31b scope: registration + real enter event handler with the
+ * filter chain (proximity, GPS uncertainty, per-region debounce,
+ * already-clocked-in suppression) followed by SILENT-AUTO clock-in
+ * (no user confirmation) → notification receipt with deep-link to
+ * the project detail screen for undo. Exit events and the
+ * AsyncStorage-persisted task log are deferred to S32.
  *
  * Native module safety:
  *   `expo-task-manager` is loaded via synchronous `require()` inside a
@@ -113,100 +115,13 @@ const lastRegisteredCache = new Map<string, GeofenceEligibleProject>();
 // "no recent prompts known", default to allow).
 const lastClockInByRegion = new Map<string, number>();
 
-// Foreground prompt queue. FIFO with per-projectId dedupe.
-//
-// Pattern mirrors services/uploadQueue.ts: module-level array as the
-// single source of truth, listeners are notified with the full queue
-// snapshot on every mutation, callers separately `getClockInPromptQueue()`
-// for the initial state at subscribe time.
-//
-// Realistic depth: 1-2. Unbounded in code (no max length) — a runaway
-// queue would indicate a filter-chain bug, not a real-world scenario.
-//
-// Lifecycle: events queue regardless of whether a listener is mounted
-// — if the app is backgrounded when an event passes the filter chain,
-// the entry sits in the queue until the React tree foregrounds and the
-// banner subscribes. Stale-queue caveat: if the user enters and then
-// leaves a region without ever foregrounding, the prompt is still
-// shown on next foreground (mildly confusing but bounded annoyance).
-// S31b's local-push path makes this rare in practice.
-export interface ClockInPromptEvent {
-  projectId: number;
-  projectName: string;
-}
-type QueueListener = (queue: ClockInPromptEvent[]) => void;
-const promptQueue: ClockInPromptEvent[] = [];
-const promptListeners = new Set<QueueListener>();
-
-function notifyPromptListeners(): void {
-  const snapshot = [...promptQueue];
-  for (const listener of promptListeners) {
-    try {
-      listener(snapshot);
-    } catch (err) {
-      console.log("[geofence] prompt listener threw:", err);
-    }
-  }
-}
-
-/**
- * Subscribe to clock-in prompt queue updates. Listener is called with
- * the full queue snapshot on every mutation (enqueue + dismiss).
- * Callers should separately invoke `getClockInPromptQueue()` for the
- * initial state at subscribe time. Returns the unsubscribe handle.
- *
- * Mounted by `<ClockInPromptBanner>` inside the tabs layout.
- */
-export function subscribeToClockInPrompts(listener: QueueListener): () => void {
-  promptListeners.add(listener);
-  return () => {
-    promptListeners.delete(listener);
-  };
-}
-
-/** Snapshot of the current prompt queue (for initial render). */
-export function getClockInPromptQueue(): ClockInPromptEvent[] {
-  return [...promptQueue];
-}
-
-function enqueueClockInPrompt(event: ClockInPromptEvent): void {
-  // Dedupe: a project already in the queue shouldn't be re-prompted.
-  // GPS at the boundary can fire enter/exit/enter inside the
-  // 5-min debounce window for a region the user hasn't responded to.
-  if (promptQueue.some((e) => e.projectId === event.projectId)) {
-    console.log(
-      `[geofence] dedupe: project ${event.projectId} already in prompt queue (depth ${promptQueue.length})`,
-    );
-    return;
-  }
-  promptQueue.push(event);
-  console.log(
-    `[geofence] enqueued prompt for ${event.projectName} (queue depth: ${promptQueue.length})`,
-  );
-  notifyPromptListeners();
-}
-
-/**
- * Remove a prompt from the queue by projectId. Called by the banner
- * after Yes (post-clockIn) or Not now. Idempotent — no-op if the
- * projectId isn't in the queue.
- */
-export function dismissClockInPrompt(projectId: number): void {
-  const idx = promptQueue.findIndex((e) => e.projectId === projectId);
-  if (idx === -1) return;
-  promptQueue.splice(idx, 1);
-  console.log(
-    `[geofence] dismissed prompt for project ${projectId} (queue depth: ${promptQueue.length})`,
-  );
-  notifyPromptListeners();
-}
-
 /**
  * Mark that the user just clocked in to a region (auto OR manual).
- * Primes the per-region debounce so they don't get re-prompted while
- * GPS jitters at the boundary. Called by `<ClockInPromptBanner>` after
- * a successful clock-in, AND by the task body when it observes the
- * user is already clocked in to the entered region.
+ * Primes the per-region debounce so we don't auto-clock-in again
+ * while GPS jitters at the boundary. Called by the silent-auto
+ * sequence in the task body BEFORE the API call (retry-storm
+ * protection), AND by the task body when it observes the user is
+ * already clocked in to the entered region.
  */
 export function recordClockInForRegion(projectId: number): void {
   lastClockInByRegion.set(regionIdFor(projectId), Date.now());
@@ -249,9 +164,11 @@ export function recordClockInForRegion(projectId: number): void {
  *   6. Haversine proximity (cheap)         — kills the iOS registration storm
  *   7. Already-clocked-in (network)        — last because most expensive
  *
- * On pass: enqueue prompt for the foreground banner. On fail: log +
- * return; geofence stays armed and the next legitimate event will
- * re-trigger the chain.
+ * On pass: silently call api.clockIn(source: "auto_geofence") and
+ * fire a local notification receipt on success. NO user confirmation
+ * — silent-auto is the S31b default. On fail: log + return; geofence
+ * stays armed and the next legitimate event will re-trigger the
+ * chain.
  *
  * Auth note: api.activeTimesheet() relies on the cookie jar in
  * services/api.ts being rehydrated from Keychain. If headless
@@ -415,7 +332,7 @@ async function runGeofenceTaskBody(
     return;
   }
 
-  // ----- All filters passed: enqueue prompt -----
+  // ----- All filters passed: silent-auto clock-in + receipt -----
   if (bypassFilters) {
     console.log(
       `[geofence] enter accepted (BYPASS): ${project.name} — proximity/GPS skipped`,
@@ -425,7 +342,60 @@ async function runGeofenceTaskBody(
       `[geofence] enter accepted: ${project.name} (${Math.round(distanceM)}m away, GPS ±${Math.round(accuracy)}m)`,
     );
   }
-  enqueueClockInPrompt({ projectId, projectName: project.name });
+
+  // Stamp the per-region debounce BEFORE the API call, not after.
+  //
+  // Trade-off (S31b decision):
+  //   - Stamping FIRST means a failed clockIn (network drop, 5xx,
+  //     etc.) leaves the debounce armed → no retry until the 5-min
+  //     window expires OR the user manually clocks in. The cost is
+  //     a "missed auto clock-in on first try" if the backend is
+  //     down at the exact moment of the boundary crossing.
+  //   - Stamping AFTER success means a failed clockIn allows the
+  //     next iOS retrigger (GPS jitter at the boundary fires
+  //     enter/exit/enter constantly) to immediately retry → during
+  //     a backend outage we hammer /api/timesheets/clock-in with a
+  //     POST every few seconds per region per user. That's a retry
+  //     storm we cannot afford.
+  //
+  // We accept the missed-on-failure cost in exchange for retry-storm
+  // protection. If field reports show "first auto clock-in of the
+  // day frequently misses," revisit with a bounded retry inside this
+  // function (e.g. 1 retry after 30s, then give up) rather than by
+  // unstamping the debounce.
+  recordClockInForRegion(projectId);
+
+  let entry: Awaited<ReturnType<typeof api.clockIn>>;
+  try {
+    entry = await api.clockIn(projectId, undefined, "auto_geofence");
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) {
+      console.log("[geofence] auth failed: session expired");
+      return;
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    console.log(`[geofence] silent-auto failed: ${msg}`);
+    return;
+  }
+
+  console.log(
+    `[geofence] silent-auto clock-in: ${project.name} (entry ${entry.id})`,
+  );
+
+  // Receipt notification fires AFTER api.clockIn resolves successfully.
+  // If we ever swap the ordering ("show notification first, request
+  // later"), we'd be telling the user "you're clocked in" when no DB
+  // row exists yet — a worse UX than a missed receipt.
+  await fireClockInReceipt(
+    project.name,
+    projectId,
+    // BackendTimesheetEntry types entry.id as `string | number` because
+    // the wire payload has historically tolerated both. The receipt
+    // payload is wire-typed as string and the deep-link handler treats
+    // it as opaque, so coerce here at the boundary.
+    String(entry.id),
+    new Date(entry.clockIn),
+  );
 }
 
 /**
@@ -615,13 +585,6 @@ export async function unregisterAllGeofences(): Promise<void> {
   } finally {
     lastRegisteredCache.clear();
     lastClockInByRegion.clear();
-    // Drop any pending prompts — they reference projects we no
-    // longer have lat/lng for, and "always permission" was probably
-    // just revoked, so prompting would be misleading anyway.
-    if (promptQueue.length > 0) {
-      promptQueue.length = 0;
-      notifyPromptListeners();
-    }
   }
 }
 

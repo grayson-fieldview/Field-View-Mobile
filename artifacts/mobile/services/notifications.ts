@@ -47,6 +47,13 @@ export type NotificationPermissionStatus =
 export interface ClockInReceiptData {
   type: "clock_in_receipt";
   projectId: number;
+  /**
+   * Snapshot of the project name at clock-in time. Carried in the
+   * payload so the deep-link tap handler can render a sensible
+   * fallback if the project was archived/deleted between the
+   * receipt firing and the user tapping the notification.
+   */
+  projectName: string;
   entryId: string;
   clockInTime: string;
 }
@@ -230,6 +237,7 @@ export async function fireClockInReceipt(
   const data: ClockInReceiptData = {
     type: "clock_in_receipt",
     projectId,
+    projectName,
     entryId,
     clockInTime: clockInTime.toISOString(),
   };
