@@ -26,7 +26,7 @@ import Animated, {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "@/components/Button";
-import { ClockInReceiptBanner } from "@/components/ClockInReceiptBanner";
+import { ClockReceiptBanner } from "@/components/ClockReceiptBanner";
 import { EmptyState } from "@/components/EmptyState";
 import { Input } from "@/components/Input";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
@@ -416,7 +416,8 @@ export default function ProjectDetailScreen() {
             dismissal so it doesn't reappear on scroll-back. */}
         {showReceipt && receiptEntry ? (
           <View style={{ paddingTop: insets.top }}>
-            <ClockInReceiptBanner
+            <ClockReceiptBanner
+              kind="in"
               visible={showReceipt}
               time={new Date(receiptEntry.clockIn)}
               projectName={project.name}

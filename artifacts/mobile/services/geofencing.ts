@@ -486,6 +486,13 @@ async function cancelPendingExitsOnReEnter(
     );
   }
 
+  // SAFE: B5 in handleGeofenceExit is idempotent (early-returns on
+  // any pre-existing pending row for this region) and the server's
+  // cancel endpoint is idempotent (cancelling an already-cancelled
+  // row is a no-op). A duplicate Exit event arriving mid-cancel
+  // therefore can't double-fire or race the cancel into a fired
+  // state. Worst case under concurrent dispatch: one redundant
+  // server roundtrip.
   for (const record of pending) {
     if (record.pendingExitId !== null) {
       try {
@@ -642,6 +649,13 @@ async function handleGeofenceExit(
   // is worse than threshold so we don't schedule an auto-clock-out
   // off a known-bad signal. No proximity check on Exit (the whole
   // point of Exit is the user is now far from the region).
+  //
+  // Ordering note: B1 runs LAST despite involving a hardware call.
+  // Reason — B5 (local AsyncStorage) and B2-B4 (single network call
+  // + two cheap field comparisons) collectively gate ~all rejection
+  // paths; reaching B1 means we've already committed to caring about
+  // this exit. No point spinning up the GPS receiver for events we'd
+  // reject on cheaper grounds. B5 is first because it's free.
   if (!bypassFilters) {
     let position: Location.LocationObject;
     try {
