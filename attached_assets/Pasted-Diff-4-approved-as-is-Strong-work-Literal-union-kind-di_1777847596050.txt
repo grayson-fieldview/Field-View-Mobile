@@ -1,0 +1,43 @@
+Diff 4 approved as-is. Strong work:
+
+- Literal union kind discriminator over boolean — right call
+- Inline ternaries over lookup table — right call for 2 cases with interpolation
+- Visual treatment identical between kinds — preserves trust posture
+- Single onUndo callback — server routes internally
+- Time-null mitigation flagged for Diff 5 — parent owns gating, banner stays dumb
+- Inline doc comments in geofencing.ts — added exactly as requested
+
+Yes, split Diff 5 into 5a / 5b / 5c. Approved.
+
+Diff 5a — TimesheetContext.tsx ONLY:
+- prev/next active comparison in refresh()
+- firedExit state surfacing on context
+- removePendingExitByTimeEntryId on observed fire
+- Foreground retry of listUnsentPendingExits() — for each, call geofenceExitDetected, on 
+  success upsert with returned id+firesAt, on failure leave unsent for next foreground
+
+Pause after 5a typechecks clean. We review the comparison logic before any consumer 
+depends on the new firedExit shape.
+
+Diff 5b — app/project/[id].tsx ONLY:
+- Read firedExit from context
+- Render <ClockReceiptBanner kind="out" /> when firedExit.entry.projectId matches current 
+  screen's projectId AND firedExit.entry.clockOut != null (defensive gate per Diff 4 flag)
+- Wire Undo to api.autoUndoTimeEntry(firedExit.entry.id) + refresh()
+- Add brief inline comment: "clockOut-null gate is defensive against eventual consistency
+  if /api/timesheets/active ever gets a read replica; not a real concern on single-primary 
+  RDS but cheap insurance."
+
+Pause after 5b typechecks clean.
+
+Diff 5c — app/(tabs)/profile.tsx ONLY:
+- Add "Trigger Test Exit (DEV)" button inside the __DEV__ guarded Geofence Debug section
+- Match the existing Enter button's pattern: same regionId picker, same ButtonRow layout
+- Calls triggerSyntheticExitForTesting(regionId) — full filter chain, no bypass option for 
+  this version (your call whether to also add a Force variant; spec said optional, my 
+  preference is skip the Force variant unless you see a specific debug need)
+
+Pause after 5c typechecks clean. After all three, I'll review the cumulative diff once 
+more before pushing.
+
+Proceed with Diff 5a.
