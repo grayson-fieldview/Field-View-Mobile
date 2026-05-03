@@ -80,7 +80,7 @@ export function ClockInPromptBanner() {
     setSubmitting(true);
     setError(null);
     try {
-      await api.clockIn(head.projectId, undefined, "auto");
+      await api.clockIn(head.projectId, undefined, "auto_geofence");
       // Stamp debounce BEFORE dismiss so the next emit sees the
       // timestamp regardless of React render ordering.
       recordClockInForRegion(head.projectId);

@@ -420,18 +420,18 @@ export const api = {
    * `source` is optional and only added to the request body when
    * explicitly provided. Existing manual call sites pass undefined →
    * field is omitted → backend treats as default "manual". The S31a
-   * geofence-confirmation banner passes "auto" to flag the entry as
-   * automatically triggered.
+   * geofence-confirmation banner passes "auto_geofence" to flag the
+   * entry as automatically triggered.
    *
-   * Wire-compat note: omitting `source` when undefined (rather than
-   * always sending "manual") avoids a regression risk if the web
-   * backend's zod schema runs in strict mode and the parallel web
-   * change to accept `source` hasn't shipped yet.
+   * Wire-contract note: the literal MUST match the postgres
+   * `time_entries.source` enum exactly. As of web commit dbc5b35,
+   * the enum is `[manual, auto_geofence, edited]` and the server
+   * 400s on any other value (no coercion, no "auto" alias).
    */
   clockIn: (
     projectId: string | number,
     notes?: string,
-    source?: "auto" | "manual",
+    source?: "auto_geofence" | "manual",
   ) => {
     const body: Record<string, unknown> = { projectId };
     if (notes !== undefined) body.notes = notes;
