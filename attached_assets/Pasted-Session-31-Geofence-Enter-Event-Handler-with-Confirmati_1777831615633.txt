@@ -1,0 +1,153 @@
+Session 31: Geofence Enter Event Handler with Confirmation Flow
+
+CONTEXT
+This is Session 31 of the Field View build, third session of Phase 2 (mobile geofencing for auto clock-in/out). 
+
+Previous sessions shipped:
+- S29: Permissions onboarding with two-stage Always upgrade and re-engagement banner
+- S30: Geofence registration service (services/geofencing.ts) with stub task body, hooks/useGeofenceSync.tsx Provider/consumer pattern, /api/projects/geofence-eligible server endpoint
+- S30.5: EAS rebuild with expo-task-manager native module, UIBackgroundModes ["location"], NSLocationAlwaysAndWhenInUseUsageDescription. Validated end-to-end on iPhone — 5 regions register successfully, task fires on geofence transitions.
+
+Session 31 replaces the stub task body with a real handler that:
+1. Receives geofence enter events from iOS
+2. Filters out spurious "registration storm" events (see CRITICAL CONTEXT below)
+3. Authenticates the user (in headless JS — no React, no hooks)
+4. Calls POST /api/timesheets/clock-in with source: "auto"
+5. Surfaces a confirmation prompt to the user (foreground = banner, background = push notification)
+6. Handles the confirmation tap → opens app → records clock-in
+
+Exit events are S32. Settings toggle is S33. Final EAS build + testing is S34.
+
+CRITICAL CONTEXT — iOS Registration Storm
+
+Session 30.5 testing on iPhone Dev Build revealed iOS fires "entered" events for ALL newly-registered regions immediately after startGeofencingAsync, BEFORE GPS lock is acquired. The user is physically in West Palm Beach but iOS reported "entered" for projects in Denver, Phoenix, Dallas, Atlanta, AND West Palm Beach simultaneously.
+
+This is documented iOS behavior — when iOS doesn't yet know the device's actual position, it defaults to "treat as inside" for all registered regions. The "outside" determinations come later as GPS acquires real position.
+
+Without explicit handling, the Session 31 handler would fire 5 simultaneous clock-ins to 5 different projects across the country every app launch. UNACCEPTABLE.
+
+Required filtering logic — must be implemented in this session:
+
+1. Verify physical proximity before trusting an "entered" event
+   - Use Location.getCurrentPositionAsync() inside the task handler
+   - Compute distance from device to project's lat/lng using haversine formula
+   - REJECT the event if distance > 200m (geofence radius is 30m, but GPS accuracy varies — 200m gives generous margin while still excluding cross-country false positives)
+   - LOG rejected events with: [geofence] rejected: device <distance>m from <project name> (radius 30m)
+
+2. Per-region debounce
+   - In-memory Map<regionId, lastClockInTimestamp>
+   - REJECT enter events for a region if last clock-in to that region was within the last 5 minutes
+   - This handles GPS jitter (entering and re-entering the boundary as accuracy fluctuates)
+   - LOG rejected events: [geofence] rejected: <project> debounced (last clock-in <Xm> ago)
+
+3. Already-clocked-in suppression
+   - Check if user has any active time entry (existing /api/timesheets/active endpoint)
+   - If yes, REJECT the new clock-in attempt
+   - LOG: [geofence] rejected: user already clocked in to <project>
+
+ARCHITECTURE — Task Body in Headless JS
+
+The task body runs OUTSIDE React. No useContext, no hooks, no Provider state. Must work with module-level singletons and direct API calls.
+
+Available primitives:
+- expo-task-manager TaskManager.defineTask() — already configured at module top in geofencing.ts
+- expo-location for getCurrentPositionAsync
+- expo-notifications for push notifications (NEEDS INSTALL — flag in diagnosis)
+- AsyncStorage for any persistent state needed
+- Direct fetch() to API endpoints (services/api.ts uses apiFetch which depends on session cookies)
+
+Authentication question for diagnosis:
+- The mobile app uses cookie-based sessions per project memory
+- Cookies are stored in iOS NSURLCredentialStorage and shared across React + headless contexts
+- BUT: if the user's session has expired, the headless task can't trigger a re-login flow
+- Need to handle 401 gracefully: log [geofence] auth failed: session expired, queue for retry on next app foreground
+- Do NOT attempt to refresh the session in headless — too complex for v1
+
+WHAT TO BUILD
+
+1. expo-notifications setup (mobile)
+   - Install: pnpm --filter @workspace/mobile add expo-notifications
+   - Add to app.json plugins array: "expo-notifications" (or with config if needed for icon/sound)
+   - This requires another EAS rebuild eventually — flag for end of session
+   - Permission request: similar onboarding flow as location, but simpler — single iOS dialog, no two-stage upgrade
+   - Add NotificationsService at artifacts/mobile/services/notifications.ts wrapping expo-notifications
+
+2. Real task body in services/geofencing.ts
+   - Replace the existing stub: console.log("[geofence] task fired:", data, error)
+   - New behavior:
+     - Receive event from iOS (data contains region.identifier and eventType)
+     - Parse region identifier "fv-project-${id}" to extract projectId
+     - Apply filter chain: registration-storm filter → debounce filter → already-clocked-in filter
+     - If all filters pass: trigger clock-in flow
+     - If app is in foreground: show in-app banner via shared module-level emitter
+     - If app is in background: send local push notification
+   - Use Notifications.scheduleNotificationAsync for local push
+   - Notification payload includes: project name, project id (for deep-link), action type ("clock-in")
+
+3. Foreground banner: artifacts/mobile/components/ClockInPromptBanner.tsx
+   - Subscribes to a module-level event emitter from geofencing.ts
+   - Renders sticky banner at top of (tabs) layout when an enter event fires in foreground
+   - Copy: "Clock in at [Project Name]?" + Yes / Not now buttons
+   - Tap Yes → call POST /api/timesheets/clock-in with source: "auto"
+   - Tap Not now → dismiss, no API call, geofence remains armed
+
+4. Push notification handler in app/_layout.tsx (or wherever app-level navigation lives)
+   - Use Notifications.addNotificationResponseReceivedListener
+   - On tap: extract projectId from notification payload, navigate to project detail screen, surface clock-in confirmation modal
+   - Modal calls clock-in API on confirm
+
+5. Server-side clock-in endpoint extension
+   - server/routes.ts POST /api/timesheets/clock-in
+   - Schema currently accepts: { projectId, notes? }
+   - Extend to accept optional source: "auto" | "manual" (default "manual")
+   - If source: "auto", store in time_entries.source column (already exists in schema per S22 memory)
+   - Validates source is one of the two allowed values; rejects unknown values
+   - This is a separate Web Agent prompt — flag at end of mobile session that web changes are also required before end-to-end test
+
+DIAGNOSE BEFORE CODING
+
+Run all of these checks and report findings. Do not write any code yet:
+
+1. expo-notifications — installed? Version? If not, flag and propose install command.
+
+2. Existing notification infrastructure — any current usage of push notifications or local notifications in the codebase? Search for "expo-notifications" or "Notifications" imports.
+
+3. apiFetch authentication path — confirm whether it picks up cookies from native NSURLCredentialStorage automatically when called from a TaskManager task context (headless JS). If you can't determine this from code review, flag as "needs runtime test" — it'll be the first thing we test on device.
+
+4. /api/timesheets/active endpoint — confirm it exists and the response shape (looking for "is the user currently clocked in to any project").
+
+5. Existing error/event emission patterns — any module-level event emitter or pub-sub system already in use? (e.g. events.on / events.emit, EventEmitter from 'events', a custom subscribe pattern.) If yes, follow that pattern. If no, recommend a minimal pattern for the foreground banner subscription.
+
+6. Module-level state in services/geofencing.ts — confirm the existing lastRegisteredCache and taskManagerAvailable are still present, and confirm where to add the new debounceCache (Map<regionId, timestamp>).
+
+Report all six findings. Wait for approval before implementation.
+
+WHAT NOT TO BUILD IN THIS SESSION
+
+- Exit event handling (S32)
+- 5-minute exit timer (S32)
+- User-facing "Auto clock-in" toggle (S33)
+- Manager dashboard "Auto" badge (S33)
+- EAS production build / TestFlight (S34)
+- Re-implementing useLocationPermission, useGeofenceSync, or any S29/S30 work
+- Changing the iOS UIBackgroundModes config (just shipped, working)
+
+EXPECTED CHALLENGES
+
+- Headless JS authentication is the highest-risk part. If apiFetch fails in the task body, we may need to extract cookies and use raw fetch.
+- expo-notifications permission flow in Always-Allow context — should be simpler than location, but worth verifying.
+- The foreground banner needs to communicate with a module-level emitter from a context-less task. This is a real architectural pattern that needs care.
+- We have NOT validated the registration storm filter empirically — first-time test on Mac→EAS rebuild→iPhone install will tell us if 200m threshold is right.
+
+VALIDATION PLAN (after Step 6 / EAS rebuild required for expo-notifications)
+
+- Cold launch with 5 registered regions, GPS not yet acquired
+  - Expected logs: [geofence] task fired: 2 fv-project-XX (5 times, one per region)
+  - Expected logs: [geofence] rejected: device <Xm> from <project> (4 times for non-WPB projects, 0 times if WPB project happens to be within 200m)
+  - Expected: maybe 1 confirmation prompt for the actually-near project (Janet Wexler)
+
+- Drive to a different real project (or simulate by editing a project's lat/lng to your current location)
+  - Expected: enter event fires, passes filter, prompt appears
+  - Expected: tap Yes, POST /api/timesheets/clock-in succeeds, web manager dashboard shows entry with source=auto
+
+Begin with the diagnosis. Wait for my approval before any code or installs.
