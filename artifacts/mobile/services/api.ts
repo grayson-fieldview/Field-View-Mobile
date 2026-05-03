@@ -414,8 +414,28 @@ export const api = {
   activeTimesheet: () =>
     apiFetch<BackendTimesheetEntry | null>("/api/timesheets/active"),
 
-  clockIn: (projectId: string | number, notes?: string) => {
-    const body = notes !== undefined ? { projectId, notes } : { projectId };
+  /**
+   * Clock the user in to a project.
+   *
+   * `source` is optional and only added to the request body when
+   * explicitly provided. Existing manual call sites pass undefined →
+   * field is omitted → backend treats as default "manual". The S31a
+   * geofence-confirmation banner passes "auto" to flag the entry as
+   * automatically triggered.
+   *
+   * Wire-compat note: omitting `source` when undefined (rather than
+   * always sending "manual") avoids a regression risk if the web
+   * backend's zod schema runs in strict mode and the parallel web
+   * change to accept `source` hasn't shipped yet.
+   */
+  clockIn: (
+    projectId: string | number,
+    notes?: string,
+    source?: "auto" | "manual",
+  ) => {
+    const body: Record<string, unknown> = { projectId };
+    if (notes !== undefined) body.notes = notes;
+    if (source !== undefined) body.source = source;
     return apiFetch<BackendTimesheetEntry>("/api/timesheets/clock-in", {
       method: "POST",
       json: body,

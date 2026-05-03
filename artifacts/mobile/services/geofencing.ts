@@ -252,6 +252,19 @@ try {
         // (a) cold-launch and registerGeofences hasn't run yet to
         // populate the cache, or (b) a stale region from a previous
         // version. Either way we can't compute proximity without lat/lng.
+        //
+        // Trade-off accepted for v1:
+        //   1. The miss is bounded to a single event — iOS retriggers
+        //      on the next region transition, by which point the
+        //      foreground React tree will have populated the cache.
+        //   2. The fix would require an AsyncStorage prefetch of the
+        //      registered-region snapshot at module-evaluation time,
+        //      which adds a persistence layer + cache-invalidation
+        //      complexity (stale lat/lng if the project moves between
+        //      app launches).
+        //   3. Revisit only if field reports indicate "first auto
+        //      clock-in of the day misses" — that's the symptom this
+        //      gap would produce.
         console.log(
           `[geofence] rejected: ${regionId} not in registration cache (cold-launch race?)`,
         );
@@ -332,8 +345,12 @@ try {
         console.log(
           `[geofence] rejected: ${project.name} — user already clocked in (entry id ${active.id}, project ${active.projectId})`,
         );
-        // Prime the debounce for the entered region so we don't
-        // re-check on every GPS jitter while they're already on-site.
+        // Stamp debounce timestamp here even though we didn't actually clock in.
+        // If we don't, GPS jitter at this region's boundary will re-fire activeTimesheet()
+        // network calls every few seconds while the user remains clocked into another
+        // project. Trade-off: if the user clocks OUT of the current project within the
+        // next 5 minutes, this region won't auto-prompt them — they'd have to re-cross
+        // the boundary OR wait for debounce expiry. Acceptable for v1.
         recordClockInForRegion(projectId);
         return;
       }
