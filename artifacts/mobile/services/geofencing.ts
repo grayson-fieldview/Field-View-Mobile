@@ -233,6 +233,215 @@ export function recordClockInForRegion(projectId: number): void {
 //     succeeds → defineTask runs at module load → ready for OS
 //     cold-launch invocation in true background.
 
+/**
+ * The S31a filter chain, hoisted to module scope so both the real
+ * TaskManager callback AND the dev-only synthetic-trigger button in
+ * profile.tsx can invoke the exact same code path. Same logic, same
+ * GPS call, same network call — only the event source differs.
+ *
+ * Filter chain (ordered for cost: cheap checks first, then GPS,
+ * then network):
+ *   1. Parse + cache lookup (cheap)        — drops malformed/stale region ids
+ *   2. eventType !== Enter (cheap)         — ignores exits (S32 handles)
+ *   3. Per-region debounce (cheap)         — drops bouncy boundary events
+ *   4. getCurrentPositionAsync (blocking)  — needed for proximity filter
+ *   5. GPS uncertainty (cheap, post-fix)   — guards against meaningless distance check
+ *   6. Haversine proximity (cheap)         — kills the iOS registration storm
+ *   7. Already-clocked-in (network)        — last because most expensive
+ *
+ * On pass: enqueue prompt for the foreground banner. On fail: log +
+ * return; geofence stays armed and the next legitimate event will
+ * re-trigger the chain.
+ *
+ * Auth note: api.activeTimesheet() relies on the cookie jar in
+ * services/api.ts being rehydrated from Keychain. If headless
+ * cold-launch can't reach Keychain, the call 401s and we abort —
+ * the user just doesn't get auto-clock-in for that event, which
+ * is correct fail-safe behavior. No re-login attempt from headless.
+ */
+async function runGeofenceTaskBody(args: {
+  data: unknown;
+  error: unknown;
+}): Promise<void> {
+  const { data, error } = args;
+  if (error) {
+    console.log("[geofence] task error:", error);
+    return;
+  }
+  const payload = data as
+    | {
+        eventType?: Location.GeofencingEventType;
+        region?: Location.LocationRegion;
+      }
+    | undefined;
+  const regionId = payload?.region?.identifier;
+  const eventType = payload?.eventType;
+
+  console.log(
+    `[geofence] task fired: eventType=${eventType} region=${regionId} appState=${AppState.currentState}`,
+  );
+
+  // ----- Filter 1: parse + cache lookup -----
+  if (!regionId) {
+    console.log("[geofence] rejected: missing region identifier");
+    return;
+  }
+  const projectId = parseProjectId(regionId);
+  if (projectId === null) {
+    console.log(`[geofence] rejected: malformed region id "${regionId}"`);
+    return;
+  }
+  const project = lastRegisteredCache.get(regionId);
+  if (!project) {
+    // Region fired but we have no record of registering it. Either
+    // (a) cold-launch and registerGeofences hasn't run yet to
+    // populate the cache, or (b) a stale region from a previous
+    // version. Either way we can't compute proximity without lat/lng.
+    //
+    // Trade-off accepted for v1:
+    //   1. The miss is bounded to a single event — iOS retriggers
+    //      on the next region transition, by which point the
+    //      foreground React tree will have populated the cache.
+    //   2. The fix would require an AsyncStorage prefetch of the
+    //      registered-region snapshot at module-evaluation time,
+    //      which adds a persistence layer + cache-invalidation
+    //      complexity (stale lat/lng if the project moves between
+    //      app launches).
+    //   3. Revisit only if field reports indicate "first auto
+    //      clock-in of the day misses" — that's the symptom this
+    //      gap would produce.
+    console.log(
+      `[geofence] rejected: ${regionId} not in registration cache (cold-launch race?)`,
+    );
+    return;
+  }
+
+  // ----- Filter 2: enter only -----
+  if (eventType !== Location.GeofencingEventType.Enter) {
+    console.log(
+      `[geofence] ignored: eventType=${eventType} (only Enter handled in S31a)`,
+    );
+    return;
+  }
+
+  // ----- Filter 3: per-region debounce -----
+  const lastClockIn = lastClockInByRegion.get(regionId);
+  if (lastClockIn !== undefined) {
+    const ageMs = Date.now() - lastClockIn;
+    if (ageMs < DEBOUNCE_MS) {
+      const ageMin = Math.round(ageMs / 60_000);
+      console.log(
+        `[geofence] rejected: ${project.name} debounced (last clock-in ${ageMin}m ago)`,
+      );
+      return;
+    }
+  }
+
+  // ----- Filter 4: proximity (requires GPS fix) -----
+  let position: Location.LocationObject;
+  try {
+    position = await Location.getCurrentPositionAsync({
+      accuracy: Location.Accuracy.Balanced,
+      mayShowUserSettingsDialog: false,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.log(`[geofence] rejected: getCurrentPositionAsync failed: ${msg}`);
+    return;
+  }
+
+  // ----- Filter 5: GPS uncertainty -----
+  const accuracy = position.coords.accuracy ?? Number.POSITIVE_INFINITY;
+  if (accuracy > GPS_ACCURACY_THRESHOLD_M) {
+    console.log(
+      `[geofence] rejected: GPS uncertainty too high (${Math.round(accuracy)}m, threshold ${GPS_ACCURACY_THRESHOLD_M}m)`,
+    );
+    return;
+  }
+
+  // ----- Filter 6: haversine proximity -----
+  const distanceM = haversineMeters(position.coords, {
+    latitude: project.latitude,
+    longitude: project.longitude,
+  });
+  if (distanceM > PROXIMITY_THRESHOLD_M) {
+    console.log(
+      `[geofence] rejected: device ${Math.round(distanceM)}m from ${project.name} (radius ${RADIUS_METERS}m, threshold ${PROXIMITY_THRESHOLD_M}m)`,
+    );
+    return;
+  }
+
+  // ----- Filter 7: already clocked in -----
+  let active: Awaited<ReturnType<typeof api.activeTimesheet>>;
+  try {
+    active = await api.activeTimesheet();
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) {
+      console.log(
+        "[geofence] auth failed: session expired; deferring to next foreground sync",
+      );
+      return;
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    console.log(`[geofence] rejected: activeTimesheet check failed: ${msg}`);
+    return;
+  }
+  if (active !== null) {
+    console.log(
+      `[geofence] rejected: ${project.name} — user already clocked in (entry id ${active.id}, project ${active.projectId})`,
+    );
+    // Stamp debounce timestamp here even though we didn't actually clock in.
+    // If we don't, GPS jitter at this region's boundary will re-fire activeTimesheet()
+    // network calls every few seconds while the user remains clocked into another
+    // project. Trade-off: if the user clocks OUT of the current project within the
+    // next 5 minutes, this region won't auto-prompt them — they'd have to re-cross
+    // the boundary OR wait for debounce expiry. Acceptable for v1.
+    recordClockInForRegion(projectId);
+    return;
+  }
+
+  // ----- All filters passed: enqueue prompt -----
+  console.log(
+    `[geofence] enter accepted: ${project.name} (${Math.round(distanceM)}m away, GPS ±${Math.round(accuracy)}m)`,
+  );
+  enqueueClockInPrompt({ projectId, projectName: project.name });
+}
+
+/**
+ * DEV-ONLY: synthesize a TaskManager geofence Enter event for the
+ * given region id and run the full filter chain against it. Lets us
+ * validate the entire path (proximity, debounce, activeTimesheet,
+ * banner) without waiting for a real iOS region transition.
+ *
+ * IMPORTANT: filters run unmodified — including real
+ * `getCurrentPositionAsync` and real `api.activeTimesheet` calls. If
+ * the device is physically far from the project, the proximity
+ * filter will reject (which is itself a useful validation that the
+ * filter is doing its job).
+ *
+ * Mounted only by the GeofenceDebugSection in profile.tsx behind
+ * `__DEV__`. Defense-in-depth gate here too — calling this in a
+ * release build is a programmer error, not a runtime path.
+ */
+export async function triggerSyntheticEnterForTesting(
+  regionId: string,
+): Promise<void> {
+  if (!__DEV__) {
+    console.log(
+      "[geofence] triggerSyntheticEnterForTesting called outside __DEV__; ignoring",
+    );
+    return;
+  }
+  console.log(`[geofence] DEBUG: synthetic Enter triggered for ${regionId}`);
+  await runGeofenceTaskBody({
+    data: {
+      eventType: Location.GeofencingEventType.Enter,
+      region: { identifier: regionId },
+    },
+    error: null,
+  });
+}
+
 let TaskManager: typeof import("expo-task-manager") | null = null;
 let taskManagerAvailable = false;
 
@@ -240,170 +449,9 @@ try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   TaskManager = require("expo-task-manager") as typeof import("expo-task-manager");
   if (Platform.OS === "ios" && TaskManager) {
-    // S31a real handler. Enter events only — exit handling is S32.
-    //
-    // Filter chain (ordered for cost: cheap checks first, then GPS,
-    // then network):
-    //   1. Parse + cache lookup (cheap)        — drops malformed/stale region ids
-    //   2. eventType !== Enter (cheap)         — ignores exits (S32 handles)
-    //   3. Per-region debounce (cheap)         — drops bouncy boundary events
-    //   4. getCurrentPositionAsync (blocking)  — needed for proximity filter
-    //   5. GPS uncertainty (cheap, post-fix)   — guards against meaningless distance check
-    //   6. Haversine proximity (cheap)         — kills the iOS registration storm
-    //   7. Already-clocked-in (network)        — last because most expensive
-    //
-    // On pass: emit prompt to any subscribed React listener (the
-    // foreground banner). On fail: log + return; geofence stays armed
-    // and the next legitimate event will re-trigger the chain.
-    //
-    // Auth note: api.activeTimesheet() relies on the cookie jar in
-    // services/api.ts being rehydrated from Keychain. If headless
-    // cold-launch can't reach Keychain, the call 401s and we abort —
-    // the user just doesn't get auto-clock-in for that event, which
-    // is correct fail-safe behavior. No re-login attempt from headless.
-    TaskManager.defineTask(TASK_NAME, async ({ data, error }) => {
-      if (error) {
-        console.log("[geofence] task error:", error);
-        return;
-      }
-      const payload = data as
-        | {
-            eventType?: Location.GeofencingEventType;
-            region?: Location.LocationRegion;
-          }
-        | undefined;
-      const regionId = payload?.region?.identifier;
-      const eventType = payload?.eventType;
-
-      console.log(
-        `[geofence] task fired: eventType=${eventType} region=${regionId} appState=${AppState.currentState}`,
-      );
-
-      // ----- Filter 1: parse + cache lookup -----
-      if (!regionId) {
-        console.log("[geofence] rejected: missing region identifier");
-        return;
-      }
-      const projectId = parseProjectId(regionId);
-      if (projectId === null) {
-        console.log(`[geofence] rejected: malformed region id "${regionId}"`);
-        return;
-      }
-      const project = lastRegisteredCache.get(regionId);
-      if (!project) {
-        // Region fired but we have no record of registering it. Either
-        // (a) cold-launch and registerGeofences hasn't run yet to
-        // populate the cache, or (b) a stale region from a previous
-        // version. Either way we can't compute proximity without lat/lng.
-        //
-        // Trade-off accepted for v1:
-        //   1. The miss is bounded to a single event — iOS retriggers
-        //      on the next region transition, by which point the
-        //      foreground React tree will have populated the cache.
-        //   2. The fix would require an AsyncStorage prefetch of the
-        //      registered-region snapshot at module-evaluation time,
-        //      which adds a persistence layer + cache-invalidation
-        //      complexity (stale lat/lng if the project moves between
-        //      app launches).
-        //   3. Revisit only if field reports indicate "first auto
-        //      clock-in of the day misses" — that's the symptom this
-        //      gap would produce.
-        console.log(
-          `[geofence] rejected: ${regionId} not in registration cache (cold-launch race?)`,
-        );
-        return;
-      }
-
-      // ----- Filter 2: enter only -----
-      if (eventType !== Location.GeofencingEventType.Enter) {
-        console.log(
-          `[geofence] ignored: eventType=${eventType} (only Enter handled in S31a)`,
-        );
-        return;
-      }
-
-      // ----- Filter 3: per-region debounce -----
-      const lastClockIn = lastClockInByRegion.get(regionId);
-      if (lastClockIn !== undefined) {
-        const ageMs = Date.now() - lastClockIn;
-        if (ageMs < DEBOUNCE_MS) {
-          const ageMin = Math.round(ageMs / 60_000);
-          console.log(
-            `[geofence] rejected: ${project.name} debounced (last clock-in ${ageMin}m ago)`,
-          );
-          return;
-        }
-      }
-
-      // ----- Filter 4: proximity (requires GPS fix) -----
-      let position: Location.LocationObject;
-      try {
-        position = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-          mayShowUserSettingsDialog: false,
-        });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.log(`[geofence] rejected: getCurrentPositionAsync failed: ${msg}`);
-        return;
-      }
-
-      // ----- Filter 5: GPS uncertainty -----
-      const accuracy = position.coords.accuracy ?? Number.POSITIVE_INFINITY;
-      if (accuracy > GPS_ACCURACY_THRESHOLD_M) {
-        console.log(
-          `[geofence] rejected: GPS uncertainty too high (${Math.round(accuracy)}m, threshold ${GPS_ACCURACY_THRESHOLD_M}m)`,
-        );
-        return;
-      }
-
-      // ----- Filter 6: haversine proximity -----
-      const distanceM = haversineMeters(position.coords, {
-        latitude: project.latitude,
-        longitude: project.longitude,
-      });
-      if (distanceM > PROXIMITY_THRESHOLD_M) {
-        console.log(
-          `[geofence] rejected: device ${Math.round(distanceM)}m from ${project.name} (radius ${RADIUS_METERS}m, threshold ${PROXIMITY_THRESHOLD_M}m)`,
-        );
-        return;
-      }
-
-      // ----- Filter 7: already clocked in -----
-      let active: Awaited<ReturnType<typeof api.activeTimesheet>>;
-      try {
-        active = await api.activeTimesheet();
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 401) {
-          console.log(
-            "[geofence] auth failed: session expired; deferring to next foreground sync",
-          );
-          return;
-        }
-        const msg = err instanceof Error ? err.message : String(err);
-        console.log(`[geofence] rejected: activeTimesheet check failed: ${msg}`);
-        return;
-      }
-      if (active !== null) {
-        console.log(
-          `[geofence] rejected: ${project.name} — user already clocked in (entry id ${active.id}, project ${active.projectId})`,
-        );
-        // Stamp debounce timestamp here even though we didn't actually clock in.
-        // If we don't, GPS jitter at this region's boundary will re-fire activeTimesheet()
-        // network calls every few seconds while the user remains clocked into another
-        // project. Trade-off: if the user clocks OUT of the current project within the
-        // next 5 minutes, this region won't auto-prompt them — they'd have to re-cross
-        // the boundary OR wait for debounce expiry. Acceptable for v1.
-        recordClockInForRegion(projectId);
-        return;
-      }
-
-      // ----- All filters passed: enqueue prompt -----
-      console.log(
-        `[geofence] enter accepted: ${project.name} (${Math.round(distanceM)}m away, GPS ±${Math.round(accuracy)}m)`,
-      );
-      enqueueClockInPrompt({ projectId, projectName: project.name });
-    });
+    // S31a real handler — delegates to runGeofenceTaskBody (above) so
+    // the dev-only synthetic-trigger button shares the exact same path.
+    TaskManager.defineTask(TASK_NAME, runGeofenceTaskBody);
     taskManagerAvailable = true;
   }
 } catch (err) {

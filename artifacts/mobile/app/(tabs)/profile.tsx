@@ -20,6 +20,10 @@ import { useToast } from "@/contexts/ToastContext";
 import { useColors } from "@/hooks/useColors";
 import { useGeofenceSync } from "@/hooks/useGeofenceSync";
 import { ApiError, api } from "@/services/api";
+import {
+  getRegisteredGeofences,
+  triggerSyntheticEnterForTesting,
+} from "@/services/geofencing";
 import { useLocationPermission } from "@/services/permissions";
 
 export default function ProfileScreen() {
@@ -259,8 +263,31 @@ function GeofenceDebugSectionBody() {
   const colors = useColors();
   const { status } = useLocationPermission();
   const { lastSync, registeredCount, syncing, forceResync } = useGeofenceSync();
+  const [triggering, setTriggering] = useState(false);
 
   const lastSyncLabel = lastSync ? lastSync.toLocaleTimeString() : "Never";
+
+  // Dev-only manual trigger: picks the FIRST registered region and
+  // synthesizes an iOS Enter event against the real filter chain.
+  // Does NOT bypass any filter — proximity/GPS/debounce/activeTimesheet
+  // all run for real. If the device is physically far from the chosen
+  // project, the proximity filter rejects (correctly). Useful for
+  // validating the whole path (filter logs → banner → API → DB) on
+  // a desk without driving to a job site.
+  const handleTriggerSyntheticEnter = async () => {
+    const registered = getRegisteredGeofences();
+    const regionId = registered[0];
+    if (!regionId) {
+      console.log("[geofence] DEBUG: no registered regions; skipping trigger");
+      return;
+    }
+    setTriggering(true);
+    try {
+      await triggerSyntheticEnterForTesting(regionId);
+    } finally {
+      setTriggering(false);
+    }
+  };
 
   return (
     <View style={styles.section}>
@@ -285,6 +312,20 @@ function GeofenceDebugSectionBody() {
           disabled={syncing}
         />
       </View>
+      {registeredCount > 0 ? (
+        <View style={{ marginTop: 8 }}>
+          <Button
+            title={
+              triggering
+                ? "Triggering…"
+                : "Trigger Test Enter Event (DEV)"
+            }
+            variant="secondary"
+            onPress={handleTriggerSyntheticEnter}
+            disabled={triggering}
+          />
+        </View>
+      ) : null}
     </View>
   );
 }

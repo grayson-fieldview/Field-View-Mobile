@@ -1,0 +1,25 @@
+Adding a debug-only manual trigger for the geofence enter handler so we can validate the full code path without waiting for a real iOS event.
+
+ADD: a "Trigger Test Enter Event" button to the existing Geofence Debug section in app/(tabs)/profile.tsx.
+
+Behavior:
+- Visible only when __DEV__ (same gate as the rest of the section)
+- Visible only when registeredCount > 0 (no point if no regions registered)
+- Tapping it: pick the FIRST registered region from getRegisteredGeofences() (returns Map keys), construct a synthetic GeofencingEvent payload matching what TaskManager would deliver from a real Enter, and invoke the same task body function the real iOS event would invoke
+- The synthetic event payload should be: { eventType: GeofencingEventType.Enter, region: { identifier: <fv-project-X>, ... } }
+- The task body should run its full filter chain unmodified — including the real getCurrentPositionAsync call. If you're physically far from the project, it'll be rejected by the proximity filter (good — that validates the filter is doing its job). If close, it'll pass and the banner should appear.
+- Log clearly: [geofence] DEBUG: synthetic Enter triggered for <region>
+
+REQUIREMENTS:
+- Do NOT bypass the filter chain. The whole point is to test it with real GPS, real network, real filter logic. The only synthetic part is the iOS event itself.
+- Do NOT mock getCurrentPositionAsync. Let it run and report actual position.
+- The button label should be unambiguously test-only: "Trigger Test Enter Event (DEV)" or similar.
+
+This is small — maybe 20-30 lines in profile.tsx plus exposing the task body's filter logic as a callable function from services/geofencing.ts (it's currently inlined inside defineTask's callback). The refactor is: extract the filter-chain-and-emit logic into an exported function, call it from BOTH defineTask's callback AND from the new debug button.
+
+Show me the diff. After it lands, I'll device-test by tapping the button and watching:
+1. Metro logs for the filter chain in action
+2. Whether the banner appears (if filter passes)
+3. Whether tapping Yes lands a clock-in with source=auto_geofence in the DB
+
+Standing by.
