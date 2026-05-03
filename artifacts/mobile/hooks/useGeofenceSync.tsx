@@ -17,6 +17,11 @@ import {
   unregisterAllGeofences,
 } from "@/services/geofencing";
 import {
+  getNotificationPermission,
+  notificationOnboardingFlags,
+  requestNotificationPermission,
+} from "@/services/notifications";
+import {
   useLocationPermission,
   type LocationPermissionStatus,
 } from "@/services/permissions";
@@ -49,6 +54,73 @@ import {
  */
 
 const DEBOUNCE_MS = 30_000;
+
+/**
+ * One-shot, fire-and-forget notification permission prompt that
+ * piggy-backs on the FIRST successful geofence sync per install.
+ *
+ * Why here, not at app boot or login:
+ *   - Asking at app boot is premature — the user hasn't done
+ *     anything that would benefit from notifications yet, so iOS
+ *     dialog feels like an "ask before earning trust" smell.
+ *   - Asking on first sync means we only prompt users who have
+ *     ALREADY granted always-location AND have eligible projects —
+ *     i.e. users for whom auto-clock-in (and therefore receipts)
+ *     will actually fire. High-intent moment, low risk of denial.
+ *
+ * The AsyncStorage flag stamps regardless of outcome (granted,
+ * denied, error, even if we early-returned because permission was
+ * already determined). iOS only shows the system dialog ONCE per
+ * install for the lifetime of the app — re-asking is a no-op at the
+ * OS level, and re-checking on every sync is wasted work. The
+ * profile screen's settings deep-link is the recovery path for
+ * users who denied or were prompted before this flow shipped.
+ *
+ * Non-blocking by design: this helper is invoked via `void` (no
+ * await) from inside sync(). A user denying notifications must NOT
+ * affect geofence registration, retry logic, or any subsequent
+ * sync. If this function throws or the OS dialog hangs, sync() has
+ * already returned by then.
+ */
+async function maybePromptForNotificationPermission(): Promise<void> {
+  try {
+    const alreadyPrompted = await notificationOnboardingFlags.getPrompted();
+    if (alreadyPrompted) return;
+    const current = await getNotificationPermission();
+    if (current === "undetermined") {
+      console.log("[notifications] first-sync prompt: requesting permission");
+      const result = await requestNotificationPermission();
+      console.log(`[notifications] first-sync prompt result: ${result}`);
+    } else {
+      // "granted" or "denied" — OS dialog won't reshow either way,
+      // so just flip the flag and move on. The profile screen
+      // surfaces the settings deep-link to recover from "denied".
+      console.log(
+        `[notifications] first-sync prompt skipped: already ${current}`,
+      );
+    }
+  } catch (err) {
+    console.log(
+      "[notifications] first-sync prompt failed:",
+      err instanceof Error ? err.message : err,
+    );
+  } finally {
+    // Stamp REGARDLESS of outcome. If we don't, a user who denies
+    // permission gets re-prompted (well, would get the no-op
+    // request) on every successful sync — wasted cycles + a
+    // misleading log line. Stamp on errors too: an exception here
+    // means the native binding is missing or AsyncStorage is wedged,
+    // both of which won't be fixed by retrying every 30s.
+    try {
+      await notificationOnboardingFlags.setPrompted();
+    } catch (err) {
+      console.log(
+        "[notifications] could not stamp prompted flag:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+}
 
 export interface UseGeofenceSyncResult {
   syncing: boolean;
@@ -104,6 +176,10 @@ function useGeofenceSyncInternal(): UseGeofenceSyncResult {
         lastSyncAtRef.current = Date.now();
         setLastSync(new Date(lastSyncAtRef.current));
         setRegisteredCount(getRegisteredGeofences().length);
+        // Fire-and-forget — must NOT block sync return or hold the
+        // in-flight guard. See helper docstring for the design
+        // rationale (high-intent moment, one-shot, non-blocking).
+        void maybePromptForNotificationPermission();
       } catch (err) {
         const wrapped = err instanceof Error ? err : new Error(String(err));
         console.log("[geofence] sync failed:", wrapped.message);

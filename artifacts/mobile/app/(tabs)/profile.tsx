@@ -1,8 +1,10 @@
 import { Feather } from "@expo/vector-icons";
 import * as Linking from "expo-linking";
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Alert,
+  AppState,
+  Linking as RNLinking,
   Platform,
   Pressable,
   ScrollView,
@@ -24,6 +26,10 @@ import {
   getRegisteredGeofences,
   triggerSyntheticEnterForTesting,
 } from "@/services/geofencing";
+import {
+  getNotificationPermission,
+  type NotificationPermissionStatus,
+} from "@/services/notifications";
 import { useLocationPermission } from "@/services/permissions";
 
 export default function ProfileScreen() {
@@ -36,6 +42,40 @@ export default function ProfileScreen() {
   const isOwner = user?.isOwner ?? false;
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+
+  // Notification permission status, refreshed on mount AND on every
+  // foreground transition. The user can flip the toggle in iOS
+  // Settings while we're backgrounded — without the AppState hook,
+  // they'd come back and still see the "enable notifications" row
+  // until next process restart.
+  const [notifPermission, setNotifPermission] =
+    useState<NotificationPermissionStatus>("undetermined");
+  useEffect(() => {
+    let alive = true;
+    const refresh = async () => {
+      const status = await getNotificationPermission();
+      if (alive) setNotifPermission(status);
+    };
+    void refresh();
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") void refresh();
+    });
+    return () => {
+      alive = false;
+      sub.remove();
+    };
+  }, []);
+  const showNotifSettingsRow = notifPermission !== "granted";
+
+  // openSettings() lives on react-native's Linking, NOT
+  // expo-linking — the latter doesn't expose it. Aliased import
+  // (RNLinking) keeps both available in this file.
+  const openNotificationSettings = () => {
+    void RNLinking.openSettings().catch((err) => {
+      console.log("[profile] openSettings failed:", err);
+      showToast("Couldn't open Settings.");
+    });
+  };
 
   const openExternal = async (url: string) => {
     try {
@@ -191,6 +231,26 @@ export default function ProfileScreen() {
           onPress={() => openExternal("https://field-view.com/terms")}
         />
       </View>
+
+      {showNotifSettingsRow ? (
+        <View style={styles.section}>
+          <Text style={[styles.debugHeader, { color: colors.mutedForeground }]}>
+            Notifications
+          </Text>
+          <Text
+            style={[styles.debugCaption, { color: colors.mutedForeground }]}
+          >
+            {notifPermission === "denied"
+              ? "Notifications are turned off, so you won't see receipts when the app auto-clocks you in. Open Settings to re-enable them."
+              : "Get a quick receipt with an Undo option whenever the app auto-clocks you in at a job site."}
+          </Text>
+          <Row
+            icon="bell"
+            label="Open notification settings"
+            onPress={openNotificationSettings}
+          />
+        </View>
+      ) : null}
 
       <GeofenceDebugSection />
 

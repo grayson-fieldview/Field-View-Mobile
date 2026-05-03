@@ -129,6 +129,20 @@ interface FetchOpts {
   headers?: Record<string, string>;
   /** If true, treat an HTML response as "unauthenticated" (returns null) instead of throwing. */
   allowHtmlAsUnauth?: boolean;
+  /**
+   * If true, a 204 No Content response (or any 2xx with
+   * `Content-Length: 0`) resolves to `undefined` instead of
+   * throwing the default "Unexpected non-JSON response" error.
+   *
+   * Use for fire-and-forget DELETE / state-change endpoints whose
+   * server contract intentionally omits a body. Do NOT enable for
+   * endpoints that are expected to return data — silent
+   * `undefined` would mask a server-side regression.
+   *
+   * Current callers: api.autoUndoTimeEntry. Future: any S32+
+   * endpoint that returns 204 (cancel pending exit, etc.).
+   */
+  allowEmptyBody?: boolean;
 }
 
 async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
@@ -193,6 +207,13 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
 
   const contentType = res.headers.get("content-type") ?? "";
   const isJson = contentType.includes("application/json");
+  // Empty-body short-circuit MUST run before the !isJson check —
+  // 204 responses commonly omit Content-Type entirely, which would
+  // otherwise trip the "Unexpected non-JSON response" guard. Only
+  // honored on the success path; error responses (4xx/5xx) still
+  // run the message-extraction logic below.
+  const contentLength = res.headers.get("content-length");
+  const isEmptyBody = res.status === 204 || contentLength === "0";
 
   if (!res.ok) {
     let parsed: unknown = null;
@@ -215,6 +236,10 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
       /* ignore */
     }
     throw new ApiError(res.status, message, parsed);
+  }
+
+  if (opts.allowEmptyBody && isEmptyBody) {
+    return undefined as T;
   }
 
   if (!isJson) {
@@ -469,6 +494,11 @@ export const api = {
   autoUndoTimeEntry: (entryId: string | number) =>
     apiFetch<void>(`/api/timesheets/${entryId}/auto-undo`, {
       method: "DELETE",
+      // Web endpoint returns 204 No Content on success per the
+      // standard Express delete pattern. Without this opt, apiFetch
+      // would throw "Unexpected non-JSON response" because 204
+      // responses have no Content-Type header.
+      allowEmptyBody: true,
     }),
 
   // ----- Account / membership -----
