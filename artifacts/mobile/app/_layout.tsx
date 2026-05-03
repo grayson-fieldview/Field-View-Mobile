@@ -23,6 +23,12 @@ import { TimesheetProvider } from "@/contexts/TimesheetContext";
 import { ToastProvider } from "@/contexts/ToastContext";
 import { UploadStatusProvider } from "@/contexts/UploadStatusContext";
 import {
+  configureNotificationHandler,
+  getLastNotificationResponseData,
+  parseClockInReceiptData,
+  subscribeToNotificationResponses,
+} from "@/services/notifications";
+import {
   locationOnboardingFlags,
   useLocationPermission,
 } from "@/services/permissions";
@@ -84,6 +90,90 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+/**
+ * Bridges incoming notification taps to expo-router navigation.
+ *
+ * Handles three event sources:
+ *   1. Tap while app is foregrounded         → listener fires immediately
+ *   2. Tap while app is backgrounded         → listener fires when JS
+ *      runtime resumes (already alive)
+ *   3. Tap that COLD-LAUNCHED the killed app → getLastNotificationResponseData()
+ *      returns the response synchronously after JS boots; the listener
+ *      does NOT replay it
+ *
+ * All three paths funnel into the same `pending` state, which is
+ * consumed by an effect that waits for AuthGate to settle. We don't
+ * navigate into /project/<id> until `auth.ready && auth.user`,
+ * because:
+ *   - On cold launch, auth is in `loading` for the first frame.
+ *     Pushing immediately would either race AuthGate's
+ *     router.replace("/(auth)/login") or render the project screen
+ *     to an unauthenticated user.
+ *   - If the user is signed out, the deep link is silently dropped.
+ *     This is correct: a notification from a previous session has
+ *     no security claim on the current session.
+ *
+ * `pending` is a one-shot — cleared after consume so subsequent auth
+ * state changes don't re-fire the same navigation.
+ */
+function NotificationDeepLinkHandler() {
+  const router = useRouter();
+  const { user, ready } = useAuth();
+  const [pending, setPending] = useState<{
+    projectId: number;
+    entryId: string;
+  } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+
+    // Cold-launch case: the response that booted the app is
+    // available synchronously via getLastNotificationResponseAsync
+    // and is NOT replayed by the listener subscription. Consume it
+    // exactly once.
+    void getLastNotificationResponseData().then((data) => {
+      if (!alive) return;
+      const receipt = parseClockInReceiptData(data);
+      if (!receipt) return;
+      console.log(
+        `[notifications] cold-launch tap: project ${receipt.projectId}, entry ${receipt.entryId}`,
+      );
+      setPending({ projectId: receipt.projectId, entryId: receipt.entryId });
+    });
+
+    // Foreground/background case: listener fires for taps that
+    // happen while the JS runtime is alive. These are independent
+    // events from the cold-launch path — no double-handling.
+    const unsub = subscribeToNotificationResponses((data) => {
+      const receipt = parseClockInReceiptData(data);
+      if (!receipt) return;
+      console.log(
+        `[notifications] tap received: project ${receipt.projectId}, entry ${receipt.entryId}`,
+      );
+      setPending({ projectId: receipt.projectId, entryId: receipt.entryId });
+    });
+
+    return () => {
+      alive = false;
+      unsub();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!pending || !ready || !user) return;
+    router.push({
+      pathname: "/project/[id]",
+      params: {
+        id: String(pending.projectId),
+        recentClockIn: pending.entryId,
+      },
+    });
+    setPending(null);
+  }, [pending, ready, user, router]);
+
+  return null;
+}
+
 function RootLayoutNav() {
   return (
     <Stack screenOptions={{ headerBackTitle: "Back" }}>
@@ -126,8 +216,13 @@ export default function RootLayout() {
 
   // Start the background upload queue processor once at app launch. The
   // function is idempotent so re-runs during fast-refresh are safe.
+  // configureNotificationHandler is also idempotent — sets the
+  // foreground-presentation policy so receipt notifications appear as
+  // banners even when the app is open (S31b symmetry: same UX
+  // foreground/background).
   useEffect(() => {
     startUploadQueueProcessor();
+    configureNotificationHandler();
   }, []);
 
   if (!fontsLoaded && !fontError) return null;
@@ -144,6 +239,7 @@ export default function RootLayout() {
                     <TimesheetProvider>
                       <UploadStatusProvider>
                         <AuthGate>
+                          <NotificationDeepLinkHandler />
                           <RootLayoutNav />
                         </AuthGate>
                       </UploadStatusProvider>

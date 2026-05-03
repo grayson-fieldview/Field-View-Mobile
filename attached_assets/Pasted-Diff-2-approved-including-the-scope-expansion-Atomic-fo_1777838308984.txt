@@ -1,0 +1,21 @@
+Diff 2 approved including the scope expansion. Atomic forced-cascade cleanups are correct — keep doing this without asking when removing X breaks Y. Don't ship transient broken-typecheck states.
+
+Force button now creating real DB entries on tap is acknowledged. Not adding clearDebounceForRegion helper preemptively — 5-min debounce is sufficient rate-limiting, manual clock-out is the existing escape hatch if needed. Real-world driving validation is the remaining test surface and that doesn't need this helper.
+
+Proceed with Diff 3:
+- app/_layout.tsx
+- configureNotificationHandler() called once at app boot (alongside existing initSentry, startUploadQueueProcessor)
+- Notifications.addNotificationResponseReceivedListener mounted via useEffect at root layout
+- On notification tap: extract data.type === "clock_in_receipt", read projectId + entryId, navigate via router.push({ pathname: '/project/[id]', params: { id: String(projectId), recentClockIn: String(entryId) } })
+- Notifications.getLastNotificationResponseAsync() called once on mount for cold-launch tap handling (the iOS-only case where app was killed and notification tap caused fresh launch — listener subscription happens AFTER the response is delivered)
+- Listener returned by addNotificationResponseReceivedListener has .remove() — call in useEffect cleanup
+- Type-guard the data payload before navigation: if (data.type !== "clock_in_receipt") return; — defensive against future receipt types from S32
+
+After Diff 3, remaining diffs:
+- app/project/[id].tsx — read recentClockIn query param, render undo banner, wire to api.deleteTimeEntry (or whatever we name the auto-undo client method)
+- services/api.ts — add auto-undo method (note: web endpoint is DELETE /api/timesheets/:id/auto-undo, NOT /api/timesheets/:id, per Web Agent's collision diagnosis)
+- profile.tsx — notification settings deep-link row (Linking.openSettings() when permission denied/undetermined)
+- useGeofenceSync — first-success notification permission prompt with @fv/onboarding/notificationsPrompted AsyncStorage flag
+- app.json — add "expo-notifications" plugin entry (to be done from Mac, not Replit)
+
+Standing by for Diff 3.

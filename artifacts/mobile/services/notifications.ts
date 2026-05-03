@@ -192,6 +192,93 @@ export function configureNotificationHandler(): void {
 // Clock-in receipt
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Tap response handling
+// ---------------------------------------------------------------------------
+
+/**
+ * Type-narrow an unknown notification payload into a clock-in
+ * receipt. Returns null on any shape mismatch — defensive against
+ * future S32+ receipt types reusing the same listener channel.
+ *
+ * Owned here because the payload schema is owned here. Consumers
+ * (app/_layout.tsx) should NOT inline their own type-guards; route
+ * any new payload narrowing through this module.
+ */
+export function parseClockInReceiptData(
+  raw: unknown,
+): ClockInReceiptData | null {
+  if (!raw || typeof raw !== "object") return null;
+  const d = raw as Record<string, unknown>;
+  if (d.type !== "clock_in_receipt") return null;
+  if (
+    typeof d.projectId !== "number" ||
+    typeof d.projectName !== "string" ||
+    typeof d.entryId !== "string" ||
+    typeof d.clockInTime !== "string"
+  ) {
+    return null;
+  }
+  return {
+    type: "clock_in_receipt",
+    projectId: d.projectId,
+    projectName: d.projectName,
+    entryId: d.entryId,
+    clockInTime: d.clockInTime,
+  };
+}
+
+/**
+ * Subscribe to notification tap events ("response received"). The
+ * handler receives the raw `data` payload — caller is responsible
+ * for narrowing it via `parseClockInReceiptData` (or future
+ * equivalents for new receipt types).
+ *
+ * No-op on web / missing native binding — returns a no-op
+ * unsubscribe so the caller's useEffect cleanup is still safe to
+ * call unconditionally.
+ *
+ * Note on cold-launch: addNotificationResponseReceivedListener does
+ * NOT replay the cold-launch tap response that booted the app. Use
+ * `getLastNotificationResponseData()` separately to capture that
+ * case at mount time.
+ */
+export function subscribeToNotificationResponses(
+  handler: (data: unknown) => void,
+): () => void {
+  if (!notificationsAvailable || !Notifications) return () => {};
+  const sub = Notifications.addNotificationResponseReceivedListener(
+    (response) => {
+      handler(response.notification.request.content.data);
+    },
+  );
+  return () => sub.remove();
+}
+
+/**
+ * Read the cold-launch notification tap response, if any. Returns
+ * the raw `data` payload from the most recent response that was
+ * delivered while the app was killed/backgrounded, or null.
+ *
+ * Caller MUST treat this as one-shot — the same response is
+ * returned by every call until a fresh tap occurs, so consumers
+ * need their own "already handled" gate (typically: consume into
+ * state once, then ignore subsequent reads from this function).
+ */
+export async function getLastNotificationResponseData(): Promise<unknown | null> {
+  if (!notificationsAvailable || !Notifications) return null;
+  try {
+    const response = await Notifications.getLastNotificationResponseAsync();
+    return response?.notification.request.content.data ?? null;
+  } catch (err) {
+    console.log(
+      "[notifications] getLastNotificationResponseAsync failed:",
+      err,
+    );
+    return null;
+  }
+}
+
 /**
  * Format the clock-in time for the notification body in the user's
  * locale. US contractors (the bulk of the user base) get
