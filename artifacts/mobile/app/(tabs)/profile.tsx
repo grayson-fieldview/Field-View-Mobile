@@ -18,7 +18,9 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useData } from "@/contexts/DataContext";
 import { useToast } from "@/contexts/ToastContext";
 import { useColors } from "@/hooks/useColors";
+import { useGeofenceSync } from "@/hooks/useGeofenceSync";
 import { ApiError, api } from "@/services/api";
+import { useLocationPermission } from "@/services/permissions";
 
 export default function ProfileScreen() {
   const colors = useColors();
@@ -186,6 +188,8 @@ export default function ProfileScreen() {
         />
       </View>
 
+      <GeofenceDebugSection />
+
       <View style={{ paddingHorizontal: 20, marginTop: 24 }}>
         <Button title="Sign out" variant="secondary" onPress={onSignOut} />
       </View>
@@ -238,6 +242,50 @@ export default function ProfileScreen() {
         onConfirm={handleDeleteAccountConfirm}
       />
     </ScrollView>
+  );
+}
+
+// Dev-only diagnostics for the iOS geofence lifecycle. Gated on
+// __DEV__ so it's dead-code-eliminated in release builds — no manual
+// cleanup needed before paid marketing launch. Reads from the shared
+// GeofenceSyncProvider mounted in (tabs)/_layout.tsx, so tapping
+// "Force Resync" drives the same state the rest of the app sees.
+function GeofenceDebugSection() {
+  if (!__DEV__) return null;
+  return <GeofenceDebugSectionBody />;
+}
+
+function GeofenceDebugSectionBody() {
+  const colors = useColors();
+  const { status } = useLocationPermission();
+  const { lastSync, registeredCount, syncing, forceResync } = useGeofenceSync();
+
+  const lastSyncLabel = lastSync ? lastSync.toLocaleTimeString() : "Never";
+
+  return (
+    <View style={styles.section}>
+      <Text style={[styles.debugHeader, { color: colors.mutedForeground }]}>
+        Geofence Debug
+      </Text>
+      <Text style={[styles.debugCaption, { color: colors.mutedForeground }]}>
+        Visible only in development builds.
+      </Text>
+      <Row icon="map-pin" label="Permission" value={status} />
+      <Row icon="clock" label="Last sync" value={lastSyncLabel} />
+      <Row
+        icon="layers"
+        label="Registered regions"
+        value={String(registeredCount)}
+      />
+      <View style={{ marginTop: 12 }}>
+        <Button
+          title={syncing ? "Syncing…" : "Force Resync"}
+          variant="secondary"
+          onPress={forceResync}
+          disabled={syncing}
+        />
+      </View>
+    </View>
   );
 }
 
@@ -366,5 +414,18 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: "Inter_400Regular",
     lineHeight: 18,
+  },
+  debugHeader: {
+    fontSize: 12,
+    fontFamily: "Inter_700Bold",
+    letterSpacing: 1.2,
+    textTransform: "uppercase",
+    marginBottom: 4,
+  },
+  debugCaption: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    lineHeight: 16,
+    marginBottom: 4,
   },
 });
