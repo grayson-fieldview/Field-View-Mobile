@@ -319,6 +319,23 @@ export interface BackendProjectDetail {
   reports?: unknown[];
 }
 
+/**
+ * Geofence-eligible project (server-side filtered + sorted + capped).
+ * Server guarantees: accountId match, !archived, lat/lng non-null,
+ * lastActivityAt within last 14 days, sorted DESC by lastActivityAt,
+ * limit 20. Restricted-role users see only assigned projects.
+ *
+ * `lastActivityAt` is treated as opaque on mobile (sort key only,
+ * already sorted server-side).
+ */
+export interface BackendGeofenceEligibleProject {
+  id: number;
+  name: string;
+  latitude: number;
+  longitude: number;
+  lastActivityAt: string;
+}
+
 // ----- Photo upload (3-step presigned-URL flow) -----
 
 export interface SignUploadFile {
@@ -391,6 +408,11 @@ export const api = {
 
   project: (id: string | number) =>
     apiFetch<BackendProjectDetail>(`/api/projects/${id}`),
+
+  geofenceEligibleProjects: () =>
+    apiFetch<BackendGeofenceEligibleProject[]>(
+      "/api/projects/geofence-eligible",
+    ),
 
   tasks: () => apiFetch<BackendTask[]>("/api/tasks"),
 
