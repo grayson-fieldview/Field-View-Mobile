@@ -77,8 +77,7 @@ export function useGeofenceSync(): UseGeofenceSyncResult {
       const now = Date.now();
       if (!opts.force && now - lastSyncAtRef.current < DEBOUNCE_MS) {
         console.log(
-          "[geofence] sync skipped: debounced (%dms since last)",
-          now - lastSyncAtRef.current,
+          `[geofence] sync skipped: debounced (${now - lastSyncAtRef.current}ms since last)`,
         );
         return;
       }
@@ -181,15 +180,13 @@ export function useGeofenceSync(): UseGeofenceSyncResult {
       // Settings while app was open). Force-sync — debounce is meant
       // for repeated AppState pings, not user-driven state changes.
       console.log(
-        "[geofence] status transition: %s → always-granted, syncing",
-        previous,
+        `[geofence] status transition: ${previous} → always-granted, syncing`,
       );
       if (userIdRef.current) void sync({ force: true });
     } else if (previous === "always-granted") {
       // Transitioned AWAY from always-granted. Tear down.
       console.log(
-        "[geofence] status transition: always-granted → %s, unregistering",
-        status,
+        `[geofence] status transition: always-granted → ${status}, unregistering`,
       );
       void unregister();
     }

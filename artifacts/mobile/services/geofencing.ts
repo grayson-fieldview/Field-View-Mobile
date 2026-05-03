@@ -168,17 +168,13 @@ export async function registerGeofences(
   // No-op if the desired set already matches.
   if (result.registered.length === 0 && result.unregistered.length === 0) {
     console.log(
-      "[geofence] sync starting: no changes (%d regions registered)",
-      lastRegisteredCache.size,
+      `[geofence] sync starting: no changes (${lastRegisteredCache.size} regions registered)`,
     );
     return result;
   }
 
   console.log(
-    "[geofence] sync starting: +%d -%d (target %d)",
-    result.registered.length,
-    result.unregistered.length,
-    desired.size,
+    `[geofence] sync starting: +${result.registered.length} -${result.unregistered.length} (target ${desired.size})`,
   );
 
   if (!taskManagerAvailable) {
@@ -216,9 +212,7 @@ export async function registerGeofences(
     for (const id of desired.keys()) lastRegisteredCache.add(id);
 
     console.log(
-      "[geofence] registered %d regions (skipped %d as unchanged)",
-      desired.size,
-      result.skipped.length,
+      `[geofence] registered ${desired.size} regions (skipped ${result.skipped.length} as unchanged)`,
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

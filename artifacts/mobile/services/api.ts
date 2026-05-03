@@ -166,12 +166,6 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
     headers["X-FieldView-Client"] = "mobile-1";
   }
   console.log("[cookie-outgoing]", headers["Cookie"]);
-  // TEMP debug — remove after Grayson confirms hasClientHeader:true on POST.
-  console.log("[API DEBUG] outgoing", {
-    url: path,
-    method,
-    hasClientHeader: !!headers["X-FieldView-Client"],
-  });
 
   let res: Response;
   try {
@@ -422,8 +416,6 @@ export const api = {
 
   clockIn: (projectId: string | number, notes?: string) => {
     const body = notes !== undefined ? { projectId, notes } : { projectId };
-    // TEMP debug — remove after verification.
-    console.log("[CLOCK-IN DEBUG] body:", JSON.stringify(body, null, 2));
     return apiFetch<BackendTimesheetEntry>("/api/timesheets/clock-in", {
       method: "POST",
       json: body,
