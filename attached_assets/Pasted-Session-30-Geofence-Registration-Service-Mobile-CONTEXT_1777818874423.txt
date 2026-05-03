@@ -1,0 +1,126 @@
+Session 30: Geofence Registration Service (Mobile)
+
+CONTEXT
+This is Session 30 of the Field View build, second session of Phase 2 (mobile geofencing for auto clock-in/out). Session 29 (permissions onboarding) shipped today — pre-prompt screen, two-stage Always upgrade, AuthGate gating, in-app banner re-engagement. Tested on iPhone Dev Build, pushed to main, in production.
+
+This session builds the service that maintains the iOS-registered geofence set in sync with the user's recent-active projects, capped at 20.
+
+This session does NOT trigger clock-in/out yet. That's Session 31. Session 30 just registers the regions and verifies they're registered correctly. The actual enter/exit handling comes next session.
+
+PREREQUISITE — server endpoint must exist first
+
+Before writing any mobile code, this session needs a new server endpoint. I'm working in Replit Web Agent in parallel to add it. The endpoint contract:
+
+GET /api/projects/geofence-eligible
+- Auth: same as other authenticated endpoints (requireAuth or equivalent)
+- Returns: array of { id: number, name: string, latitude: number, longitude: number, lastActivityAt: string | ISO date }
+- Filtering: project.accountId === currentUser.accountId AND project.archived === false AND project.latitude !== null AND project.longitude !== null AND lastActivityAt within last 14 days
+- "lastActivityAt" = max(project.updatedAt, last clock-in by any user on project, last photo uploaded to project) — we'll need to compute this server-side
+- Sort: lastActivityAt DESC
+- Limit: 20 (hard cap matches iOS region cap)
+- Restricted role: only includes projects assigned to the user, same logic as existing project list endpoint
+
+Confirm with me before writing mobile code that this endpoint exists and matches the contract above. If it's not ready, stop and wait.
+
+LOCKED DECISIONS FROM PHASE 2 SPEC
+
+- Region strategy: Option B (recent-active only, last 14 days)
+- Region cap: 20 (iOS hard limit)
+- Radius: 30 meters per project (hardcoded for v1)
+- Re-registration triggers: app launch (after auth), AppState change to "active", manual project list refresh
+- Re-registration is idempotent: no thrash, no duplicate regions
+- Permission gate: only registers regions when status === "always-granted"
+- Logs to dev console for verification (will be cleaned up before paid marketing launch)
+
+WHAT TO BUILD
+
+1. New service: artifacts/mobile/services/geofencing.ts
+
+Exports:
+- registerGeofences(projects: GeofenceEligibleProject[]): Promise<RegistrationResult>
+  - Diffs current registered regions against the input list
+  - Unregisters regions no longer in the input
+  - Registers new regions in the input not already registered
+  - No-ops if a region's already registered with the same identifier
+  - Returns { registered: string[], unregistered: string[], skipped: string[], errors: Array<{id, error}> }
+- unregisterAllGeofences(): Promise<void>
+  - Used when permission is revoked or user logs out
+- getRegisteredGeofences(): Promise<string[]>
+  - Returns list of currently-registered region identifiers (for debugging)
+
+Internals:
+- Uses expo-location's Location.startGeofencingAsync() with TaskManager
+- Region identifier format: "fv-project-${projectId}" (stable, matches between registrations)
+- Each region: { identifier, latitude, longitude, radius: 30, notifyOnEnter: true, notifyOnExit: true }
+- Define a TaskManager task name: "fv-geofence-task" — but DO NOT implement the task body yet. Stub it with a console.log("[geofence] task fired:", eventType, region) so we can verify regions trigger correctly. Real handler comes in Session 31.
+
+2. New hook: artifacts/mobile/hooks/useGeofenceSync.ts
+
+- Pulls projects from the new GET /api/projects/geofence-eligible endpoint
+- Calls registerGeofences() with the result whenever:
+  - Hook mounts
+  - AppState changes to "active"
+  - useLocationPermission() status changes to "always-granted"
+- Calls unregisterAllGeofences() whenever status changes AWAY from "always-granted"
+- Exposes { syncing: boolean, lastSync: Date | null, registeredCount: number, error: Error | null } for debug surfacing
+- Skips sync entirely if status !== "always-granted" (no-op, returns early)
+- Skips sync if user is not authenticated
+
+3. Integration into app
+
+- Call useGeofenceSync() once at the (tabs) layout level — same level as the LocationPermissionBanner, since both are gated on tab navigation
+- Do NOT call it in any onboarding/auth screens — only when user is actually in the main app
+
+4. Debug surface (temporary, will clean up before launch)
+
+Add a tiny debug section to the existing Settings/Profile screen that shows:
+- Permission status
+- Last geofence sync timestamp
+- Number of registered regions
+- A "Force Resync" button that calls the sync function manually
+
+This is for your testing in Session 34. Hidden behind a debug flag if there's an existing pattern for that, otherwise just a plain section labeled "Geofence Debug (dev only)".
+
+WHAT NOT TO BUILD IN THIS SESSION
+
+- No clock-in or clock-out triggering on geofence events (Session 31)
+- No push notifications (Session 31)
+- No exit timer logic (Session 32)
+- No user-facing "Auto clock-in" toggle (Session 33)
+- No EAS production build (Session 34)
+- Do NOT add the geofence task body — just a console.log stub
+
+DIAGNOSE BEFORE CODING
+
+Before any code, check and report:
+
+1. Confirm the GET /api/projects/geofence-eligible endpoint is live in this codebase (or confirm with me that it's being added in parallel — don't proceed without it).
+2. expo-task-manager — installed? Version? It's required for background geofencing on iOS. If not installed, flag it.
+3. expo-location — confirmed installed from Session 29. Verify it exports startGeofencingAsync, stopGeofencingAsync, hasStartedGeofencingAsync.
+4. Are there existing TaskManager tasks defined anywhere in the app? (e.g. for background fetch, push notifications). If yes, identify them so we don't collide on task names.
+5. Where does the existing project list fetch happen? services/api.ts? A specific hook? Match the pattern for the new endpoint call.
+
+Report all five, then wait for approval before writing code.
+
+REVIEW LOOP
+
+After approval:
+- Build in this order: services/geofencing.ts → hooks/useGeofenceSync.ts → (tabs) layout integration → debug surface
+- Show me each file's diff before moving to the next
+- Don't push to git
+- Don't run any builds — I'll test on the dev build manually
+
+ACCEPTANCE CRITERIA
+
+- On a fresh app launch with always-granted permission, console logs show: "[geofence] sync starting", "[geofence] registered N regions" where N is the count of recent-active projects with lat/lng (capped at 20)
+- Permission revoked via Settings (Always → While Using App) → AppState refresh → console logs "[geofence] unregistering all regions" → all regions cleared
+- Permission re-granted → console logs new sync → regions re-registered
+- Same project appearing in two consecutive syncs is NOT re-registered (idempotency)
+- Project archived in web manager dashboard → on next sync, that project's region is unregistered
+- Project created with valid lat/lng → on next sync, registered
+- Project created without lat/lng → never registered (server filter)
+- Manual clock-in flow unaffected
+- Banner / onboarding unaffected
+- App startup time not visibly slower (sync is async, doesn't block render)
+
+Begin with the diagnosis. Wait for approval before any code.
