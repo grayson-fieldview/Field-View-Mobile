@@ -1,69 +1,119 @@
+import { Feather } from "@expo/vector-icons";
 import { Tabs } from "expo-router";
 import { SymbolView } from "expo-symbols";
-import { Feather } from "@expo/vector-icons";
-import React from "react";
-import { Platform } from "react-native";
+import React, { useMemo } from "react";
+import { Platform, View } from "react-native";
+import {
+  SafeAreaInsetsContext,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
 
 import { FloatingTabBar } from "@/components/FloatingTabBar";
+import {
+  LocationBannerProvider,
+  LocationPermissionBanner,
+  useLocationBannerActive,
+} from "@/components/LocationPermissionBanner";
+import { useColors } from "@/hooks/useColors";
 
 export default function TabLayout() {
+  // Provider must wrap the inner layout so `useLocationBannerActive`
+  // resolves to a real value (not the default `false`) inside the
+  // SafeAreaInsetsContext override below.
+  return (
+    <LocationBannerProvider>
+      <TabLayoutInner />
+    </LocationBannerProvider>
+  );
+}
+
+function TabLayoutInner() {
   const isIOS = Platform.OS === "ios";
+  const colors = useColors();
+  const insets = useSafeAreaInsets();
+  const bannerActive = useLocationBannerActive();
+
+  // Tab screens already pad their scroll content with `insets.top + 12`
+  // internally. When the banner consumes the safe-area-top above them,
+  // we need to zero out their `insets.top` reading to avoid stacking
+  // another status-bar of dead space below the banner. Bottom inset is
+  // preserved so the FloatingTabBar still clears the home indicator.
+  const adjustedInsets = useMemo(
+    () => ({ ...insets, top: bannerActive ? 0 : insets.top }),
+    [insets, bannerActive],
+  );
 
   return (
-    <Tabs
-      tabBar={(props) => <FloatingTabBar {...props} />}
-      screenOptions={{
-        headerShown: false,
-      }}
-    >
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: "Projects",
-          tabBarIcon: ({ color }) =>
-            isIOS ? (
-              <SymbolView name="folder" tintColor={color} size={22} />
-            ) : (
-              <Feather name="folder" size={22} color={color} />
-            ),
-        }}
-      />
-      <Tabs.Screen
-        name="map"
-        options={{
-          title: "Map",
-          tabBarIcon: ({ color }) =>
-            isIOS ? (
-              <SymbolView name="map" tintColor={color} size={22} />
-            ) : (
-              <Feather name="map" size={22} color={color} />
-            ),
-        }}
-      />
-      <Tabs.Screen
-        name="tasks"
-        options={{
-          title: "Tasks",
-          tabBarIcon: ({ color }) =>
-            isIOS ? (
-              <SymbolView name="checklist" tintColor={color} size={22} />
-            ) : (
-              <Feather name="check-square" size={22} color={color} />
-            ),
-        }}
-      />
-      <Tabs.Screen
-        name="profile"
-        options={{
-          title: "Profile",
-          tabBarIcon: ({ color }) =>
-            isIOS ? (
-              <SymbolView name="person.circle" tintColor={color} size={22} />
-            ) : (
-              <Feather name="user" size={22} color={color} />
-            ),
-        }}
-      />
-    </Tabs>
+    <View style={{ flex: 1, backgroundColor: colors.background }}>
+      {bannerActive ? (
+        <View
+          style={{
+            paddingTop: insets.top,
+            backgroundColor: colors.background,
+          }}
+        >
+          <LocationPermissionBanner />
+        </View>
+      ) : null}
+      <SafeAreaInsetsContext.Provider value={adjustedInsets}>
+        <View style={{ flex: 1 }}>
+          <Tabs
+            tabBar={(props) => <FloatingTabBar {...props} />}
+            screenOptions={{
+              headerShown: false,
+            }}
+          >
+            <Tabs.Screen
+              name="index"
+              options={{
+                title: "Projects",
+                tabBarIcon: ({ color }) =>
+                  isIOS ? (
+                    <SymbolView name="folder" tintColor={color} size={22} />
+                  ) : (
+                    <Feather name="folder" size={22} color={color} />
+                  ),
+              }}
+            />
+            <Tabs.Screen
+              name="map"
+              options={{
+                title: "Map",
+                tabBarIcon: ({ color }) =>
+                  isIOS ? (
+                    <SymbolView name="map" tintColor={color} size={22} />
+                  ) : (
+                    <Feather name="map" size={22} color={color} />
+                  ),
+              }}
+            />
+            <Tabs.Screen
+              name="tasks"
+              options={{
+                title: "Tasks",
+                tabBarIcon: ({ color }) =>
+                  isIOS ? (
+                    <SymbolView name="checklist" tintColor={color} size={22} />
+                  ) : (
+                    <Feather name="check-square" size={22} color={color} />
+                  ),
+              }}
+            />
+            <Tabs.Screen
+              name="profile"
+              options={{
+                title: "Profile",
+                tabBarIcon: ({ color }) =>
+                  isIOS ? (
+                    <SymbolView name="person.circle" tintColor={color} size={22} />
+                  ) : (
+                    <Feather name="user" size={22} color={color} />
+                  ),
+              }}
+            />
+          </Tabs>
+        </View>
+      </SafeAreaInsetsContext.Provider>
+    </View>
   );
 }
