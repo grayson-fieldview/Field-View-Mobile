@@ -69,11 +69,12 @@ function deriveStatus(
     fg.status === Location.PermissionStatus.DENIED &&
     fg.canAskAgain === false
   ) {
-    // Distinguish restricted (system-locked) from user-denied so the
-    // banner can avoid offering a Settings deep-link that won't work.
-    // Heuristic: iOS reports restricted as DENIED + canAskAgain=false on
-    // first read with no prior prompt. Best we can do without a native
-    // CLAuthorizationStatus bridge.
+    // NOTE: DENIED + canAskAgain=false is NOT a precise restricted signal.
+    // iOS reports the same shape after a normal user deny (the system only
+    // shows the prompt once). Without a native CLAuthorizationStatus bridge
+    // we can't tell parental-controls/MDM apart from post-deny, so we err
+    // toward "restricted" here and accept that some post-deny users will
+    // see the no-Settings-link copy. Revisit if/when we add a native bridge.
     return "restricted";
   }
   if (fg.status === Location.PermissionStatus.DENIED) return "denied";
