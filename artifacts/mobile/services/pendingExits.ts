@@ -206,6 +206,26 @@ export async function removePendingExitByTimeEntryId(
 }
 
 /**
+ * Used by the Enter-side cancel hook in geofencing.ts when the
+ * matched record has `pendingExitId === null` (unsent retry state),
+ * so removePendingExitById has no key to use. Removing by
+ * timeEntryId alone would clobber sibling pending exits for other
+ * regions in the same session — the compound key is the precise
+ * identity for that case.
+ */
+export async function removePendingExitByCompoundKey(
+  timeEntryId: string,
+  regionId: string,
+): Promise<void> {
+  await ensureLoaded();
+  const before = records.length;
+  records = records.filter(
+    (r) => !(r.timeEntryId === timeEntryId && r.regionId === regionId),
+  );
+  if (records.length !== before) await persist();
+}
+
+/**
  * Used by the Enter handler to decide whether the new event is
  * actually a re-enter on a debounced exit. Returns ALL matching
  * records — the caller is expected to attempt cancel on each (or

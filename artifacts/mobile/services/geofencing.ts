@@ -3,6 +3,13 @@ import { AppState, Platform } from "react-native";
 
 import { api, ApiError } from "./api";
 import { fireClockInReceipt } from "./notifications";
+import {
+  findPendingExitsForRegion,
+  removePendingExitByCompoundKey,
+  removePendingExitById,
+  upsertPendingExit,
+} from "./pendingExits";
+import { Sentry } from "./sentry";
 
 /**
  * iOS geofencing registration service.
@@ -14,8 +21,17 @@ import { fireClockInReceipt } from "./notifications";
  * filter chain (proximity, GPS uncertainty, per-region debounce,
  * already-clocked-in suppression) followed by SILENT-AUTO clock-in
  * (no user confirmation) → notification receipt with deep-link to
- * the project detail screen for undo. Exit events and the
- * AsyncStorage-persisted task log are deferred to S32.
+ * the project detail screen for undo.
+ *
+ * Session 32a-mobile scope: Exit event handler with its own filter
+ * chain (active-session, project-match, source==="auto_geofence",
+ * already-pending, GPS uncertainty) followed by POST
+ * /api/geofence/exit-detected → server creates a pending row and
+ * fires the auto-clock-out 5min later. Re-enter inside the window
+ * cancels the pending row server-side (cancel-pending-exit hook
+ * runs as first step of handleGeofenceEnter). The persisted local
+ * mirror lives in services/pendingExits.ts and is consumed by
+ * TimesheetContext for post-facto receipt discovery on foreground.
  *
  * Native module safety:
  *   `expo-task-manager` is loaded via synchronous `require()` inside a
@@ -149,32 +165,16 @@ export function recordClockInForRegion(projectId: number): void {
 //     cold-launch invocation in true background.
 
 /**
- * The S31a filter chain, hoisted to module scope so both the real
- * TaskManager callback AND the dev-only synthetic-trigger button in
- * profile.tsx can invoke the exact same code path. Same logic, same
- * GPS call, same network call — only the event source differs.
+ * Top-level TaskManager dispatch. Hoisted to module scope so both the
+ * real TaskManager callback AND the dev-only synthetic-trigger
+ * buttons in profile.tsx invoke the exact same code path — same
+ * parse, same branch, same downstream filters. Only the event source
+ * differs.
  *
- * Filter chain (ordered for cost: cheap checks first, then GPS,
- * then network):
- *   1. Parse + cache lookup (cheap)        — drops malformed/stale region ids
- *   2. eventType !== Enter (cheap)         — ignores exits (S32 handles)
- *   3. Per-region debounce (cheap)         — drops bouncy boundary events
- *   4. getCurrentPositionAsync (blocking)  — needed for proximity filter
- *   5. GPS uncertainty (cheap, post-fix)   — guards against meaningless distance check
- *   6. Haversine proximity (cheap)         — kills the iOS registration storm
- *   7. Already-clocked-in (network)        — last because most expensive
- *
- * On pass: silently call api.clockIn(source: "auto_geofence") and
- * fire a local notification receipt on success. NO user confirmation
- * — silent-auto is the S31b default. On fail: log + return; geofence
- * stays armed and the next legitimate event will re-trigger the
- * chain.
- *
- * Auth note: api.activeTimesheet() relies on the cookie jar in
- * services/api.ts being rehydrated from Keychain. If headless
- * cold-launch can't reach Keychain, the call 401s and we abort —
- * the user just doesn't get auto-clock-in for that event, which
- * is correct fail-safe behavior. No re-login attempt from headless.
+ * Shared filter (1) runs first; then we branch on eventType into
+ * `handleGeofenceEnter` (S31b clock-in chain + cancel-pending-exit
+ * pre-check) or `handleGeofenceExit` (S32a-mobile pending-exit POST
+ * chain). Anything else is logged and dropped.
  */
 async function runGeofenceTaskBody(
   args: {
@@ -207,7 +207,7 @@ async function runGeofenceTaskBody(
     `[geofence] task fired: eventType=${eventType} region=${regionId} appState=${AppState.currentState}`,
   );
 
-  // ----- Filter 1: parse + cache lookup -----
+  // ----- Shared Filter 1: parse + cache lookup -----
   if (!regionId) {
     console.log("[geofence] rejected: missing region identifier");
     return;
@@ -242,13 +242,62 @@ async function runGeofenceTaskBody(
     return;
   }
 
-  // ----- Filter 2: enter only -----
-  if (eventType !== Location.GeofencingEventType.Enter) {
+  // ----- Branch on event type -----
+  if (eventType === Location.GeofencingEventType.Enter) {
+    await handleGeofenceEnter(projectId, regionId, project, bypassFilters);
+  } else if (eventType === Location.GeofencingEventType.Exit) {
+    await handleGeofenceExit(projectId, regionId, project, bypassFilters);
+  } else {
     console.log(
-      `[geofence] ignored: eventType=${eventType} (only Enter handled in S31a)`,
+      `[geofence] ignored: unrecognized eventType=${eventType} for region ${regionId}`,
     );
-    return;
   }
+}
+
+/**
+ * S31b Enter chain — silent-auto clock-in with proximity/uncertainty
+ * filters and per-region debounce. Caller (runGeofenceTaskBody) has
+ * already done parse + cache lookup (shared Filter 1).
+ *
+ * Filter chain (ordered for cost: cheap first, then GPS, then network):
+ *   0. Cancel-pending-exit (S32a-mobile) — runs FIRST so a re-enter
+ *      during the 5-min debounce window cancels the server-side
+ *      pending row even though Filter 3 (debounce) will short-circuit
+ *      the silent-auto path (the user is still clocked in; we just
+ *      revoke the scheduled auto-clock-out).
+ *   3. Per-region debounce (cheap)         — drops bouncy boundary events
+ *   4. getCurrentPositionAsync (blocking)  — needed for proximity filter
+ *   5. GPS uncertainty (cheap, post-fix)   — guards against meaningless distance check
+ *   6. Haversine proximity (cheap)         — kills the iOS registration storm
+ *   7. Already-clocked-in (network)        — last because most expensive
+ *
+ * On pass: silently call api.clockIn(source: "auto_geofence") and
+ * fire a local notification receipt on success. NO user confirmation
+ * — silent-auto is the S31b default. On fail: log + return; geofence
+ * stays armed and the next legitimate event will re-trigger the
+ * chain.
+ *
+ * Auth note: api.activeTimesheet() relies on the cookie jar in
+ * services/api.ts being rehydrated from Keychain. If headless
+ * cold-launch can't reach Keychain, the call 401s and we abort —
+ * the user just doesn't get auto-clock-in for that event, which
+ * is correct fail-safe behavior. No re-login attempt from headless.
+ */
+async function handleGeofenceEnter(
+  projectId: number,
+  regionId: string,
+  project: GeofenceEligibleProject,
+  bypassFilters: boolean,
+): Promise<void> {
+  // ----- Filter 0: cancel pending-exit on re-enter (S32a-mobile) -----
+  //
+  // MUST run before Filter 3. When the user steps out and back in
+  // within 5 minutes, the per-region debounce IS armed (from the
+  // original clock-in), so Filter 3 would short-circuit before we
+  // get a chance to revoke the server-side pending row. By the time
+  // the cron fires, the user is back inside and the auto-clock-out
+  // becomes a UX surprise.
+  await cancelPendingExitsOnReEnter(regionId, project.name);
 
   // ----- Filter 3: per-region debounce -----
   const lastClockIn = lastClockInByRegion.get(regionId);
@@ -399,6 +448,287 @@ async function runGeofenceTaskBody(
 }
 
 /**
+ * Cancel any pending-exit rows for a region the user just re-entered.
+ * Best-effort: server cancel POST failures drop the local record
+ * anyway and let the server fire (post-facto discovery in
+ * TimesheetContext will surface the kind="out" receipt with Undo).
+ *
+ * Server's partial unique index on pending_geofence_exits
+ * (WHERE status='pending') guarantees ≤ 1 record per (timeEntryId,
+ * projectId), so > 1 here = local persistence corruption. Logged to
+ * Sentry for investigation but we still process all of them.
+ */
+async function cancelPendingExitsOnReEnter(
+  regionId: string,
+  projectName: string,
+): Promise<void> {
+  let pending;
+  try {
+    pending = await findPendingExitsForRegion(regionId);
+  } catch (err) {
+    console.log("[geofence] cancel-pending-exit: lookup failed:", err);
+    return;
+  }
+  if (pending.length === 0) return;
+
+  if (pending.length > 1) {
+    Sentry.captureException(
+      new Error(
+        `[geofence] multiple pending exits for region ${regionId} (expected ≤ 1)`,
+      ),
+      {
+        extra: {
+          regionId,
+          count: pending.length,
+          ids: pending.map((p) => p.pendingExitId),
+        },
+      },
+    );
+  }
+
+  for (const record of pending) {
+    if (record.pendingExitId !== null) {
+      try {
+        await api.geofenceExitCancelled(record.pendingExitId);
+        await removePendingExitById(record.pendingExitId);
+        console.log(
+          `[geofence] re-enter cancelled pending exit ${record.pendingExitId} for ${projectName}`,
+        );
+      } catch (err) {
+        // Failure mode: drop the local record anyway. If the server
+        // still fires, post-facto discovery surfaces the kind="out"
+        // receipt and the user can Undo. No retry queue for cancel
+        // — keeps the state machine simple. Revisit if field
+        // reports show this surprises users in practice.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.log(
+          `[geofence] re-enter cancel POST failed (${msg}); dropping local record anyway`,
+        );
+        Sentry.captureException(err, {
+          extra: {
+            phase: "exit-cancelled",
+            regionId,
+            pendingExitId: record.pendingExitId,
+          },
+        });
+        await removePendingExitById(record.pendingExitId);
+      }
+    } else {
+      // Unsent retry state: no server-side row exists, nothing to
+      // cancel. Just drop the local record so the next foreground
+      // doesn't try to retry-POST exit-detected for an exit the
+      // user has now reversed.
+      await removePendingExitByCompoundKey(record.timeEntryId, record.regionId);
+      console.log(
+        `[geofence] re-enter dropped unsent pending exit (no server row to cancel) for ${projectName}`,
+      );
+    }
+  }
+}
+
+/**
+ * S32a-mobile Exit chain — POST /api/geofence/exit-detected so the
+ * server schedules the auto-clock-out 5 minutes from now. Caller
+ * (runGeofenceTaskBody) has already done parse + cache lookup
+ * (shared Filter 1).
+ *
+ * Filter chain (B-prefix to keep visually distinct from the Enter
+ * chain in logs):
+ *   B5. Already-pending (cheap, local) — runs FIRST as a free
+ *       short-circuit. The OS sometimes fires Exit twice for the
+ *       same region; we don't want to double-POST.
+ *   B2. Active session (network)        — no session = nothing to debounce
+ *   B3. Project match (cheap)           — exit is for a region the user
+ *                                         isn't currently clocked into
+ *   B4. Source === auto_geofence (CRITICAL) — manual sessions are NEVER
+ *                                         debounced; the user explicitly
+ *                                         clocked in and would be surprised
+ *                                         by an auto-clock-out
+ *   B1. GPS uncertainty (network/HW)    — last sanity check; skipped in
+ *                                         bypassFilters (synthetic test)
+ *
+ * On pass: POST exit-detected, persist returned id+firesAt locally
+ * via upsertPendingExit. On POST failure: persist with
+ * pendingExitId=null + unsent=true so the foreground retry in
+ * TimesheetContext (Diff 5) can re-attempt.
+ */
+async function handleGeofenceExit(
+  projectId: number,
+  regionId: string,
+  project: GeofenceEligibleProject,
+  bypassFilters: boolean,
+): Promise<void> {
+  // ----- Filter B5 (early): already-pending short-circuit -----
+  let existing: Awaited<ReturnType<typeof findPendingExitsForRegion>> = [];
+  try {
+    existing = await findPendingExitsForRegion(regionId);
+  } catch (err) {
+    console.log("[geofence] exit: pending-lookup failed:", err);
+  }
+  if (existing.length > 1) {
+    Sentry.captureException(
+      new Error(
+        `[geofence] multiple pending exits for region ${regionId} (expected ≤ 1)`,
+      ),
+      {
+        extra: {
+          regionId,
+          count: existing.length,
+          ids: existing.map((p) => p.pendingExitId),
+        },
+      },
+    );
+  }
+  if (existing.length > 0) {
+    console.log(
+      `[geofence] exit suppressed: pending exit already exists for ${project.name}`,
+    );
+    return;
+  }
+
+  // ----- Filter B2: active session check -----
+  let active: Awaited<ReturnType<typeof api.activeTimesheet>>;
+  try {
+    active = await api.activeTimesheet();
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) {
+      console.log(
+        "[geofence] exit: auth failed (session expired); deferring",
+      );
+      return;
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    console.log(`[geofence] exit rejected: activeTimesheet check failed: ${msg}`);
+    return;
+  }
+  if (active === null) {
+    console.log(
+      `[geofence] exit ignored: no active session (nothing to debounce)`,
+    );
+    return;
+  }
+
+  // ----- Filter B3: project match -----
+  // active.projectId is `number | string` per the wire contract.
+  const activeProjectId =
+    typeof active.projectId === "number"
+      ? active.projectId
+      : Number(active.projectId);
+  if (activeProjectId !== projectId) {
+    console.log(
+      `[geofence] exit ignored: active project ${activeProjectId} != exited region project ${projectId}`,
+    );
+    return;
+  }
+
+  // ----- Filter B4: source must be auto_geofence (CRITICAL) -----
+  //
+  // Manual sessions (source: "manual" | "edited" | null | undefined)
+  // are NEVER auto-debounced. The user explicitly clocked themselves
+  // in; an auto-clock-out triggered by the OS would be a UX surprise
+  // that erodes trust in manual control. Auto-debounce is opt-in via
+  // the auto_geofence enter path only.
+  if (active.source !== "auto_geofence") {
+    console.log(
+      `[geofence] exit ignored: session source="${active.source}" — only auto_geofence sessions are debounced`,
+    );
+    return;
+  }
+
+  // ----- Filter B1: GPS uncertainty (skip in bypass mode) -----
+  //
+  // Heavy weather, indoor multipath, or a stale fix can produce a
+  // phantom Exit even when the user hasn't moved. Reject if accuracy
+  // is worse than threshold so we don't schedule an auto-clock-out
+  // off a known-bad signal. No proximity check on Exit (the whole
+  // point of Exit is the user is now far from the region).
+  if (!bypassFilters) {
+    let position: Location.LocationObject;
+    try {
+      position = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+        mayShowUserSettingsDialog: false,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(
+        `[geofence] exit rejected: getCurrentPositionAsync failed: ${msg}`,
+      );
+      return;
+    }
+    const accuracy = position.coords.accuracy ?? Number.POSITIVE_INFINITY;
+    if (accuracy > GPS_ACCURACY_THRESHOLD_M) {
+      console.log(
+        `[geofence] exit rejected: GPS uncertainty too high (${Math.round(accuracy)}m, threshold ${GPS_ACCURACY_THRESHOLD_M}m)`,
+      );
+      return;
+    }
+  }
+
+  // ----- All filters passed: POST exit-detected -----
+  const detectedAt = new Date().toISOString();
+  const timeEntryId = String(active.id);
+
+  if (bypassFilters) {
+    console.log(
+      `[geofence] exit accepted (BYPASS): ${project.name} entry=${timeEntryId} — GPS skipped`,
+    );
+  } else {
+    console.log(
+      `[geofence] exit accepted: ${project.name} entry=${timeEntryId}`,
+    );
+  }
+
+  try {
+    const resp = await api.geofenceExitDetected({
+      projectId,
+      timeEntryId,
+      detectedAt,
+    });
+    await upsertPendingExit({
+      pendingExitId: resp.id,
+      timeEntryId,
+      projectId,
+      regionId,
+      firesAt: resp.firesAt,
+      detectedAt,
+    });
+    console.log(
+      `[geofence] exit persisted: pendingExitId=${resp.id} firesAt=${resp.firesAt}`,
+    );
+  } catch (err) {
+    // Persist with unsent=true so the foreground retry in
+    // TimesheetContext (Diff 5) can re-attempt the POST. firesAt
+    // is a best-effort 5min-from-now estimate — used only for the
+    // dead-record cleanup threshold in pendingExits.ts; the real
+    // firesAt is never assigned because the server never accepted
+    // this row. If the user re-enters before retry succeeds, the
+    // cancel hook drops the local record without any server call.
+    const msg = err instanceof Error ? err.message : String(err);
+    console.log(
+      `[geofence] exit POST failed; persisting unsent for retry: ${msg}`,
+    );
+    Sentry.captureException(err, {
+      extra: {
+        phase: "exit-detected",
+        projectId,
+        timeEntryId,
+        regionId,
+      },
+    });
+    await upsertPendingExit({
+      pendingExitId: null,
+      timeEntryId,
+      projectId,
+      regionId,
+      firesAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+      detectedAt,
+      unsent: true,
+    });
+  }
+}
+
+/**
  * DEV-ONLY: synthesize a TaskManager geofence Enter event for the
  * given region id and run the filter chain against it. Lets us
  * validate the entire path (proximity, debounce, activeTimesheet,
@@ -441,6 +771,52 @@ export async function triggerSyntheticEnterForTesting(
     {
       data: {
         eventType: Location.GeofencingEventType.Enter,
+        region: { identifier: regionId },
+      },
+      error: null,
+    },
+    opts,
+  );
+}
+
+/**
+ * DEV-ONLY: synthesize a TaskManager geofence Exit event for the
+ * given region id and run the Exit filter chain against it. Mirror
+ * of triggerSyntheticEnterForTesting — same dispatch path, same
+ * bypassFilters semantics.
+ *
+ * Default mode: B1 (GPS uncertainty) runs as the real iOS event
+ * would. If the device's GPS fix is poor, the exit is rejected.
+ *
+ * Force mode (`bypassFilters: true`): skips B1 only. B2 (active
+ * session), B3 (project match), B4 (source check), and B5
+ * (already-pending) still run because they're invariants the
+ * server-side debounce contract depends on — bypassing them in a
+ * test would create database state that doesn't match what
+ * production would ever produce.
+ *
+ * Mounted by the GeofenceDebugSection in profile.tsx behind
+ * `__DEV__`. Defense-in-depth gate here too — calling this in a
+ * release build is a programmer error, not a runtime path.
+ */
+export async function triggerSyntheticExitForTesting(
+  regionId: string,
+  opts?: { bypassFilters?: boolean },
+): Promise<void> {
+  if (!__DEV__) {
+    console.log(
+      "[geofence] triggerSyntheticExitForTesting called outside __DEV__; ignoring",
+    );
+    return;
+  }
+  const mode = opts?.bypassFilters ? "BYPASS" : "full filter chain";
+  console.log(
+    `[geofence] DEBUG: synthetic Exit triggered for ${regionId} (${mode})`,
+  );
+  await runGeofenceTaskBody(
+    {
+      data: {
+        eventType: Location.GeofencingEventType.Exit,
         region: { identifier: regionId },
       },
       error: null,
