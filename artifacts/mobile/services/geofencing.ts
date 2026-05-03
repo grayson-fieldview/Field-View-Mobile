@@ -12,12 +12,14 @@ import { Platform } from "react-native";
  * handling lands in Session 31.
  *
  * Native module safety:
- *   `expo-task-manager` is dynamically imported inside `loadTaskManager`
- *   so this file is safe to evaluate on a Dev Build that lacks the
- *   native binding (e.g. the current pre-Session-34 build). All native
- *   calls are also gated behind `Platform.OS === "ios"` and wrapped in
- *   try/catch — a missing binding logs a warning and returns gracefully
- *   instead of crashing the app.
+ *   `expo-task-manager` is loaded via synchronous `require()` inside a
+ *   try/catch at module top so `defineTask` runs at JS module-evaluation
+ *   time (required for iOS to invoke the task on cold-launch from a
+ *   background geofence event — see comment block below). On a Dev
+ *   Build that lacks the native binding (e.g. the current pre-Session-34
+ *   build), the require throws, is caught, `taskManagerAvailable` stays
+ *   false, and `registerGeofences` early-returns with an error entry —
+ *   the app never crashes.
  */
 
 // ---------------------------------------------------------------------------
@@ -65,54 +67,60 @@ function regionIdFor(projectId: number): string {
 const lastRegisteredCache = new Set<string>();
 
 // ---------------------------------------------------------------------------
-// Lazy TaskManager loader (module-load safety)
+// Module-top-level TaskManager bootstrap
 // ---------------------------------------------------------------------------
+//
+// `defineTask` MUST be called at JS module-evaluation time so the task
+// is registered before iOS can invoke it. iOS may wake the app
+// headlessly for a geofence event (no React mount, no useEffect) — the
+// OS instantiates the JS runtime, looks up the task by name, and fires
+// it. If the task wasn't defined at module load, the event is dropped
+// silently.
+//
+// Use synchronous `require()` in a try/catch so the current Dev Build
+// (which lacks the expo-task-manager native binding) fails soft instead
+// of crashing on launch:
+//   - require() throws → caught → taskManagerAvailable stays false
+//     → registerGeofences early-returns with an error entry, the hook
+//       and the rest of the app are unaffected.
+//   - Session 34 EAS rebuild (native module present) → require()
+//     succeeds → defineTask runs at module load → ready for OS
+//     cold-launch invocation in true background.
 
-type TaskManagerModule = typeof import("expo-task-manager");
+let TaskManager: typeof import("expo-task-manager") | null = null;
+let taskManagerAvailable = false;
 
-let taskManagerPromise: Promise<TaskManagerModule | null> | null = null;
-let taskDefined = false;
-
-async function loadTaskManager(): Promise<TaskManagerModule | null> {
-  if (taskManagerPromise) return taskManagerPromise;
-  taskManagerPromise = (async () => {
-    try {
-      const mod = await import("expo-task-manager");
-      if (!taskDefined) {
-        // STUB BODY for Session 30. Real enter/exit handler arrives in
-        // Session 31. Per Expo docs, defineTask should be called at
-        // module load — close enough: we call it on the first sync,
-        // which precedes any OS event since the OS only fires after
-        // startGeofencingAsync returns.
-        mod.defineTask(TASK_NAME, async ({ data, error }) => {
-          if (error) {
-            console.log("[geofence] task error:", error);
-            return;
-          }
-          const payload = data as
-            | {
-                eventType?: Location.GeofencingEventType;
-                region?: Location.LocationRegion;
-              }
-            | undefined;
-          console.log(
-            "[geofence] task fired:",
-            payload?.eventType,
-            payload?.region?.identifier,
-          );
-        });
-        taskDefined = true;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  TaskManager = require("expo-task-manager") as typeof import("expo-task-manager");
+  if (Platform.OS === "ios" && TaskManager) {
+    // STUB BODY for Session 30. Real enter/exit handler arrives in
+    // Session 31 — keep the signature stable so the upgrade is purely
+    // additive inside this callback.
+    TaskManager.defineTask(TASK_NAME, async ({ data, error }) => {
+      if (error) {
+        console.log("[geofence] task error:", error);
+        return;
       }
-      return mod;
-    } catch (err) {
+      const payload = data as
+        | {
+            eventType?: Location.GeofencingEventType;
+            region?: Location.LocationRegion;
+          }
+        | undefined;
       console.log(
-        "[geofence] expo-task-manager unavailable on this build; geofencing disabled",
-        err,
+        "[geofence] task fired:",
+        payload?.eventType,
+        payload?.region?.identifier,
       );
-      return null;
-    }
-  })();
-  return taskManagerPromise;
+    });
+    taskManagerAvailable = true;
+  }
+} catch (err) {
+  console.log(
+    "[geofence] expo-task-manager unavailable on this build; geofencing disabled",
+    err,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -173,8 +181,7 @@ export async function registerGeofences(
     desired.size,
   );
 
-  const taskManager = await loadTaskManager();
-  if (!taskManager) {
+  if (!taskManagerAvailable) {
     result.errors.push({
       id: "*",
       error: "expo-task-manager native module unavailable",

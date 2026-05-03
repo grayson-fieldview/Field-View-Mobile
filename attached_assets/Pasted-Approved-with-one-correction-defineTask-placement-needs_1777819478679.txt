@@ -1,0 +1,36 @@
+Approved with one correction. defineTask placement needs to change NOW, not in Session 31.
+
+The issue: iOS can wake the app in true background for a geofence event. When that happens, JS runs headless — no React mount, no hook fires, no useEffect. The OS just instantiates the runtime, looks up the task by name, and invokes it. If the task isn't defined at module-evaluation time, it doesn't exist when the OS comes looking, and the event is dropped.
+
+Your current pattern (defineTask inside loadTaskManager, triggered by the hook's useEffect) means the task only exists after the user has interactively launched the app. For Session 30's stub this doesn't visibly fail, but it'll silently break Session 31's real enter handler in any cold-launch-from-background scenario, and we'll waste a session debugging it.
+
+CORRECTION: Move defineTask to module top-level using synchronous require() in a try/catch:
+
+let taskManagerAvailable = false;
+let TaskManager: typeof import("expo-task-manager") | null = null;
+
+try {
+  TaskManager = require("expo-task-manager");
+  if (Platform.OS === "ios" && TaskManager) {
+    TaskManager.defineTask(TASK_NAME, async ({ data, error }) => {
+      console.log("[geofence] task fired:", data, error); // stub for S30
+    });
+    taskManagerAvailable = true;
+  }
+} catch (err) {
+  console.log("[geofence] expo-task-manager unavailable; geofencing disabled");
+}
+
+Current Dev Build (no native module) → require() throws → catch → taskManagerAvailable = false → registerGeofences early-returns with the existing error path.
+
+Session 34 EAS rebuild (native module present) → require() succeeds → defineTask runs at module load → ready for OS cold-launch invocation.
+
+The async loadTaskManager() wrapper can stay for Location.startGeofencingAsync calls (those don't have the same lifecycle constraint), but defineTask must be synchronous at top-level. This is documented in expo-task-manager's README as the standard pattern and one of the most common production bugs in geofencing implementations.
+
+Update services/geofencing.ts with this change, show me the diff. Then proceed to Step 3 (api.ts + useGeofenceSync hook).
+
+VALIDATION REQUEST after Step 3:
+
+Before claiming Step 3 done, force a Metro reload on the Dev Build and confirm the app launches without crashing. The native-module safety pattern only protects against runtime calls — Metro bundling could surface a different failure if the package's JS-side exports try to access something native at module load. Quick smoke test: reload Dev Build → app launches → no red screen → permission status reads correctly. If anything crashes, the safety pattern has a hole and we need to widen it.
+
+Standing by for the defineTask diff.
