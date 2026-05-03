@@ -1,0 +1,33 @@
+Approved with one addition and one confirmation needed before integration.
+
+ADDITION — handle the cold-launch + delayed-auth race:
+
+If a user with always-granted permission cold-launches the app, status may resolve to "always-granted" before auth context loads (user is still null). Walking through your three effects:
+
+- Effect 2 fires on status change: hits "null → always-granted (and authed)" rule, but !authed, so it records the transition and returns without syncing.
+- Effect 1 fires on user.id change (null → user) but only handles the inverse (user → null) for sign-out unregister.
+- Effect 3 (AppState) requires a "change → active" event, which doesn't fire on initial cold launch.
+
+Net result: no first sync ever happens until the user backgrounds and re-foregrounds the app. Geofences never register. Returning users see auto-clock-in silently broken.
+
+Fix: add a fourth effect (or extend effect 1) that triggers sync when auth becomes ready IF status is already always-granted:
+
+useEffect(() => {
+  if (authReady && user?.id && previousStatusRef.current === "always-granted") {
+    sync({ force: true });
+  }
+}, [authReady, user?.id, sync]);
+
+force: true because this is the equivalent of an initial mount — user hasn't done anything wrong, we just had a delayed-auth race. Don't suppress with debounce.
+
+Verify your existing effect 2 doesn't ALSO fire sync in this scenario (would be duplicate). The "(and authed)" guard already handles it: the first time effect 2 sees always-granted, !authed → no sync. By the time auth loads, previousStatusRef.current === "always-granted" so effect 2's "previous === status → no-op" rule prevents re-fire.
+
+CONFIRM — does forceResync() call sync({ force: true })? Returning a no-op or a function that updates state without calling sync would silently break the debug button. Implementation should be:
+
+const forceResync = useCallback(() => sync({ force: true }), [sync]);
+
+If that's already what you have, confirm. If not, add it.
+
+After both fixes, proceed to Step 3c: (tabs)/_layout.tsx integration + Metro reload smoke test on the iPhone Dev Build. The smoke test is the gate before Step 3d (debug surface) — if Metro can't bundle or the app crashes on launch, we have a different problem to solve first.
+
+Standing by.

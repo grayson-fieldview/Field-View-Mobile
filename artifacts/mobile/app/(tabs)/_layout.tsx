@@ -15,6 +15,7 @@ import {
   useLocationBannerActive,
 } from "@/components/LocationPermissionBanner";
 import { useColors } from "@/hooks/useColors";
+import { useGeofenceSync } from "@/hooks/useGeofenceSync";
 
 export default function TabLayout() {
   // Provider must wrap the inner layout so `useLocationBannerActive`
@@ -32,6 +33,14 @@ function TabLayoutInner() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const bannerActive = useLocationBannerActive();
+
+  // Drives iOS geofence registration lifecycle. The hook handles its
+  // own auth + permission gating internally and is a no-op on Android
+  // and on Dev Builds without the expo-task-manager native binding.
+  // Mounted here (inside the LocationBannerProvider scope, not at the
+  // root layout) so it lives exactly as long as the authenticated tabs
+  // session — auto-tears-down on sign-out via AuthContext re-render.
+  useGeofenceSync();
 
   // Tab screens already pad their scroll content with `insets.top + 12`
   // internally. When the banner consumes the safe-area-top above them,

@@ -122,6 +122,10 @@ export function useGeofenceSync(): UseGeofenceSyncResult {
   }, []);
 
   // Keep userIdRef in sync; trigger unregister on sign-out.
+  // MUST be declared before the delayed-auth-race effect below: that
+  // effect calls sync(), which reads userIdRef inside its `!user`
+  // guard, and React runs effects in declaration order — so this one
+  // has to populate the ref first.
   useEffect(() => {
     const previousUserId = userIdRef.current;
     const nextUserId = user?.id ?? null;
@@ -130,6 +134,26 @@ export function useGeofenceSync(): UseGeofenceSyncResult {
       void unregister();
     }
   }, [user?.id, unregister]);
+
+  // Cold-launch + delayed-auth race:
+  //   If status resolves to "always-granted" BEFORE auth context
+  //   loads, the status-transition effect below records the transition
+  //   but doesn't sync (no authed user yet). Without this effect, no
+  //   first sync ever happens until the user backgrounds + foregrounds
+  //   the app — silently broken auto-clock-in for returning users.
+  //
+  //   `force: true` because this is the equivalent of an initial
+  //   mount; it's a delayed-auth race, not a repeated AppState ping.
+  //
+  //   The status-transition effect won't double-fire here: by the time
+  //   auth resolves, previousStatusRef.current is already
+  //   "always-granted", so its "previous === status" no-op rule holds.
+  useEffect(() => {
+    if (!authReady) return;
+    if (!user?.id) return;
+    if (previousStatusRef.current !== "always-granted") return;
+    void sync({ force: true });
+  }, [authReady, user?.id, sync]);
 
   // Status transition handler — the core lifecycle.
   useEffect(() => {
