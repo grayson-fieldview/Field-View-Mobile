@@ -25,6 +25,7 @@ import { ApiError, api } from "@/services/api";
 import {
   getRegisteredGeofences,
   triggerSyntheticEnterForTesting,
+  triggerSyntheticExitForTesting,
 } from "@/services/geofencing";
 import {
   getNotificationPermission,
@@ -323,14 +324,14 @@ function GeofenceDebugSectionBody() {
   const colors = useColors();
   const { status } = useLocationPermission();
   const { lastSync, registeredCount, syncing, forceResync } = useGeofenceSync();
-  const [triggering, setTriggering] = useState<"none" | "full" | "force">(
-    "none",
-  );
+  const [triggering, setTriggering] = useState<
+    "none" | "full" | "force" | "exit"
+  >("none");
 
   const lastSyncLabel = lastSync ? lastSync.toLocaleTimeString() : "Never";
 
-  // Dev-only manual triggers. Both pick the FIRST registered region
-  // and synthesize an iOS Enter event:
+  // Dev-only manual triggers. All pick the FIRST registered region.
+  // Enter modes:
   //   - "full" runs the entire filter chain (incl. real GPS + proximity).
   //     Expects rejection when far from the chosen project — validates
   //     the filter is restrictive.
@@ -338,7 +339,20 @@ function GeofenceDebugSectionBody() {
   //     activeTimesheet still run). Expects the banner to appear so
   //     the tester can validate banner → tap → API → DB persistence
   //     without physically standing at a job site.
-  const triggerWith = async (mode: "full" | "force") => {
+  // Exit mode (S32a):
+  //   - "exit" runs the full Exit filter chain (B5 → B2 → B3 → B4 → B1).
+  //     Expects: if currently clocked in to the picked project, debounce
+  //     POST fires and a pendingExit row appears in storage. Cron will
+  //     then auto-clock-out after the server-side window expires;
+  //     subsequent foreground refresh surfaces the kind="out" receipt
+  //     banner. No bypass variant — the Exit filter chain is
+  //     deliberately less restrictive than Enter (no proximity check,
+  //     just GPS uncertainty + debounce + active-session gates), so
+  //     the "full" path is testable under realistic field conditions
+  //     without a force escape hatch. If the filter chain rejects in
+  //     a way you didn't expect, that's the bug to investigate, not
+  //     a hurdle to bypass.
+  const triggerWith = async (mode: "full" | "force" | "exit") => {
     const registered = getRegisteredGeofences();
     const regionId = registered[0];
     if (!regionId) {
@@ -347,9 +361,13 @@ function GeofenceDebugSectionBody() {
     }
     setTriggering(mode);
     try {
-      await triggerSyntheticEnterForTesting(regionId, {
-        bypassFilters: mode === "force",
-      });
+      if (mode === "exit") {
+        await triggerSyntheticExitForTesting(regionId);
+      } else {
+        await triggerSyntheticEnterForTesting(regionId, {
+          bypassFilters: mode === "force",
+        });
+      }
     } finally {
       setTriggering("none");
     }
@@ -401,6 +419,18 @@ function GeofenceDebugSectionBody() {
               }
               variant="secondary"
               onPress={() => triggerWith("force")}
+              disabled={triggering !== "none"}
+            />
+          </View>
+          <View style={{ marginTop: 8 }}>
+            <Button
+              title={
+                triggering === "exit"
+                  ? "Triggering…"
+                  : "Trigger Test Exit (DEV)"
+              }
+              variant="secondary"
+              onPress={() => triggerWith("exit")}
               disabled={triggering !== "none"}
             />
           </View>
