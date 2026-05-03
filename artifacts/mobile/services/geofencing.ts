@@ -113,49 +113,92 @@ const lastRegisteredCache = new Map<string, GeofenceEligibleProject>();
 // "no recent prompts known", default to allow).
 const lastClockInByRegion = new Map<string, number>();
 
-// Foreground prompt subscribers. Mirrors the subscribe/unsubscribe
-// pattern in services/uploadQueue.ts. A `Set<Listener>` so a duplicate
-// subscribe is a no-op and the unsubscribe handle is the canonical way
-// to stop receiving events.
+// Foreground prompt queue. FIFO with per-projectId dedupe.
+//
+// Pattern mirrors services/uploadQueue.ts: module-level array as the
+// single source of truth, listeners are notified with the full queue
+// snapshot on every mutation, callers separately `getClockInPromptQueue()`
+// for the initial state at subscribe time.
+//
+// Realistic depth: 1-2. Unbounded in code (no max length) — a runaway
+// queue would indicate a filter-chain bug, not a real-world scenario.
+//
+// Lifecycle: events queue regardless of whether a listener is mounted
+// — if the app is backgrounded when an event passes the filter chain,
+// the entry sits in the queue until the React tree foregrounds and the
+// banner subscribes. Stale-queue caveat: if the user enters and then
+// leaves a region without ever foregrounding, the prompt is still
+// shown on next foreground (mildly confusing but bounded annoyance).
+// S31b's local-push path makes this rare in practice.
 export interface ClockInPromptEvent {
   projectId: number;
   projectName: string;
 }
-type ClockInPromptListener = (event: ClockInPromptEvent) => void;
-const promptListeners = new Set<ClockInPromptListener>();
+type QueueListener = (queue: ClockInPromptEvent[]) => void;
+const promptQueue: ClockInPromptEvent[] = [];
+const promptListeners = new Set<QueueListener>();
+
+function notifyPromptListeners(): void {
+  const snapshot = [...promptQueue];
+  for (const listener of promptListeners) {
+    try {
+      listener(snapshot);
+    } catch (err) {
+      console.log("[geofence] prompt listener threw:", err);
+    }
+  }
+}
 
 /**
- * Subscribe to "user entered a geofence and should be prompted to
- * clock in" events. Listener is called once per filter-passed enter
- * event. Returns the unsubscribe handle.
+ * Subscribe to clock-in prompt queue updates. Listener is called with
+ * the full queue snapshot on every mutation (enqueue + dismiss).
+ * Callers should separately invoke `getClockInPromptQueue()` for the
+ * initial state at subscribe time. Returns the unsubscribe handle.
  *
- * Mounted by `<ClockInPromptBanner>` inside the tabs layout. When no
- * subscriber is mounted (app backgrounded, no banner), events are
- * dropped silently — S31b's local-push path will fill that gap.
+ * Mounted by `<ClockInPromptBanner>` inside the tabs layout.
  */
-export function subscribeToClockInPrompts(
-  listener: ClockInPromptListener,
-): () => void {
+export function subscribeToClockInPrompts(listener: QueueListener): () => void {
   promptListeners.add(listener);
   return () => {
     promptListeners.delete(listener);
   };
 }
 
-function emitClockInPrompt(event: ClockInPromptEvent): void {
-  if (promptListeners.size === 0) {
+/** Snapshot of the current prompt queue (for initial render). */
+export function getClockInPromptQueue(): ClockInPromptEvent[] {
+  return [...promptQueue];
+}
+
+function enqueueClockInPrompt(event: ClockInPromptEvent): void {
+  // Dedupe: a project already in the queue shouldn't be re-prompted.
+  // GPS at the boundary can fire enter/exit/enter inside the
+  // 5-min debounce window for a region the user hasn't responded to.
+  if (promptQueue.some((e) => e.projectId === event.projectId)) {
     console.log(
-      `[geofence] enter passed all filters but no listener mounted (project ${event.projectId}); dropping prompt`,
+      `[geofence] dedupe: project ${event.projectId} already in prompt queue (depth ${promptQueue.length})`,
     );
     return;
   }
-  for (const listener of promptListeners) {
-    try {
-      listener(event);
-    } catch (err) {
-      console.log("[geofence] prompt listener threw:", err);
-    }
-  }
+  promptQueue.push(event);
+  console.log(
+    `[geofence] enqueued prompt for ${event.projectName} (queue depth: ${promptQueue.length})`,
+  );
+  notifyPromptListeners();
+}
+
+/**
+ * Remove a prompt from the queue by projectId. Called by the banner
+ * after Yes (post-clockIn) or Not now. Idempotent — no-op if the
+ * projectId isn't in the queue.
+ */
+export function dismissClockInPrompt(projectId: number): void {
+  const idx = promptQueue.findIndex((e) => e.projectId === projectId);
+  if (idx === -1) return;
+  promptQueue.splice(idx, 1);
+  console.log(
+    `[geofence] dismissed prompt for project ${projectId} (queue depth: ${promptQueue.length})`,
+  );
+  notifyPromptListeners();
 }
 
 /**
@@ -355,11 +398,11 @@ try {
         return;
       }
 
-      // ----- All filters passed: emit prompt -----
+      // ----- All filters passed: enqueue prompt -----
       console.log(
         `[geofence] enter accepted: ${project.name} (${Math.round(distanceM)}m away, GPS ±${Math.round(accuracy)}m)`,
       );
-      emitClockInPrompt({ projectId, projectName: project.name });
+      enqueueClockInPrompt({ projectId, projectName: project.name });
     });
     taskManagerAvailable = true;
   }
@@ -487,6 +530,13 @@ export async function unregisterAllGeofences(): Promise<void> {
   } finally {
     lastRegisteredCache.clear();
     lastClockInByRegion.clear();
+    // Drop any pending prompts — they reference projects we no
+    // longer have lat/lng for, and "always permission" was probably
+    // just revoked, so prompting would be misleading anyway.
+    if (promptQueue.length > 0) {
+      promptQueue.length = 0;
+      notifyPromptListeners();
+    }
   }
 }
 

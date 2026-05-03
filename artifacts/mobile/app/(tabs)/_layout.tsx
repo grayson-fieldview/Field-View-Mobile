@@ -8,6 +8,10 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 
+import {
+  ClockInPromptBanner,
+  useClockInPromptActive,
+} from "@/components/ClockInPromptBanner";
 import { FloatingTabBar } from "@/components/FloatingTabBar";
 import {
   LocationBannerProvider,
@@ -40,28 +44,36 @@ function TabLayoutInner() {
   const isIOS = Platform.OS === "ios";
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const bannerActive = useLocationBannerActive();
+  const locBannerActive = useLocationBannerActive();
+  const promptBannerActive = useClockInPromptActive();
+  const anyBannerActive = locBannerActive || promptBannerActive;
 
   // Tab screens already pad their scroll content with `insets.top + 12`
-  // internally. When the banner consumes the safe-area-top above them,
+  // internally. When ANY banner consumes the safe-area-top above them,
   // we need to zero out their `insets.top` reading to avoid stacking
   // another status-bar of dead space below the banner. Bottom inset is
   // preserved so the FloatingTabBar still clears the home indicator.
   const adjustedInsets = useMemo(
-    () => ({ ...insets, top: bannerActive ? 0 : insets.top }),
-    [insets, bannerActive],
+    () => ({ ...insets, top: anyBannerActive ? 0 : insets.top }),
+    [insets, anyBannerActive],
   );
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
-      {bannerActive ? (
+      {anyBannerActive ? (
         <View
           style={{
             paddingTop: insets.top,
             backgroundColor: colors.background,
           }}
         >
-          <LocationPermissionBanner />
+          {/* ClockInPromptBanner renders ABOVE LocationPermissionBanner
+              when both are visible — it's a time-sensitive positive
+              action (a clock-in offer the user is about to miss),
+              while the location banner is a passive re-engagement
+              nudge. Order matches priority. */}
+          {promptBannerActive ? <ClockInPromptBanner /> : null}
+          {locBannerActive ? <LocationPermissionBanner /> : null}
         </View>
       ) : null}
       <SafeAreaInsetsContext.Provider value={adjustedInsets}>
