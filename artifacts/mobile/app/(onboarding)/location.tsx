@@ -12,6 +12,20 @@ import {
   type LocationPermissionStatus,
 } from "@/services/permissions";
 
+/**
+ * Two-phase flow:
+ *
+ *   "main"           → value-prop + primary action driven by `status`
+ *   "alwaysUpgrade"  → interstitial after foreground grant. Re-grounds the
+ *                      value prop right before iOS's one-shot Always
+ *                      dialog so the user doesn't reflexively dismiss the
+ *                      stacked second prompt.
+ *
+ * Skipping at any point sets `preprompted=true` so AuthGate never gates
+ * the user here again; in-app banners handle re-engagement.
+ */
+type Phase = "main" | "alwaysUpgrade";
+
 export default function LocationOnboardingScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
@@ -24,6 +38,7 @@ export default function LocationOnboardingScreen() {
   } = useLocationPermission();
 
   const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState<Phase>("main");
   const [upgradeShown, setUpgradeShown] = useState<boolean | null>(null);
 
   // Read the persisted "Always upgrade already shown once" flag once on
@@ -39,47 +54,59 @@ export default function LocationOnboardingScreen() {
     };
   }, []);
 
-  const finish = useCallback(() => {
+  // All exit paths funnel through here so AuthGate's `preprompted` skip
+  // condition is set exactly once. Idempotent — safe to call repeatedly.
+  const exitToApp = useCallback(async () => {
+    await locationOnboardingFlags.setPreprompted();
     router.replace("/(tabs)");
   }, [router]);
 
-  // Auto-advance once the user has reached a terminal "granted" state
-  // AND we've either shown or skipped the Always upgrade.
+  // Auto-advance once the user reaches Always — there's nothing left to
+  // ask for and no decision to surface.
   useEffect(() => {
-    if (status === "always-granted") finish();
-  }, [status, finish]);
+    if (status === "always-granted") {
+      void exitToApp();
+    }
+  }, [status, exitToApp]);
 
   const handleEnable = useCallback(async () => {
     setBusy(true);
     try {
-      await locationOnboardingFlags.setPreprompted();
       const next = await requestForegroundPermission();
-      // If foreground succeeded and we haven't burned the Always dialog
-      // yet, immediately offer the upgrade in the same flow.
       if (next === "foreground-granted" && upgradeShown === false) {
-        await locationOnboardingFlags.setUpgradeShown();
-        setUpgradeShown(true);
-        await requestBackgroundPermission();
+        // Don't auto-chain into the system dialog. Surface the
+        // interstitial first so the user re-grounds before the one-shot
+        // Always prompt.
+        setPhase("alwaysUpgrade");
+      } else {
+        // Granted Always somehow, denied, or restricted — nothing more
+        // to ask. The status-driven render handles the rest.
       }
     } finally {
       setBusy(false);
     }
-  }, [
-    requestForegroundPermission,
-    requestBackgroundPermission,
-    upgradeShown,
-  ]);
+  }, [requestForegroundPermission, upgradeShown]);
 
-  const handleUpgrade = useCallback(async () => {
+  const handleAlwaysContinue = useCallback(async () => {
     setBusy(true);
     try {
+      // Persist BEFORE the request so a crash mid-prompt doesn't burn
+      // the dialog twice on next launch.
       await locationOnboardingFlags.setUpgradeShown();
       setUpgradeShown(true);
       await requestBackgroundPermission();
     } finally {
       setBusy(false);
+      // Whether the user granted, denied, or dismissed Always, the
+      // onboarding is done. The banner re-engages later if needed.
+      void exitToApp();
     }
-  }, [requestBackgroundPermission]);
+  }, [requestBackgroundPermission, exitToApp]);
+
+  const showSkip =
+    status !== "loading" &&
+    status !== "always-granted" &&
+    status !== "restricted";
 
   return (
     <View
@@ -93,43 +120,27 @@ export default function LocationOnboardingScreen() {
       ]}
     >
       <View style={styles.content}>
-        <View
-          style={[
-            styles.iconWrap,
-            { backgroundColor: colors.muted, borderColor: colors.border },
-          ]}
-        >
-          <Feather name="map-pin" size={32} color={colors.primary} />
-        </View>
-
-        <Text style={[styles.title, { color: colors.foreground }]}>
-          Use your location
-        </Text>
-        <Text style={[styles.subtitle, { color: colors.mutedForeground }]}>
-          Field View tags photos and tasks with the job site so your team
-          can find them on the map. We only read your location while
-          you&apos;re using the app unless you opt in to background updates.
-        </Text>
-
-        <StatusBanner
-          status={status}
-          onOpenSettings={openSettings}
-        />
+        {phase === "main" ? (
+          <MainCopy status={status} onOpenSettings={openSettings} />
+        ) : (
+          <AlwaysUpgradeCopy />
+        )}
       </View>
 
       <View style={styles.footer}>
         <PrimaryAction
+          phase={phase}
           status={status}
           busy={busy}
           upgradeShown={upgradeShown}
           onEnable={handleEnable}
-          onUpgrade={handleUpgrade}
-          onContinue={finish}
+          onAlwaysContinue={handleAlwaysContinue}
+          onContinue={exitToApp}
           onOpenSettings={openSettings}
         />
-        {status !== "loading" && status !== "always-granted" ? (
+        {showSkip ? (
           <Pressable
-            onPress={finish}
+            onPress={exitToApp}
             hitSlop={10}
             style={{ alignSelf: "center", marginTop: 14 }}
           >
@@ -143,7 +154,65 @@ export default function LocationOnboardingScreen() {
   );
 }
 
-// --- Subcomponents ---------------------------------------------------------
+// --- Copy blocks -----------------------------------------------------------
+
+function MainCopy({
+  status,
+  onOpenSettings,
+}: {
+  status: LocationPermissionStatus;
+  onOpenSettings: () => Promise<void>;
+}) {
+  const colors = useColors();
+  return (
+    <>
+      <View
+        style={[
+          styles.iconWrap,
+          { backgroundColor: colors.muted, borderColor: colors.border },
+        ]}
+      >
+        <Feather name="map-pin" size={32} color={colors.primary} />
+      </View>
+      <Text style={[styles.title, { color: colors.foreground }]}>
+        Use your location
+      </Text>
+      <Text style={[styles.subtitle, { color: colors.mutedForeground }]}>
+        Field View tags photos and tasks with the job site so your team
+        can find them on the map. We only read your location while
+        you&apos;re using the app unless you opt in to background updates.
+      </Text>
+      <StatusBanner status={status} onOpenSettings={onOpenSettings} />
+    </>
+  );
+}
+
+function AlwaysUpgradeCopy() {
+  const colors = useColors();
+  return (
+    <>
+      <View
+        style={[
+          styles.iconWrap,
+          { backgroundColor: colors.muted, borderColor: colors.border },
+        ]}
+      >
+        <Feather name="clock" size={32} color={colors.primary} />
+      </View>
+      <Text style={[styles.title, { color: colors.foreground }]}>
+        One more step
+      </Text>
+      <Text style={[styles.subtitle, { color: colors.mutedForeground }]}>
+        To clock you in automatically when you&apos;re not actively using
+        the app, iOS needs to ask one more time. Tap{" "}
+        <Text style={{ fontFamily: "Inter_600SemiBold" }}>
+          &ldquo;Change to Always Allow&rdquo;
+        </Text>{" "}
+        on the next prompt.
+      </Text>
+    </>
+  );
+}
 
 function StatusBanner({
   status,
@@ -210,25 +279,40 @@ function StatusBanner({
   return null;
 }
 
+// --- Primary CTA -----------------------------------------------------------
+
 function PrimaryAction({
+  phase,
   status,
   busy,
   upgradeShown,
   onEnable,
-  onUpgrade,
+  onAlwaysContinue,
   onContinue,
   onOpenSettings,
 }: {
+  phase: Phase;
   status: LocationPermissionStatus;
   busy: boolean;
   upgradeShown: boolean | null;
   onEnable: () => void;
-  onUpgrade: () => void;
+  onAlwaysContinue: () => void;
   onContinue: () => void;
   onOpenSettings: () => void;
 }) {
   if (status === "loading" || upgradeShown === null) {
     return <Button title="Enable Location" onPress={() => {}} loading />;
+  }
+
+  if (phase === "alwaysUpgrade") {
+    return (
+      <Button
+        title="Continue"
+        size="lg"
+        loading={busy}
+        onPress={onAlwaysContinue}
+      />
+    );
   }
 
   if (status === "undetermined") {
@@ -243,18 +327,6 @@ function PrimaryAction({
   }
 
   if (status === "foreground-granted") {
-    // Only offer the explicit upgrade button if iOS hasn't burned the
-    // Always dialog yet. Otherwise just let the user continue.
-    if (!upgradeShown) {
-      return (
-        <Button
-          title="Allow Always"
-          size="lg"
-          loading={busy}
-          onPress={onUpgrade}
-        />
-      );
-    }
     return <Button title="Continue" size="lg" onPress={onContinue} />;
   }
 
@@ -268,11 +340,11 @@ function PrimaryAction({
     );
   }
 
-  // restricted — no actionable primary CTA, just let them move on.
+  // restricted — promote to primary since it's the only available action.
   return (
     <Button
       title="Continue without location"
-      variant="secondary"
+      variant="primary"
       size="lg"
       onPress={onContinue}
     />
