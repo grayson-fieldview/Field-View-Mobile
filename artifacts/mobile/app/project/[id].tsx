@@ -53,8 +53,12 @@ export default function ProjectDetailScreen() {
     recentClockIn?: string;
   }>();
   const { showToast } = useToast();
-  const { active: activeTimesheet, refresh: refreshTimesheet } =
-    useTimesheet() as TimesheetState;
+  const {
+    active: activeTimesheet,
+    refresh: refreshTimesheet,
+    firedExit,
+    dismissFiredExit,
+  } = useTimesheet() as TimesheetState;
   const {
     projects,
     photos,
@@ -150,10 +154,95 @@ export default function ProjectDetailScreen() {
     return () => clearTimeout(t);
   }, [showReceipt, receiptError, recentClockIn]);
 
+  // ----- Clock-out receipt banner (S32a) -----
+  // Visible iff (a) the TimesheetContext has a firedExit (i.e. the
+  // foreground refresh discovered a server-fired auto-clock-out) AND
+  // (b) the fired entry's projectId matches the screen we're on.
+  // Cross-screen scoping means a fire for project X waits in context
+  // until the user navigates to project X; on other screens it's
+  // invisible.
+  //
+  // No clockOut-null gate; the prev snapshot has clockOut=null by
+  // definition, and firedAt carries the actual server-fire time
+  // within 60s of cron polling interval.
+  //
+  // Dismissal vectors (priority order, mirroring kind="in"):
+  //   - Explicit X tap                  — clears context unconditionally
+  //   - 30s auto-timer                  — gated on no error
+  //   - First user-initiated scroll     — gated on no error
+  //   - Successful undo                 — programmatic, also clears context + refreshes
+  // On error, the banner sticks (locally) until X. Unlike kind="in"
+  // there's no local visibility flag — context.firedExit IS the
+  // visibility, which means navigating away with sticky error loses
+  // the error on return (fresh retry available). Acceptable.
+  const [outReceiptError, setOutReceiptError] = useState<string | null>(null);
+  const [outUndoing, setOutUndoing] = useState(false);
+
+  // Reset error state when a NEW firedExit surfaces (different entry
+  // id), so a stale error from a prior fire doesn't poison the next
+  // banner. Same pattern as kind="in" resetting on recentClockIn
+  // change, but keyed on the entry id since firedExit is an object
+  // reference and we want stable diff semantics.
+  const firedEntryId = firedExit ? String(firedExit.entry.id) : null;
+  useEffect(() => {
+    setOutReceiptError(null);
+  }, [firedEntryId]);
+
+  const outShowReceipt =
+    firedExit !== null &&
+    String(firedExit.entry.projectId) === String(id);
+
+  // 30-second auto-dismiss for kind="out". Re-arms on entry-id
+  // change. Skipped while error is sticky.
+  useEffect(() => {
+    if (!outShowReceipt || outReceiptError) return;
+    const t = setTimeout(() => dismissFiredExit(), 30_000);
+    return () => clearTimeout(t);
+  }, [outShowReceipt, outReceiptError, firedEntryId, dismissFiredExit]);
+
+  const dismissOutReceipt = useCallback(() => {
+    setOutReceiptError(null);
+    dismissFiredExit();
+  }, [dismissFiredExit]);
+
+  const handleUndoOutReceipt = useCallback(async () => {
+    if (!firedExit) return;
+    setOutUndoing(true);
+    setOutReceiptError(null);
+    try {
+      // Same /auto-undo endpoint as kind="in" — server routes
+      // internally based on entry state (open vs closed). For a
+      // closed entry from auto-clock-out, the server clears
+      // clock_out and re-opens the session.
+      await api.autoUndoTimeEntry(firedExit.entry.id);
+      // Refresh to pull the now-reopened entry as the active
+      // session. Refresh observes prev=null → next=entry transition,
+      // which is non-fatal for discovery (no pending exit matches a
+      // freshly-reopened entry id, and we already cleaned up the
+      // pending row at fire-discovery time).
+      await refreshTimesheet();
+      dismissFiredExit();
+      showToast("Clock-out undone");
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Network error";
+      console.log(`[receipt] auto-clock-out undo failed: ${msg}`);
+      setOutReceiptError(msg);
+    } finally {
+      setOutUndoing(false);
+    }
+  }, [firedExit, refreshTimesheet, dismissFiredExit, showToast]);
+
   const dismissReceiptOnInteraction = useCallback(() => {
-    if (receiptError) return; // sticky
-    setReceiptVisible(false);
-  }, [receiptError]);
+    // Each kind dismisses independently with its own error gate so
+    // a sticky error on one doesn't suppress dismissal of the other.
+    if (!receiptError) setReceiptVisible(false);
+    if (!outReceiptError && firedExit) dismissFiredExit();
+  }, [receiptError, outReceiptError, firedExit, dismissFiredExit]);
 
   const dismissReceipt = useCallback(() => {
     setReceiptVisible(false);
@@ -427,6 +516,29 @@ export default function ProjectDetailScreen() {
                 void handleUndoReceipt();
               }}
               onDismiss={dismissReceipt}
+            />
+          </View>
+        ) : null}
+        {/* Clock-out receipt (S32a). Rendered in parallel with the
+            kind="in" banner — both can theoretically be visible at
+            once (e.g. user taps a fresh clock-in receipt notification
+            while a stale clock-out fire sits in context for the same
+            project). In practice this is vanishingly unlikely; if it
+            happens both stack vertically and the user dismisses each
+            independently. */}
+        {outShowReceipt && firedExit ? (
+          <View style={{ paddingTop: showReceipt ? 0 : insets.top }}>
+            <ClockReceiptBanner
+              kind="out"
+              visible={outShowReceipt}
+              time={new Date(firedExit.firedAt)}
+              projectName={project.name}
+              error={outReceiptError}
+              undoing={outUndoing}
+              onUndo={() => {
+                void handleUndoOutReceipt();
+              }}
+              onDismiss={dismissOutReceipt}
             />
           </View>
         ) : null}
