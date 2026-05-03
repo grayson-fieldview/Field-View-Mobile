@@ -498,6 +498,75 @@ export const api = {
       // standard Express delete pattern. Without this opt, apiFetch
       // would throw "Unexpected non-JSON response" because 204
       // responses have no Content-Type header.
+      //
+      // S32a-web extension: same endpoint, same method — but for
+      // entries that have ALREADY been auto-clocked-out by the
+      // server's pending-exit cron, the backend re-opens the entry
+      // (clears clock_out) instead of deleting. The wire contract
+      // is unchanged from mobile's perspective; the receipt banner's
+      // kind="out" Undo path simply calls this method on the same
+      // entryId. Server handles routing internally.
+      allowEmptyBody: true,
+    }),
+
+  // ----- Geofence exit debounce (S32a-mobile) -----
+
+  /**
+   * Notify the server that the OS observed a geofence Exit for the
+   * user's currently-active auto_geofence session. The server creates
+   * a pending exit row and schedules an auto-clock-out 5 minutes from
+   * now (server time). Mobile persists the returned `id` + `firesAt`
+   * locally via services/pendingExits.ts.
+   *
+   * Idempotency: server has a partial unique index on
+   * pending_geofence_exits WHERE status='pending', so a duplicate
+   * POST for the same (timeEntryId, projectId) returns the existing
+   * row's id rather than creating a second one. Safe to retry.
+   *
+   * `detectedAt` is mobile's observation time, NOT the firesAt the
+   * server returns. Server uses its own clock for firesAt to avoid
+   * clock-skew issues between device and database.
+   */
+  geofenceExitDetected: (params: {
+    projectId: number;
+    timeEntryId: string | number;
+    detectedAt: string;
+  }) =>
+    apiFetch<{
+      /** Server-issued pending exit row UUID. Becomes pendingExitId locally. */
+      id: string;
+      /** ISO timestamp when the server cron will fire the auto-clock-out. */
+      firesAt: string;
+      /** Server-side status; expected "pending" on a successful POST. */
+      status: string;
+    }>("/api/geofence/exit-detected", {
+      method: "POST",
+      json: {
+        projectId: params.projectId,
+        timeEntryId: params.timeEntryId,
+        detectedAt: params.detectedAt,
+      },
+    }),
+
+  /**
+   * Cancel a pending exit row before the server cron fires it. Used
+   * when the user re-enters the same region within the 5-minute
+   * debounce window (i.e. they briefly stepped outside, came back).
+   *
+   * Mobile only uses the pendingExitId path. The server also accepts
+   * a timeEntryId variant per S32a-web spec, but exposing both here
+   * with no caller is YAGNI — add the alternate signature only if a
+   * future flow needs it.
+   *
+   * Returns either 204 No Content or a small JSON ack depending on
+   * server implementation; allowEmptyBody tolerates either. Caller
+   * does not consume the response body — the only signal that
+   * matters is "did it throw".
+   */
+  geofenceExitCancelled: (pendingExitId: string) =>
+    apiFetch<void>("/api/geofence/exit-cancelled", {
+      method: "POST",
+      json: { pendingExitId },
       allowEmptyBody: true,
     }),
 

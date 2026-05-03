@@ -37,7 +37,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
  * complexity without payoff.
  */
 
-const STORAGE_KEY = "@fv/pending-exits-v1";
+const STORAGE_KEY = "@fv/pending_exits_v1";
 
 /**
  * Records older than this past their `firesAt` are considered dead:
