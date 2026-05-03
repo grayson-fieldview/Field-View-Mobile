@@ -94,7 +94,8 @@
         }
       ],
 "expo-task-manager",
-      "@sentry/react-native/expo"
+      "@sentry/react-native/expo",
+["expo-notifications", { "icon": "./assets/images/icon.png", "color": "#F09001" }]
     ],
     "experiments": {
       "typedRoutes": true,
