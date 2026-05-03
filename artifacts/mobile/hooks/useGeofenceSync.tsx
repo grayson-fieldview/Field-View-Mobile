@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { AppState, type AppStateStatus } from "react-native";
 
 import { useAuth } from "@/contexts/AuthContext";
@@ -51,7 +59,7 @@ export interface UseGeofenceSyncResult {
   forceResync: () => void;
 }
 
-export function useGeofenceSync(): UseGeofenceSyncResult {
+function useGeofenceSyncInternal(): UseGeofenceSyncResult {
   const { user, ready: authReady } = useAuth();
   const { status } = useLocationPermission();
 
@@ -212,4 +220,34 @@ export function useGeofenceSync(): UseGeofenceSyncResult {
   }, [sync]);
 
   return { syncing, lastSync, registeredCount, error, forceResync };
+}
+
+// Context lift: the geofence lifecycle hook owns AppState listeners,
+// debounce state, and an in-flight guard. Mounting it twice (e.g. once
+// in TabLayoutInner and once in a debug consumer like ProfileScreen)
+// would double-subscribe AppState and double-fire force-syncs on
+// status transitions. The Provider mounts the internal hook exactly
+// once; consumers read the same shared state via `useGeofenceSync()`.
+//
+// Pattern matches `LocationBannerProvider` from Session 29.
+
+const GeofenceSyncContext = createContext<UseGeofenceSyncResult | null>(null);
+
+export function GeofenceSyncProvider({ children }: { children: ReactNode }) {
+  const value = useGeofenceSyncInternal();
+  return (
+    <GeofenceSyncContext.Provider value={value}>
+      {children}
+    </GeofenceSyncContext.Provider>
+  );
+}
+
+export function useGeofenceSync(): UseGeofenceSyncResult {
+  const value = useContext(GeofenceSyncContext);
+  if (!value) {
+    throw new Error(
+      "useGeofenceSync must be used inside <GeofenceSyncProvider>",
+    );
+  }
+  return value;
 }

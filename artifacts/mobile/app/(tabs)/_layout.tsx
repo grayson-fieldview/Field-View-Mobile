@@ -15,15 +15,23 @@ import {
   useLocationBannerActive,
 } from "@/components/LocationPermissionBanner";
 import { useColors } from "@/hooks/useColors";
-import { useGeofenceSync } from "@/hooks/useGeofenceSync";
+import { GeofenceSyncProvider } from "@/hooks/useGeofenceSync";
 
 export default function TabLayout() {
-  // Provider must wrap the inner layout so `useLocationBannerActive`
-  // resolves to a real value (not the default `false`) inside the
-  // SafeAreaInsetsContext override below.
+  // Providers must wrap the inner layout so:
+  //   - `useLocationBannerActive` resolves to a real value (not the
+  //     default `false`) inside the SafeAreaInsetsContext override below.
+  //   - `GeofenceSyncProvider` mounts the geofence lifecycle hook
+  //     exactly once for the authenticated tabs session, and exposes
+  //     its state to consumers (e.g. ProfileScreen's debug surface)
+  //     without any of them re-mounting the AppState listener or
+  //     debounce clock. Provider auto-tears-down on sign-out via the
+  //     AuthContext re-render that unmounts the tabs tree.
   return (
     <LocationBannerProvider>
-      <TabLayoutInner />
+      <GeofenceSyncProvider>
+        <TabLayoutInner />
+      </GeofenceSyncProvider>
     </LocationBannerProvider>
   );
 }
@@ -33,14 +41,6 @@ function TabLayoutInner() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const bannerActive = useLocationBannerActive();
-
-  // Drives iOS geofence registration lifecycle. The hook handles its
-  // own auth + permission gating internally and is a no-op on Android
-  // and on Dev Builds without the expo-task-manager native binding.
-  // Mounted here (inside the LocationBannerProvider scope, not at the
-  // root layout) so it lives exactly as long as the authenticated tabs
-  // session — auto-tears-down on sign-out via AuthContext re-render.
-  useGeofenceSync();
 
   // Tab screens already pad their scroll content with `insets.top + 12`
   // internally. When the banner consumes the safe-area-top above them,
