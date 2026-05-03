@@ -69,6 +69,26 @@ export default function LocationOnboardingScreen() {
     }
   }, [status, exitToApp]);
 
+  // Entry-time interstitial: a returning user who already has fg
+  // permission (e.g. granted previously by the "Nearby" sort feature, or
+  // killed the app mid-onboarding after the fg prompt) should still get
+  // one shot at the Always upgrade — the interstitial is the whole point
+  // of splitting it out, so don't skip it just because the fg grant
+  // happened in a prior session.
+  //
+  // Gate on BOTH `status !== "loading"` AND `upgradeShown !== null` so we
+  // don't render the wrong copy for a frame on cold start before the
+  // AsyncStorage read resolves.
+  const [didCheckEntry, setDidCheckEntry] = useState(false);
+  useEffect(() => {
+    if (didCheckEntry) return;
+    if (status === "loading" || upgradeShown === null) return;
+    setDidCheckEntry(true);
+    if (status === "foreground-granted" && upgradeShown === false) {
+      setPhase("alwaysUpgrade");
+    }
+  }, [didCheckEntry, status, upgradeShown]);
+
   const handleEnable = useCallback(async () => {
     setBusy(true);
     try {
