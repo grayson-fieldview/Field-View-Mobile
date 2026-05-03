@@ -1,0 +1,26 @@
+Diff 3 approved with one tweak before Diff 4.
+
+Onboarding edge case: ADD the strict gate. Don't allow notification tap deep-link to navigate if user is mid-onboarding (segments[0] === "(onboarding)").
+
+Reasoning: a notification fired implies geofence registration succeeded, which implies they completed first-stage location permission. But they may not have completed the Always-upgrade interstitial yet. Skipping that means no Always permission upgrade, which means geofencing only works in foreground. Worse, the @fv/onboarding/locationUpgradeShown flag gets stamped on next app launch, so they permanently lose their one chance to be prompted.
+
+Updated gate logic in the consume effect:
+- Wait on: pending && ready && user && segments[0] !== "(onboarding)"
+- If user taps a notification mid-onboarding, deep-link silently drops (same as signed-out case)
+- They complete onboarding normally, eventually see the entry in their timesheet (it's already created), no harm done
+
+Same useEffect, just one additional condition in the gate. The pending state remains and just doesn't fire navigation.
+
+api.autoUndoTimeEntry(entryId): Promise<void> approved as the method name. Self-documenting, doesn't shadow future generic delete semantics.
+
+Proceed with Diff 4: app/project/[id].tsx
+- Read recentClockIn query param via useLocalSearchParams<{ id: string; recentClockIn?: string }>()
+- If param is present on mount, render dismissible undo banner at top: "Just clocked in at <time> — tap Undo if this was a mistake"
+  - Time should be derived from the existing time entry on the project (look it up by recentClockIn id from the entries the screen already loads, OR fetch it directly if not loaded). Lean toward "use what's already loaded" to avoid redundant API calls.
+  - If entry isn't found for the id (rare race: server-side deletion), gracefully degrade — don't render the banner, log warning.
+- Banner has Undo button → calls api.autoUndoTimeEntry(entryId) → on success: dismiss banner + show confirmation toast/feedback "Clock-in undone"
+- Banner auto-dismisses after 30 seconds OR on first user interaction with anything else on the page (whichever first). The "first user interaction with anything else" requires careful event listener placement — easiest implementation is probably an InteractionManager hook or a tap-anywhere overlay. If you have a cleaner pattern, use it.
+- Visual style: secondary banner (less prominent than the orange action banner from S31a), with subtle border/background. Not yelling at the user, just an informational receipt-with-affordance.
+- Error handling: if api.autoUndoTimeEntry rejects (window expired, ownership mismatch, network), show inline error in the banner: "Couldn't undo — <reason>". Keep banner visible so user understands why.
+
+Standing by for Diff 4.

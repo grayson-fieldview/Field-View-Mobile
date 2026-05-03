@@ -2,7 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import Svg, { Path as SvgPath } from "react-native-svg";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActionSheetIOS,
   ActivityIndicator,
@@ -26,13 +26,16 @@ import Animated, {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "@/components/Button";
+import { ClockInReceiptBanner } from "@/components/ClockInReceiptBanner";
 import { EmptyState } from "@/components/EmptyState";
 import { Input } from "@/components/Input";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { useData } from "@/contexts/DataContext";
 import { useTimesheet, type TimesheetState } from "@/contexts/TimesheetContext";
+import { useToast } from "@/contexts/ToastContext";
 import { useUploadStatus } from "@/contexts/UploadStatusContext";
 import { useColors } from "@/hooks/useColors";
+import { api, ApiError } from "@/services/api";
 import {
   removeItem as removeUploadQueueItem,
   retryItem as retryUploadQueueItem,
@@ -44,7 +47,14 @@ export default function ProjectDetailScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, recentClockIn } = useLocalSearchParams<{
+    id: string;
+    /** Set by the notification deep-link handler (app/_layout.tsx). */
+    recentClockIn?: string;
+  }>();
+  const { showToast } = useToast();
+  const { active: activeTimesheet, refresh: refreshTimesheet } =
+    useTimesheet() as TimesheetState;
   const {
     projects,
     photos,
@@ -95,6 +105,90 @@ export default function ProjectDetailScreen() {
   const [showTaskModal, setShowTaskModal] = useState(false);
   const [showChecklistModal, setShowChecklistModal] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
+
+  // ----- Clock-in receipt banner (S31b) -----
+  // Visible iff (a) the screen was deep-linked from a notification
+  // tap (recentClockIn param present) AND (b) the corresponding
+  // entry is still the active timesheet entry. The second clause
+  // gracefully degrades the "user already clocked out manually
+  // before tapping the receipt" race to a silent no-op.
+  //
+  // Dismissal vectors (in priority order):
+  //   - Explicit X tap                       — always dismisses, even with error
+  //   - 30s auto-timer                       — gated on no error
+  //   - First user-initiated scroll          — gated on no error (onScrollBeginDrag)
+  //   - Successful undo                      — programmatic, also clears server-side
+  // Once `receiptError` is non-null, the banner sticks until X. The
+  // user can still clock out manually from the ClockBar.
+  const [receiptVisible, setReceiptVisible] = useState(true);
+  const [receiptError, setReceiptError] = useState<string | null>(null);
+  const [undoing, setUndoing] = useState(false);
+
+  const receiptEntry =
+    recentClockIn &&
+    activeTimesheet &&
+    String(activeTimesheet.id) === recentClockIn
+      ? activeTimesheet
+      : null;
+  const showReceipt = !!recentClockIn && !!receiptEntry && receiptVisible;
+
+  // Log the rare race once per mount so we can spot it in field reports.
+  useEffect(() => {
+    if (recentClockIn && !receiptEntry) {
+      console.log(
+        `[receipt] suppressing banner: entry ${recentClockIn} not active (user already clocked out, or stale deep-link)`,
+      );
+    }
+  }, [recentClockIn, receiptEntry]);
+
+  // 30-second auto-dismiss. Resets if recentClockIn changes (e.g.
+  // user taps a fresh receipt while still on this screen). Skipped
+  // while error is sticky.
+  useEffect(() => {
+    if (!showReceipt || receiptError) return;
+    const t = setTimeout(() => setReceiptVisible(false), 30_000);
+    return () => clearTimeout(t);
+  }, [showReceipt, receiptError, recentClockIn]);
+
+  const dismissReceiptOnInteraction = useCallback(() => {
+    if (receiptError) return; // sticky
+    setReceiptVisible(false);
+  }, [receiptError]);
+
+  const dismissReceipt = useCallback(() => {
+    setReceiptVisible(false);
+    setReceiptError(null);
+  }, []);
+
+  const handleUndoReceipt = useCallback(async () => {
+    if (!receiptEntry) return;
+    setUndoing(true);
+    setReceiptError(null);
+    try {
+      await api.autoUndoTimeEntry(receiptEntry.id);
+      // Server-side delete succeeded → pull fresh active state so the
+      // ClockBar transitions out of "clocked in here" immediately.
+      // We don't optimistically setActive(null) on TimesheetContext
+      // because TimesheetContext owns that state; refresh is the
+      // honest path and the UI lag is sub-second.
+      await refreshTimesheet();
+      setReceiptVisible(false);
+      showToast("Clock-in undone");
+    } catch (err) {
+      // 4xx from backend (window expired, ownership mismatch) carries
+      // a human message. Network errors fall through to a generic.
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Network error";
+      console.log(`[receipt] undo failed: ${msg}`);
+      setReceiptError(msg);
+    } finally {
+      setUndoing(false);
+    }
+  }, [receiptEntry, refreshTimesheet, showToast]);
 
   // ---- Clock bar auto-hide on scroll (State 1 only) ----
   // Shared values live on the UI thread so the scroll handler doesn't
@@ -306,8 +400,35 @@ export default function ProjectDetailScreen() {
           paddingBottom: insets.bottom + 120,
         }}
         onScroll={scrollHandler}
+        // onScrollBeginDrag fires once per user-initiated scroll
+        // gesture (NOT for programmatic scrolls), which is exactly
+        // the "first interaction" semantic we want for receipt
+        // dismissal. The banner unmounts while the user is still
+        // mid-drag — feels responsive, not jarring, because the
+        // banner sits inside the ScrollView so it's already
+        // translating off-screen.
+        onScrollBeginDrag={dismissReceiptOnInteraction}
         scrollEventThrottle={16}
       >
+        {/* Receipt banner sits above the hero, inside the ScrollView,
+            padded for the status bar. Scrolling pushes it off-screen
+            naturally AND triggers onScrollBeginDrag → state-level
+            dismissal so it doesn't reappear on scroll-back. */}
+        {showReceipt && receiptEntry ? (
+          <View style={{ paddingTop: insets.top }}>
+            <ClockInReceiptBanner
+              visible={showReceipt}
+              time={new Date(receiptEntry.clockIn)}
+              projectName={project.name}
+              error={receiptError}
+              undoing={undoing}
+              onUndo={() => {
+                void handleUndoReceipt();
+              }}
+              onDismiss={dismissReceipt}
+            />
+          </View>
+        ) : null}
         <View style={styles.heroWrap}>
           {heroPhoto ? (
             <Image

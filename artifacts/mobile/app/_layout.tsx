@@ -118,6 +118,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
  */
 function NotificationDeepLinkHandler() {
   const router = useRouter();
+  const segments = useSegments();
   const { user, ready } = useAuth();
   const [pending, setPending] = useState<{
     projectId: number;
@@ -161,6 +162,24 @@ function NotificationDeepLinkHandler() {
 
   useEffect(() => {
     if (!pending || !ready || !user) return;
+    // Drop the deep-link if the user is mid-onboarding. A
+    // notification implies geofence registration succeeded (so
+    // first-stage location permission is granted), but they may
+    // not have completed the Always-upgrade interstitial yet.
+    // Skipping that means no Always permission, so geofencing
+    // works in foreground only — AND the
+    // @fv/onboarding/locationUpgradeShown flag stamps on next
+    // launch, permanently locking them out of the prompt. The
+    // entry is already created server-side, so the user loses
+    // nothing by not deep-linking; they'll see it in their
+    // timesheet after onboarding completes.
+    if (segments[0] === "(onboarding)") {
+      console.log(
+        "[notifications] tap suppressed: user mid-onboarding, dropping deep-link",
+      );
+      setPending(null);
+      return;
+    }
     router.push({
       pathname: "/project/[id]",
       params: {
@@ -169,7 +188,7 @@ function NotificationDeepLinkHandler() {
       },
     });
     setPending(null);
-  }, [pending, ready, user, router]);
+  }, [pending, ready, user, router, segments]);
 
   return null;
 }

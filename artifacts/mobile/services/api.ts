@@ -448,6 +448,29 @@ export const api = {
       json: notes !== undefined ? { notes } : {},
     }),
 
+  /**
+   * Tap-Undo on a clock-in receipt notification → DELETE the entry.
+   *
+   * Distinct path from a hypothetical generic DELETE /api/timesheets/:id
+   * to make the wire-contract intent explicit server-side: this is
+   * specifically the "user tapped Undo on the receipt for an
+   * auto_geofence entry within ~60 min of clock-in" flow. The
+   * backend enforces:
+   *   - ownership (entry.userId === session.userId)
+   *   - source restriction (entry.source === "auto_geofence")
+   *   - 60-min window from entry.clockIn
+   * Any of those failing returns 4xx with an explanatory message that
+   * the receipt banner surfaces inline.
+   *
+   * Backend collision note: an existing /api/timesheets/:id route was
+   * already in use for other semantics (per Web Agent's diagnosis),
+   * which is why the path is `:id/auto-undo` rather than the bare id.
+   */
+  autoUndoTimeEntry: (entryId: string | number) =>
+    apiFetch<void>(`/api/timesheets/${entryId}/auto-undo`, {
+      method: "DELETE",
+    }),
+
   // ----- Account / membership -----
 
   /**
