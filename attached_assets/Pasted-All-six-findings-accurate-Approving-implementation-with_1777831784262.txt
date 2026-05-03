@@ -1,0 +1,50 @@
+All six findings accurate. Approving implementation with the following decisions on issues:
+
+ISSUE 1 (EAS rebuild) — acknowledged. Plan accordingly.
+
+ISSUE 2 (GPS uncertainty filter) — APPROVED. Add coords.accuracy > 200 rejection as part of the filter chain. Reasoning: 200m proximity threshold is meaningless if GPS reading itself has 500m of error. Position in the chain: AFTER getCurrentPositionAsync returns, BEFORE the haversine distance check.
+
+Log format: [geofence] rejected: GPS uncertainty too high (<X>m, threshold 200m)
+
+ISSUE 3 (Metro logging in headless) — DEFER the AsyncStorage-persisted task log. For v1 validation, foreground is the dominant path and Metro will see those logs. Instrument cold-launch-from-terminated only if it becomes the failure mode in field testing.
+
+ISSUE 4 (backend source parameter) — Ship mobile side WITH the source: "auto" parameter included. I'm queuing the web change as a parallel Web Agent prompt in the next message I send Grayson. Don't add fallback logic — they meet at validation time, the web change is small enough to ship in parallel.
+
+ISSUE 5 (5-min debounce) — KEEP at 5 minutes. Symmetry with the S32 exit timer (also 5 min) prevents weird interactions where exit hasn't fired yet but a new enter creates a duplicate. Tunable later if field reports show problems.
+
+ISSUE 6 (split into S31a/S31b) — APPROVED. This is the right call. Smaller diffs, testable on existing Dev Build for S31a, EAS rebuild only after S31a is validated.
+
+S31a SCOPE (this session):
+- Real task body in services/geofencing.ts replacing the stub
+- Filter chain: registration-storm proximity check, GPS-uncertainty rejection, per-region debounce (5 min), already-clocked-in suppression
+- Module-level event emitter (mirroring uploadQueue.ts pattern)
+- Foreground banner: components/ClockInPromptBanner.tsx
+- Banner mount in (tabs)/_layout.tsx (above LocationPermissionBanner if both visible)
+- mobile services/api.ts: clockIn() accepts optional source: "auto" | "manual" param, defaulting to "manual"
+- Banner "Yes" tap calls clockIn(projectId, undefined, "auto")
+
+EXPLICITLY OUT OF SCOPE for S31a:
+- expo-notifications install (S31b)
+- services/notifications.ts (S31b)
+- Background push notifications (S31b)
+- Deep-link tap handler from notifications (S31b)
+- AsyncStorage-persisted task log (deferred indefinitely, instrument if needed)
+- EAS rebuild (S31b end-of-session)
+
+VALIDATION PATH for S31a (after implementation):
+- No EAS rebuild needed — current Dev Build can test foreground path
+- Cold launch on iPhone, observe registration storm in Metro logs
+- Expected: 5 task firings, 4 rejected by proximity filter, 1 maybe-passes (the West Palm Beach project Janet Wexler)
+- If the WPB project passes: foreground banner appears
+- Tap Yes → API call → web manager dashboard shows time entry with source=auto
+- Tap Not now → no API call, banner dismisses
+
+PROCEED with S31a implementation. Show diffs in this order:
+1. services/geofencing.ts (filter chain + emitter + new task body)
+2. services/api.ts (clockIn signature change)
+3. components/ClockInPromptBanner.tsx (new)
+4. app/(tabs)/_layout.tsx (banner mount)
+
+Show me each diff before moving to the next. Don't push to git, don't run any builds. I'll device-test before pushing.
+
+Standing by for the geofencing.ts diff.

@@ -1,5 +1,7 @@
 import * as Location from "expo-location";
-import { Platform } from "react-native";
+import { AppState, Platform } from "react-native";
+
+import { api, ApiError } from "./api";
 
 /**
  * iOS geofencing registration service.
@@ -7,19 +9,21 @@ import { Platform } from "react-native";
  * Maintains the iOS-registered geofence set in sync with the user's
  * recent-active projects, capped at the iOS hard limit of 20 regions.
  *
- * Session 30 scope: registration + diff + unregister only. The
- * TaskManager task body is a console.log stub — real enter/exit
- * handling lands in Session 31.
+ * Session 31a scope: registration + real enter event handler with the
+ * four-stage filter chain (proximity, GPS uncertainty, per-region
+ * debounce, already-clocked-in suppression) + foreground prompt
+ * emitter. Exit events, background push notifications, and the
+ * AsyncStorage-persisted task log are deferred to S31b/S32.
  *
  * Native module safety:
  *   `expo-task-manager` is loaded via synchronous `require()` inside a
  *   try/catch at module top so `defineTask` runs at JS module-evaluation
  *   time (required for iOS to invoke the task on cold-launch from a
  *   background geofence event — see comment block below). On a Dev
- *   Build that lacks the native binding (e.g. the current pre-Session-34
- *   build), the require throws, is caught, `taskManagerAvailable` stays
- *   false, and `registerGeofences` early-returns with an error entry —
- *   the app never crashes.
+ *   Build that lacks the native binding (e.g. the pre-S30.5 build),
+ *   the require throws, is caught, `taskManagerAvailable` stays false,
+ *   and `registerGeofences` early-returns with an error entry — the
+ *   app never crashes.
  */
 
 // ---------------------------------------------------------------------------
@@ -51,8 +55,39 @@ const REGION_PREFIX = "fv-project-";
 const RADIUS_METERS = 30;
 const MAX_REGIONS = 20;
 
+// Filter-chain thresholds. See docstring on the task body below for
+// rationale on each. Tunable based on field reports.
+const PROXIMITY_THRESHOLD_M = 200;
+const GPS_ACCURACY_THRESHOLD_M = 200;
+const DEBOUNCE_MS = 5 * 60 * 1000;
+
 function regionIdFor(projectId: number): string {
   return `${REGION_PREFIX}${projectId}`;
+}
+
+/** Inverse of regionIdFor. Returns null on malformed identifiers. */
+function parseProjectId(regionId: string): number | null {
+  if (!regionId.startsWith(REGION_PREFIX)) return null;
+  const raw = regionId.slice(REGION_PREFIX.length);
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** Great-circle distance in meters between two lat/lng points. */
+function haversineMeters(
+  a: { latitude: number; longitude: number },
+  b: { latitude: number; longitude: number },
+): number {
+  const R = 6_371_000; // Earth radius, meters
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(b.latitude - a.latitude);
+  const dLon = toRad(b.longitude - a.longitude);
+  const lat1 = toRad(a.latitude);
+  const lat2 = toRad(b.latitude);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
 }
 
 // ---------------------------------------------------------------------------
@@ -61,10 +96,78 @@ function regionIdFor(projectId: number): string {
 //
 // expo-location's geofencing API is "set the entire list" — there's no
 // incremental add/remove and no read-back of currently-registered
-// regions. We keep our own snapshot to compute diffs (idempotency) and
-// to surface the count to the debug UI.
+// regions. We keep our own snapshot to compute diffs (idempotency), to
+// surface the count to the debug UI, AND to give the headless task
+// body access to project name + lat/lng without a network round-trip
+// (the task fires from iOS without React state available).
+//
+// The cache is `Map<regionId, project>` rather than a Set so the task
+// body can look up the full project record by region identifier in O(1).
 
-const lastRegisteredCache = new Set<string>();
+const lastRegisteredCache = new Map<string, GeofenceEligibleProject>();
+
+// Per-region debounce timestamps (epoch ms). Set after a successful
+// clock-in (via `recordClockInForRegion`, called from the banner) and
+// after we observe the user is already clocked in. Cleared on full
+// unregister and on app process kill (intentional — fresh process means
+// "no recent prompts known", default to allow).
+const lastClockInByRegion = new Map<string, number>();
+
+// Foreground prompt subscribers. Mirrors the subscribe/unsubscribe
+// pattern in services/uploadQueue.ts. A `Set<Listener>` so a duplicate
+// subscribe is a no-op and the unsubscribe handle is the canonical way
+// to stop receiving events.
+export interface ClockInPromptEvent {
+  projectId: number;
+  projectName: string;
+}
+type ClockInPromptListener = (event: ClockInPromptEvent) => void;
+const promptListeners = new Set<ClockInPromptListener>();
+
+/**
+ * Subscribe to "user entered a geofence and should be prompted to
+ * clock in" events. Listener is called once per filter-passed enter
+ * event. Returns the unsubscribe handle.
+ *
+ * Mounted by `<ClockInPromptBanner>` inside the tabs layout. When no
+ * subscriber is mounted (app backgrounded, no banner), events are
+ * dropped silently — S31b's local-push path will fill that gap.
+ */
+export function subscribeToClockInPrompts(
+  listener: ClockInPromptListener,
+): () => void {
+  promptListeners.add(listener);
+  return () => {
+    promptListeners.delete(listener);
+  };
+}
+
+function emitClockInPrompt(event: ClockInPromptEvent): void {
+  if (promptListeners.size === 0) {
+    console.log(
+      `[geofence] enter passed all filters but no listener mounted (project ${event.projectId}); dropping prompt`,
+    );
+    return;
+  }
+  for (const listener of promptListeners) {
+    try {
+      listener(event);
+    } catch (err) {
+      console.log("[geofence] prompt listener threw:", err);
+    }
+  }
+}
+
+/**
+ * Mark that the user just clocked in to a region (auto OR manual).
+ * Primes the per-region debounce so they don't get re-prompted while
+ * GPS jitters at the boundary. Called by `<ClockInPromptBanner>` after
+ * a successful clock-in, AND by the task body when it observes the
+ * user is already clocked in to the entered region.
+ */
+export function recordClockInForRegion(projectId: number): void {
+  lastClockInByRegion.set(regionIdFor(projectId), Date.now());
+}
 
 // ---------------------------------------------------------------------------
 // Module-top-level TaskManager bootstrap
@@ -94,9 +197,27 @@ try {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   TaskManager = require("expo-task-manager") as typeof import("expo-task-manager");
   if (Platform.OS === "ios" && TaskManager) {
-    // STUB BODY for Session 30. Real enter/exit handler arrives in
-    // Session 31 — keep the signature stable so the upgrade is purely
-    // additive inside this callback.
+    // S31a real handler. Enter events only — exit handling is S32.
+    //
+    // Filter chain (ordered for cost: cheap checks first, then GPS,
+    // then network):
+    //   1. Parse + cache lookup (cheap)        — drops malformed/stale region ids
+    //   2. eventType !== Enter (cheap)         — ignores exits (S32 handles)
+    //   3. Per-region debounce (cheap)         — drops bouncy boundary events
+    //   4. getCurrentPositionAsync (blocking)  — needed for proximity filter
+    //   5. GPS uncertainty (cheap, post-fix)   — guards against meaningless distance check
+    //   6. Haversine proximity (cheap)         — kills the iOS registration storm
+    //   7. Already-clocked-in (network)        — last because most expensive
+    //
+    // On pass: emit prompt to any subscribed React listener (the
+    // foreground banner). On fail: log + return; geofence stays armed
+    // and the next legitimate event will re-trigger the chain.
+    //
+    // Auth note: api.activeTimesheet() relies on the cookie jar in
+    // services/api.ts being rehydrated from Keychain. If headless
+    // cold-launch can't reach Keychain, the call 401s and we abort —
+    // the user just doesn't get auto-clock-in for that event, which
+    // is correct fail-safe behavior. No re-login attempt from headless.
     TaskManager.defineTask(TASK_NAME, async ({ data, error }) => {
       if (error) {
         console.log("[geofence] task error:", error);
@@ -108,11 +229,120 @@ try {
             region?: Location.LocationRegion;
           }
         | undefined;
+      const regionId = payload?.region?.identifier;
+      const eventType = payload?.eventType;
+
       console.log(
-        "[geofence] task fired:",
-        payload?.eventType,
-        payload?.region?.identifier,
+        `[geofence] task fired: eventType=${eventType} region=${regionId} appState=${AppState.currentState}`,
       );
+
+      // ----- Filter 1: parse + cache lookup -----
+      if (!regionId) {
+        console.log("[geofence] rejected: missing region identifier");
+        return;
+      }
+      const projectId = parseProjectId(regionId);
+      if (projectId === null) {
+        console.log(`[geofence] rejected: malformed region id "${regionId}"`);
+        return;
+      }
+      const project = lastRegisteredCache.get(regionId);
+      if (!project) {
+        // Region fired but we have no record of registering it. Either
+        // (a) cold-launch and registerGeofences hasn't run yet to
+        // populate the cache, or (b) a stale region from a previous
+        // version. Either way we can't compute proximity without lat/lng.
+        console.log(
+          `[geofence] rejected: ${regionId} not in registration cache (cold-launch race?)`,
+        );
+        return;
+      }
+
+      // ----- Filter 2: enter only -----
+      if (eventType !== Location.GeofencingEventType.Enter) {
+        console.log(
+          `[geofence] ignored: eventType=${eventType} (only Enter handled in S31a)`,
+        );
+        return;
+      }
+
+      // ----- Filter 3: per-region debounce -----
+      const lastClockIn = lastClockInByRegion.get(regionId);
+      if (lastClockIn !== undefined) {
+        const ageMs = Date.now() - lastClockIn;
+        if (ageMs < DEBOUNCE_MS) {
+          const ageMin = Math.round(ageMs / 60_000);
+          console.log(
+            `[geofence] rejected: ${project.name} debounced (last clock-in ${ageMin}m ago)`,
+          );
+          return;
+        }
+      }
+
+      // ----- Filter 4: proximity (requires GPS fix) -----
+      let position: Location.LocationObject;
+      try {
+        position = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+          mayShowUserSettingsDialog: false,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.log(`[geofence] rejected: getCurrentPositionAsync failed: ${msg}`);
+        return;
+      }
+
+      // ----- Filter 5: GPS uncertainty -----
+      const accuracy = position.coords.accuracy ?? Number.POSITIVE_INFINITY;
+      if (accuracy > GPS_ACCURACY_THRESHOLD_M) {
+        console.log(
+          `[geofence] rejected: GPS uncertainty too high (${Math.round(accuracy)}m, threshold ${GPS_ACCURACY_THRESHOLD_M}m)`,
+        );
+        return;
+      }
+
+      // ----- Filter 6: haversine proximity -----
+      const distanceM = haversineMeters(position.coords, {
+        latitude: project.latitude,
+        longitude: project.longitude,
+      });
+      if (distanceM > PROXIMITY_THRESHOLD_M) {
+        console.log(
+          `[geofence] rejected: device ${Math.round(distanceM)}m from ${project.name} (radius ${RADIUS_METERS}m, threshold ${PROXIMITY_THRESHOLD_M}m)`,
+        );
+        return;
+      }
+
+      // ----- Filter 7: already clocked in -----
+      let active: Awaited<ReturnType<typeof api.activeTimesheet>>;
+      try {
+        active = await api.activeTimesheet();
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 401) {
+          console.log(
+            "[geofence] auth failed: session expired; deferring to next foreground sync",
+          );
+          return;
+        }
+        const msg = err instanceof Error ? err.message : String(err);
+        console.log(`[geofence] rejected: activeTimesheet check failed: ${msg}`);
+        return;
+      }
+      if (active !== null) {
+        console.log(
+          `[geofence] rejected: ${project.name} — user already clocked in (entry id ${active.id}, project ${active.projectId})`,
+        );
+        // Prime the debounce for the entered region so we don't
+        // re-check on every GPS jitter while they're already on-site.
+        recordClockInForRegion(projectId);
+        return;
+      }
+
+      // ----- All filters passed: emit prompt -----
+      console.log(
+        `[geofence] enter accepted: ${project.name} (${Math.round(distanceM)}m away, GPS ±${Math.round(accuracy)}m)`,
+      );
+      emitClockInPrompt({ projectId, projectName: project.name });
     });
     taskManagerAvailable = true;
   }
@@ -161,7 +391,7 @@ export async function registerGeofences(
     if (lastRegisteredCache.has(id)) result.skipped.push(id);
     else result.registered.push(id);
   }
-  for (const id of lastRegisteredCache) {
+  for (const id of lastRegisteredCache.keys()) {
     if (!desired.has(id)) result.unregistered.push(id);
   }
 
@@ -209,7 +439,7 @@ export async function registerGeofences(
     await Location.startGeofencingAsync(TASK_NAME, regions);
 
     lastRegisteredCache.clear();
-    for (const id of desired.keys()) lastRegisteredCache.add(id);
+    for (const [id, project] of desired) lastRegisteredCache.set(id, project);
 
     console.log(
       `[geofence] registered ${desired.size} regions (skipped ${result.skipped.length} as unchanged)`,
@@ -239,6 +469,7 @@ export async function unregisterAllGeofences(): Promise<void> {
     console.log("[geofence] unregister error:", err);
   } finally {
     lastRegisteredCache.clear();
+    lastClockInByRegion.clear();
   }
 }
 
@@ -248,7 +479,7 @@ export async function unregisterAllGeofences(): Promise<void> {
  * unregisterAllGeofences. For debug surfacing.
  */
 export function getRegisteredGeofences(): string[] {
-  return Array.from(lastRegisteredCache);
+  return Array.from(lastRegisteredCache.keys());
 }
 
 /** Constants exported for the debug surface and test harnesses. */
