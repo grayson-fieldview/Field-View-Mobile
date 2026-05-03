@@ -263,29 +263,35 @@ function GeofenceDebugSectionBody() {
   const colors = useColors();
   const { status } = useLocationPermission();
   const { lastSync, registeredCount, syncing, forceResync } = useGeofenceSync();
-  const [triggering, setTriggering] = useState(false);
+  const [triggering, setTriggering] = useState<"none" | "full" | "force">(
+    "none",
+  );
 
   const lastSyncLabel = lastSync ? lastSync.toLocaleTimeString() : "Never";
 
-  // Dev-only manual trigger: picks the FIRST registered region and
-  // synthesizes an iOS Enter event against the real filter chain.
-  // Does NOT bypass any filter — proximity/GPS/debounce/activeTimesheet
-  // all run for real. If the device is physically far from the chosen
-  // project, the proximity filter rejects (correctly). Useful for
-  // validating the whole path (filter logs → banner → API → DB) on
-  // a desk without driving to a job site.
-  const handleTriggerSyntheticEnter = async () => {
+  // Dev-only manual triggers. Both pick the FIRST registered region
+  // and synthesize an iOS Enter event:
+  //   - "full" runs the entire filter chain (incl. real GPS + proximity).
+  //     Expects rejection when far from the chosen project — validates
+  //     the filter is restrictive.
+  //   - "force" bypasses proximity + GPS filters (debounce and
+  //     activeTimesheet still run). Expects the banner to appear so
+  //     the tester can validate banner → tap → API → DB persistence
+  //     without physically standing at a job site.
+  const triggerWith = async (mode: "full" | "force") => {
     const registered = getRegisteredGeofences();
     const regionId = registered[0];
     if (!regionId) {
       console.log("[geofence] DEBUG: no registered regions; skipping trigger");
       return;
     }
-    setTriggering(true);
+    setTriggering(mode);
     try {
-      await triggerSyntheticEnterForTesting(regionId);
+      await triggerSyntheticEnterForTesting(regionId, {
+        bypassFilters: mode === "force",
+      });
     } finally {
-      setTriggering(false);
+      setTriggering("none");
     }
   };
 
@@ -313,18 +319,32 @@ function GeofenceDebugSectionBody() {
         />
       </View>
       {registeredCount > 0 ? (
-        <View style={{ marginTop: 8 }}>
-          <Button
-            title={
-              triggering
-                ? "Triggering…"
-                : "Trigger Test Enter Event (DEV)"
-            }
-            variant="secondary"
-            onPress={handleTriggerSyntheticEnter}
-            disabled={triggering}
-          />
-        </View>
+        <>
+          <View style={{ marginTop: 8 }}>
+            <Button
+              title={
+                triggering === "full"
+                  ? "Triggering…"
+                  : "Trigger Test Enter (DEV)"
+              }
+              variant="secondary"
+              onPress={() => triggerWith("full")}
+              disabled={triggering !== "none"}
+            />
+          </View>
+          <View style={{ marginTop: 8 }}>
+            <Button
+              title={
+                triggering === "force"
+                  ? "Triggering…"
+                  : "Trigger Test Enter — Force (DEV)"
+              }
+              variant="secondary"
+              onPress={() => triggerWith("force")}
+              disabled={triggering !== "none"}
+            />
+          </View>
+        </>
       ) : null}
     </View>
   );

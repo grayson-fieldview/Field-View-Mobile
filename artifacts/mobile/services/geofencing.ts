@@ -259,11 +259,20 @@ export function recordClockInForRegion(projectId: number): void {
  * the user just doesn't get auto-clock-in for that event, which
  * is correct fail-safe behavior. No re-login attempt from headless.
  */
-async function runGeofenceTaskBody(args: {
-  data: unknown;
-  error: unknown;
-}): Promise<void> {
+async function runGeofenceTaskBody(
+  args: {
+    data: unknown;
+    error: unknown;
+  },
+  opts?: { bypassFilters?: boolean },
+): Promise<void> {
   const { data, error } = args;
+  const bypassFilters = opts?.bypassFilters === true;
+  if (bypassFilters) {
+    console.log(
+      "[geofence] DEBUG: bypassing proximity + GPS filters (test mode)",
+    );
+  }
   if (error) {
     console.log("[geofence] task error:", error);
     return;
@@ -337,38 +346,44 @@ async function runGeofenceTaskBody(args: {
     }
   }
 
-  // ----- Filter 4: proximity (requires GPS fix) -----
-  let position: Location.LocationObject;
-  try {
-    position = await Location.getCurrentPositionAsync({
-      accuracy: Location.Accuracy.Balanced,
-      mayShowUserSettingsDialog: false,
+  // ----- Filters 4-6: GPS fix + uncertainty + haversine proximity -----
+  // Skipped wholesale when bypassFilters is set — the GPS call is the
+  // most expensive step and the only one a desk-bound tester can't
+  // legitimately satisfy. Debounce (3) and already-clocked-in (7)
+  // still run because their guarantees are independent of location.
+  let distanceM = -1;
+  let accuracy = -1;
+  if (!bypassFilters) {
+    let position: Location.LocationObject;
+    try {
+      position = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+        mayShowUserSettingsDialog: false,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`[geofence] rejected: getCurrentPositionAsync failed: ${msg}`);
+      return;
+    }
+
+    accuracy = position.coords.accuracy ?? Number.POSITIVE_INFINITY;
+    if (accuracy > GPS_ACCURACY_THRESHOLD_M) {
+      console.log(
+        `[geofence] rejected: GPS uncertainty too high (${Math.round(accuracy)}m, threshold ${GPS_ACCURACY_THRESHOLD_M}m)`,
+      );
+      return;
+    }
+
+    distanceM = haversineMeters(position.coords, {
+      latitude: project.latitude,
+      longitude: project.longitude,
     });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.log(`[geofence] rejected: getCurrentPositionAsync failed: ${msg}`);
-    return;
-  }
-
-  // ----- Filter 5: GPS uncertainty -----
-  const accuracy = position.coords.accuracy ?? Number.POSITIVE_INFINITY;
-  if (accuracy > GPS_ACCURACY_THRESHOLD_M) {
-    console.log(
-      `[geofence] rejected: GPS uncertainty too high (${Math.round(accuracy)}m, threshold ${GPS_ACCURACY_THRESHOLD_M}m)`,
-    );
-    return;
-  }
-
-  // ----- Filter 6: haversine proximity -----
-  const distanceM = haversineMeters(position.coords, {
-    latitude: project.latitude,
-    longitude: project.longitude,
-  });
-  if (distanceM > PROXIMITY_THRESHOLD_M) {
-    console.log(
-      `[geofence] rejected: device ${Math.round(distanceM)}m from ${project.name} (radius ${RADIUS_METERS}m, threshold ${PROXIMITY_THRESHOLD_M}m)`,
-    );
-    return;
+    if (distanceM > PROXIMITY_THRESHOLD_M) {
+      console.log(
+        `[geofence] rejected: device ${Math.round(distanceM)}m from ${project.name} (radius ${RADIUS_METERS}m, threshold ${PROXIMITY_THRESHOLD_M}m)`,
+      );
+      return;
+    }
   }
 
   // ----- Filter 7: already clocked in -----
@@ -401,23 +416,38 @@ async function runGeofenceTaskBody(args: {
   }
 
   // ----- All filters passed: enqueue prompt -----
-  console.log(
-    `[geofence] enter accepted: ${project.name} (${Math.round(distanceM)}m away, GPS ±${Math.round(accuracy)}m)`,
-  );
+  if (bypassFilters) {
+    console.log(
+      `[geofence] enter accepted (BYPASS): ${project.name} — proximity/GPS skipped`,
+    );
+  } else {
+    console.log(
+      `[geofence] enter accepted: ${project.name} (${Math.round(distanceM)}m away, GPS ±${Math.round(accuracy)}m)`,
+    );
+  }
   enqueueClockInPrompt({ projectId, projectName: project.name });
 }
 
 /**
  * DEV-ONLY: synthesize a TaskManager geofence Enter event for the
- * given region id and run the full filter chain against it. Lets us
+ * given region id and run the filter chain against it. Lets us
  * validate the entire path (proximity, debounce, activeTimesheet,
  * banner) without waiting for a real iOS region transition.
  *
- * IMPORTANT: filters run unmodified — including real
- * `getCurrentPositionAsync` and real `api.activeTimesheet` calls. If
- * the device is physically far from the project, the proximity
- * filter will reject (which is itself a useful validation that the
- * filter is doing its job).
+ * Default mode (`bypassFilters` unset/false): all filters run as the
+ * real iOS event would, including `getCurrentPositionAsync` and
+ * `api.activeTimesheet`. If the device is physically far from the
+ * project, proximity rejects — useful for validating the filter is
+ * doing its job.
+ *
+ * Force mode (`bypassFilters: true`): skips proximity (haversine) +
+ * GPS uncertainty + the GPS call itself, so the prompt enqueues
+ * regardless of physical location. Lets a desk-bound tester exercise
+ * the banner → API → DB path without driving to a job site.
+ * Debounce (Filter 3) and already-clocked-in (Filter 7) still run —
+ * the former because rapid double-taps would otherwise spam the
+ * queue, the latter because we can't fulfill a clock-in if one is
+ * already active.
  *
  * Mounted only by the GeofenceDebugSection in profile.tsx behind
  * `__DEV__`. Defense-in-depth gate here too — calling this in a
@@ -425,6 +455,7 @@ async function runGeofenceTaskBody(args: {
  */
 export async function triggerSyntheticEnterForTesting(
   regionId: string,
+  opts?: { bypassFilters?: boolean },
 ): Promise<void> {
   if (!__DEV__) {
     console.log(
@@ -432,14 +463,20 @@ export async function triggerSyntheticEnterForTesting(
     );
     return;
   }
-  console.log(`[geofence] DEBUG: synthetic Enter triggered for ${regionId}`);
-  await runGeofenceTaskBody({
-    data: {
-      eventType: Location.GeofencingEventType.Enter,
-      region: { identifier: regionId },
+  const mode = opts?.bypassFilters ? "BYPASS" : "full filter chain";
+  console.log(
+    `[geofence] DEBUG: synthetic Enter triggered for ${regionId} (${mode})`,
+  );
+  await runGeofenceTaskBody(
+    {
+      data: {
+        eventType: Location.GeofencingEventType.Enter,
+        region: { identifier: regionId },
+      },
+      error: null,
     },
-    error: null,
-  });
+    opts,
+  );
 }
 
 let TaskManager: typeof import("expo-task-manager") | null = null;
