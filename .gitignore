@@ -47,3 +47,6 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Review artifacts (paste files, screenshots dropped into chat)
+attached_assets/
