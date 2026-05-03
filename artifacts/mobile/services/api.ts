@@ -162,7 +162,7 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
   // Header value is versioned so future deprecations don't brick
   // older mobile builds.
   const method = opts.method ?? "GET";
-  if (method !== "GET" && method !== "HEAD") {
+  if (method !== "GET") {
     headers["X-FieldView-Client"] = "mobile-1";
   }
   console.log("[cookie-outgoing]", headers["Cookie"]);

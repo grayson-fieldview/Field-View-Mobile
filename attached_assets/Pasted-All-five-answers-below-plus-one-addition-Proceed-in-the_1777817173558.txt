@@ -1,0 +1,26 @@
+All five answers below, plus one addition. Proceed in the build order specified in the original prompt (permissions.ts → LocationPermissionScreen → navigation integration → LocationPermissionBanner → app.json). Show me each file's diff for review before moving to the next.
+
+1. Directory: use app/(onboarding)/location.tsx with app/(onboarding)/_layout.tsx. Confirmed — Expo Router convention wins over spec literal.
+
+2. Icons: stay with @expo/vector-icons Feather. Use "map-pin" or "crosshair" — your call which reads better. No new icon library.
+
+3. Primary color: <Button variant="primary"> resolving to colors.primary (#F09001). Do NOT introduce #F97316. The "existing token" language in the original prompt overrides the literal hex. Use existing Button component for both primary "Continue" and secondary "Not now" (ghost variant).
+
+4. Upgrade-shown tracking: AsyncStorage via existing storage service. Use TWO keys, not one:
+   - @fv/onboarding/preprompted — set true after first pre-prompt is dismissed (regardless of permission outcome)
+   - @fv/onboarding/locationUpgradeShown — set true after the second pre-prompt (Always upgrade) is dismissed
+
+   This prevents re-showing the same pre-prompt screen on every cold start if the user dismissed without granting. Pre-prompt screen logic:
+   - If preprompted=false AND status=undetermined → show first pre-prompt
+   - If preprompted=true AND status=foreground-granted AND locationUpgradeShown=false → show second pre-prompt (Always upgrade)
+   - Otherwise → skip onboarding, go to (tabs)
+
+5. Banner placement confirmed: render above FlatList in (tabs)/index.tsx and at top of (tabs)/tasks.tsx. Visibility gate: status !== "always-granted" AND not dismissed-this-session. Skip ClockBar entirely (manual flow).
+
+ADDITION — useLocationPermission() must include a loading state.
+
+The hook will return synchronously on mount before Location.getForegroundPermissionsAsync() resolves. If AuthGate redirects based on the synchronous initial value, every authenticated user gets bounced to onboarding for a flash on cold start — bad UX and potentially a race-condition footgun.
+
+Add a sixth status value: "loading" (or a separate isLoading boolean — your call which is cleaner). AuthGate must NOT redirect to onboarding while permission state is loading. Show splash / blank / existing loader instead, then redirect once status resolves.
+
+Proceed with permissions.ts first. Show diff before moving on.

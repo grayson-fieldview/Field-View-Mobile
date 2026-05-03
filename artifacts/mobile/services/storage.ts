@@ -77,4 +77,23 @@ export const storage = {
       /* ignore */
     }
   },
+
+  // Generic boolean flag helpers. Used by ad-hoc onboarding/feature flags
+  // (e.g. location pre-prompt tracking) that don't warrant a dedicated
+  // typed accessor. Stored as the literal strings "1" / absent.
+  getFlag: async (key: string): Promise<boolean> => {
+    try {
+      return (await AsyncStorage.getItem(key)) === "1";
+    } catch {
+      return false;
+    }
+  },
+  setFlag: async (key: string, value: boolean): Promise<void> => {
+    try {
+      if (value) await AsyncStorage.setItem(key, "1");
+      else await AsyncStorage.removeItem(key);
+    } catch {
+      /* ignore */
+    }
+  },
 };
