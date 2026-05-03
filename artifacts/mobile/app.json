@@ -20,6 +20,8 @@
       "infoPlist": {
         "NSCameraUsageDescription": "Field View uses the camera to capture project photos with burst mode for rapid documentation.",
         "NSLocationWhenInUseUsageDescription": "Field View tags your photos with GPS coordinates so you can map site locations.",
+"NSLocationAlwaysAndWhenInUseUsageDescription": "Field View uses your location in the background to automatically clock you in and out when you arrive at or leave a project site.",
+        "UIBackgroundModes": ["location"],
         "NSPhotoLibraryUsageDescription": "Field View saves captured photos to your library.",
         "NSPhotoLibraryAddUsageDescription": "Field View saves captured photos to your library.",
         "ITSAppUsesNonExemptEncryption": false
@@ -78,7 +80,9 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Field View tags your photos with GPS coordinates so you can map site locations."
+          "locationWhenInUsePermission": "Field View tags your photos with GPS coordinates so you can map site locations.",
+"locationAlwaysAndWhenInUsePermission": "Field View uses your location in the background to automatically clock you in and out when you arrive at or leave a project site.",
+          "isIosBackgroundLocationEnabled": true
         }
       ],
       [
@@ -89,6 +93,7 @@
           "isAccessMediaLocationEnabled": true
         }
       ],
+"expo-task-manager",
       "@sentry/react-native/expo"
     ],
     "experiments": {
