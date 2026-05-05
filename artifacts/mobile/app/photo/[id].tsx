@@ -18,6 +18,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Path } from "react-native-svg";
 
 import { useData } from "@/contexts/DataContext";
+import { isRenderablePencilStroke } from "@/services/types";
 import type { AnnotationStroke, Photo } from "@/services/types";
 
 const COLORS = ["#ef4444", "#22c55e", "#3b82f6", "#F09001", "#a855f7", "#111111"];
@@ -252,7 +253,12 @@ export default function PhotoViewerScreen() {
                 contentFit="contain"
               />
               <Svg style={StyleSheet.absoluteFill}>
-                {drawn.map((s, i) => (
+                {drawn.filter(isRenderablePencilStroke).map((s, i) => (
+                  // Filter guards against text/arrow/etc. strokes that
+                  // the web app may write into a photo's annotations
+                  // array (mobile renderer is pencil-only). Locally-
+                  // created strokes always pass — they have no `type`
+                  // field and always carry a non-empty points array.
                   <Path
                     key={i}
                     d={pointsToPath(s.points)}

@@ -1718,12 +1718,17 @@ function AnnotationOverlay({
 }: {
   strokes: import("@/services/types").AnnotationStroke[];
 }) {
-  // Determine the viewBox: prefer the canvas dimensions captured at draw
-  // time; otherwise fall back to the bounding box of all points so the
-  // strokes still scale into the thumbnail (legacy data path).
+  // Filter out non-pencil / malformed strokes BEFORE any iteration —
+  // both the viewBox math (reads s.canvasW/H + walks s.points) and
+  // the render map (calls pointsToPath(s.points)) would crash on a
+  // text-kind stroke with no points array. Forward-compat with the
+  // 2026-Q2 web schema additions; see isRenderablePencilStroke().
+  const { isRenderablePencilStroke } =
+    require("@/services/types") as typeof import("@/services/types");
+  const renderable = strokes.filter(isRenderablePencilStroke);
   let w = 0;
   let h = 0;
-  for (const s of strokes) {
+  for (const s of renderable) {
     if (s.canvasW && s.canvasW > w) w = s.canvasW;
     if (s.canvasH && s.canvasH > h) h = s.canvasH;
   }
