@@ -4,8 +4,10 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
+import { AppState } from "react-native";
 
 import {
   ApiError,
@@ -15,6 +17,7 @@ import {
   normalizeUser,
   type BackendUser,
 } from "@/services/api";
+import { autoTrackingPref } from "@/services/preferences";
 
 export interface AuthUser {
   id: string;
@@ -24,6 +27,12 @@ export interface AuthUser {
   name: string;
   /** True when this user owns their account (can delete the whole account). */
   isOwner: boolean;
+  /**
+   * Auto clock-in/out master switch (S33). Default true on null/missing
+   * from the server. Mirrored to AsyncStorage via autoTrackingPref so
+   * the background geofence task can read it without React context.
+   */
+  autoTrackingEnabled: boolean;
 }
 
 interface AuthState {
@@ -33,6 +42,7 @@ interface AuthState {
   signOut: () => Promise<void>;
   requestPasswordReset: (email: string) => Promise<void>;
   refreshUser: () => Promise<void>;
+  updatePreferences: (input: { autoTrackingEnabled?: boolean }) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthState | undefined>(undefined);
@@ -49,12 +59,25 @@ function toAuthUser(raw: BackendUser | null): AuthUser | null {
     lastName: raw.lastName,
     name: raw.name ? String(raw.name) : combined || String(raw.email),
     isOwner: raw.isOwner === true,
+    autoTrackingEnabled: raw.autoTrackingEnabled !== false,
   };
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [ready, setReady] = useState(false);
+
+  // Mirror of `user` for callbacks that need fresh state without
+  // re-binding on every render (AppState listener, optimistic
+  // updatePreferences rollback).
+  const userRef = useRef<AuthUser | null>(null);
+  useEffect(() => {
+    userRef.current = user;
+    // Keep the AsyncStorage mirror in lockstep with the in-memory
+    // user object. The geofence background task reads this on every
+    // OS Enter/Exit dispatch (services/geofencing.ts).
+    if (user) void autoTrackingPref.set(user.autoTrackingEnabled);
+  }, [user]);
 
   const bootstrap = useCallback(async () => {
     try {
@@ -80,6 +103,47 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const me = await api.me().catch(() => null);
     setUser(toAuthUser(normalizeUser(me)));
   }, []);
+
+  // Refresh user on every foreground transition. Mirrors the
+  // useGeofenceSync.tsx AppState pattern. Single network call,
+  // single-row response — keeps mobile within ~30s of server truth
+  // for fields like autoTrackingEnabled that may be flipped from
+  // the web app or another device.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state !== "active") return;
+      if (!userRef.current) return;
+      void refreshUser();
+    });
+    return () => sub.remove();
+  }, [refreshUser]);
+
+  const updatePreferences = useCallback(
+    async (input: { autoTrackingEnabled?: boolean }): Promise<void> => {
+      const prev = userRef.current;
+      if (!prev) return;
+
+      // Optimistic: flip local state immediately so the toggle is
+      // instant-on. The userRef mirroring effect persists the new
+      // value to AsyncStorage as a side-effect of setUser.
+      const optimistic: AuthUser = { ...prev, ...input };
+      setUser(optimistic);
+
+      try {
+        const updated = await api.updatePreferences(input);
+        const mapped = toAuthUser(normalizeUser(updated));
+        if (mapped) setUser(mapped);
+      } catch (err) {
+        // Roll back local state. The mirroring effect will rewrite
+        // AsyncStorage from the restored prev. Re-throw so the caller
+        // (profile screen) can surface the toast — AuthProvider mounts
+        // OUTSIDE ToastProvider so we cannot useToast() here.
+        setUser(prev);
+        throw err;
+      }
+    },
+    [],
+  );
 
   const signIn = useCallback(async (email: string, password: string) => {
     const emailTrim = email.trim();
@@ -116,8 +180,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signOut,
       requestPasswordReset,
       refreshUser,
+      updatePreferences,
     }),
-    [user, ready, signIn, signOut, requestPasswordReset, refreshUser],
+    [
+      user,
+      ready,
+      signIn,
+      signOut,
+      requestPasswordReset,
+      refreshUser,
+      updatePreferences,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

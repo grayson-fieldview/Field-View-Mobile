@@ -267,6 +267,13 @@ export interface BackendUser {
   name?: string;
   /** Owner flag from /api/auth/user (web backend, deployed 2026-04-28). */
   isOwner?: boolean;
+  /**
+   * Auto clock-in/out master switch (S33). Server is authoritative.
+   * Mobile mirrors to AsyncStorage via services/preferences so the
+   * geofence background task (which has no React context) can read it.
+   * Default true on null/missing — see toAuthUser() in AuthContext.
+   */
+  autoTrackingEnabled?: boolean;
   [key: string]: unknown;
 }
 
@@ -580,6 +587,18 @@ export const api = {
     apiFetch<DeleteUserResponse>("/api/users/me", {
       method: "DELETE",
       json: { confirm: true },
+    }),
+
+  /**
+   * Update one or more user preferences. Currently only autoTrackingEnabled
+   * (S33 master switch for OS-driven clock in/out). Server returns the
+   * full updated BackendUser so callers can replace their local copy in
+   * one shot rather than reconciling fields.
+   */
+  updatePreferences: (input: { autoTrackingEnabled?: boolean }) =>
+    apiFetch<BackendUser>("/api/users/me/preferences", {
+      method: "PATCH",
+      json: input,
     }),
 
   /**

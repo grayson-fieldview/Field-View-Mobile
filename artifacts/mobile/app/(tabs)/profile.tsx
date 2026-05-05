@@ -9,6 +9,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   View,
 } from "react-native";
@@ -31,12 +32,13 @@ import {
   getNotificationPermission,
   type NotificationPermissionStatus,
 } from "@/services/notifications";
+import { listPendingExits } from "@/services/pendingExits";
 import { useLocationPermission } from "@/services/permissions";
 
 export default function ProfileScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { user, signOut } = useAuth();
+  const { user, signOut, updatePreferences } = useAuth();
   const { projects, photos, tasks, clearAll } = useData();
   const { showToast } = useToast();
 
@@ -76,6 +78,33 @@ export default function ProfileScreen() {
       console.log("[profile] openSettings failed:", err);
       showToast("Couldn't open Settings.");
     });
+  };
+
+  const handleAutoTrackingToggle = async (next: boolean) => {
+    // On toggle-OFF, warn about in-flight server-scheduled clock-outs.
+    // The toggle governs *new* OS events; pending exits already
+    // accepted by the server still fire as planned via cron.
+    if (!next) {
+      try {
+        const pending = await listPendingExits();
+        if (pending.length > 0) {
+          showToast(
+            "You have a pending auto clock-out. It'll still fire as planned.",
+          );
+        }
+      } catch {
+        /* best-effort warning — toggle still proceeds */
+      }
+    }
+    try {
+      await updatePreferences({ autoTrackingEnabled: next });
+    } catch (err) {
+      // AuthContext rolled back local state; surface the failure here
+      // because AuthProvider is mounted outside ToastProvider.
+      const msg =
+        err instanceof Error ? err.message : "Couldn't update setting.";
+      showToast(msg);
+    }
   };
 
   const openExternal = async (url: string) => {
@@ -230,6 +259,22 @@ export default function ProfileScreen() {
           icon="file-text"
           label="Terms of Service"
           onPress={() => openExternal("https://field-view.com/terms")}
+        />
+      </View>
+
+      <View style={styles.section}>
+        <Text style={[styles.debugHeader, { color: colors.mutedForeground }]}>
+          Tracking
+        </Text>
+        <Text style={[styles.debugCaption, { color: colors.mutedForeground }]}>
+          Automatically clock in when you arrive at a job site and clock out
+          when you leave. Turn off to manage clock-in/out manually.
+        </Text>
+        <Row
+          icon="map-pin"
+          label="Auto clock in/out"
+          value={user?.autoTrackingEnabled ?? true}
+          onValueChange={handleAutoTrackingToggle}
         />
       </View>
 
@@ -464,13 +509,22 @@ function Row({
   label,
   value,
   onPress,
+  onValueChange,
 }: {
   icon: keyof typeof Feather.glyphMap;
   label: string;
-  value?: string;
+  /**
+   * Right-side affordance precedence:
+   *   onValueChange present  → render <Switch> (boolean value)
+   *   onPress present        → render chevron-right (string value ignored)
+   *   neither                → render value as plain text
+   */
+  value?: string | boolean;
   onPress?: () => void;
+  onValueChange?: (next: boolean) => void;
 }) {
   const colors = useColors();
+  const isSwitch = onValueChange !== undefined;
   const body = (
     <View style={[styles.row, { borderBottomColor: colors.border }]}>
       <View style={styles.rowLeft}>
@@ -479,7 +533,14 @@ function Row({
           {label}
         </Text>
       </View>
-      {onPress ? (
+      {isSwitch ? (
+        <Switch
+          value={typeof value === "boolean" ? value : false}
+          onValueChange={onValueChange}
+          trackColor={{ true: colors.primary, false: colors.muted }}
+          accessibilityLabel={label}
+        />
+      ) : onPress ? (
         <Feather
           name="chevron-right"
           size={18}
@@ -487,12 +548,14 @@ function Row({
         />
       ) : (
         <Text style={[styles.rowValue, { color: colors.mutedForeground }]}>
-          {value}
+          {typeof value === "string" ? value : ""}
         </Text>
       )}
     </View>
   );
-  if (onPress) {
+  // Switch rows must NOT be wrapped in a Pressable — tapping the row
+  // body would race the Switch's own gesture handler.
+  if (onPress && !isSwitch) {
     return (
       <Pressable
         onPress={onPress}

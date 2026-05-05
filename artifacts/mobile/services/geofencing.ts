@@ -9,6 +9,7 @@ import {
   removePendingExitById,
   upsertPendingExit,
 } from "./pendingExits";
+import { autoTrackingPref } from "./preferences";
 import { Sentry } from "./sentry";
 
 /**
@@ -289,6 +290,20 @@ async function handleGeofenceEnter(
   project: GeofenceEligibleProject,
   bypassFilters: boolean,
 ): Promise<void> {
+  // ----- Filter -1: master toggle (S33) -----
+  // Read from AsyncStorage (mirrored by AuthContext) because the OS
+  // dispatches into this task outside the React tree — useAuth() is
+  // unreachable here. Runs BEFORE Filter 0 (cancel-pending-exit-on-
+  // re-enter) so a user who toggled auto-tracking off mid-trip doesn't
+  // keep mutating server-side pending rows. Pending exits already
+  // scheduled server-side will still fire as planned (the toggle
+  // governs *new* OS events, not in-flight server state — surfaced
+  // as a toast in profile.tsx on toggle-off).
+  if (!(await autoTrackingPref.get())) {
+    console.log("[geofence] auto-tracking disabled, skipping enter");
+    return;
+  }
+
   // ----- Filter 0: cancel pending-exit on re-enter (S32a-mobile) -----
   //
   // MUST run before Filter 3. When the user steps out and back in
@@ -565,6 +580,14 @@ async function handleGeofenceExit(
   project: GeofenceEligibleProject,
   bypassFilters: boolean,
 ): Promise<void> {
+  // ----- Filter B0: master toggle (S33) -----
+  // Same rationale as the matching gate at the top of
+  // handleGeofenceEnter. AsyncStorage mirror, not React context.
+  if (!(await autoTrackingPref.get())) {
+    console.log("[geofence] auto-tracking disabled, skipping exit");
+    return;
+  }
+
   // ----- Filter B5 (early): already-pending short-circuit -----
   let existing: Awaited<ReturnType<typeof findPendingExitsForRegion>> = [];
   try {
