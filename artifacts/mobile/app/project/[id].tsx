@@ -372,9 +372,12 @@ export default function ProjectDetailScreen() {
   const onSharePhotos = async () => {
     const ids = Array.from(selected);
     if (ids.length === 0) return;
-    // Build a viewer URL pointing at the production web app. The query string
-    // lets the web app filter to just the picked photos.
-    const url = `https://code-genius-graysongladu.replit.app/share/project/${project!.id}?photos=${ids.join(",")}`;
+    // NOTE: We currently reuse the API host for share links because API and
+    // public web app are co-hosted at app.field-view.com. If we ever split
+    // them onto separate domains (e.g., api.field-view.com), introduce a
+    // separate EXPO_PUBLIC_WEB_URL env var.
+    const baseUrl = (process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://app.field-view.com").replace(/\/+$/, "");
+    const url = `${baseUrl}/share/project/${project!.id}?photos=${ids.join(",")}`;
     try {
       await Share.share(
         {

@@ -609,7 +609,10 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         id: newId(),
         projectId,
         recipientEmail: recipientEmail.trim().toLowerCase(),
-        url: `https://fieldview.app/share/${newId()}`,
+        // NOTE: We reuse the API host for share links because API and public
+        // web app are co-hosted at app.field-view.com. If they ever split
+        // onto separate domains, introduce a separate EXPO_PUBLIC_WEB_URL.
+        url: `${(process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://app.field-view.com").replace(/\/+$/, "")}/share/${newId()}`,
         createdAt: new Date().toISOString(),
       };
       await persistShares([s, ...shares]);
