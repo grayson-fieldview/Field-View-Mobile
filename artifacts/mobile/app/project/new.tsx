@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AddressAutocomplete } from "@/components/AddressAutocomplete";
 import { Button } from "@/components/Button";
 import { Input } from "@/components/Input";
+import { MapView, Marker } from "@/components/MapBackend";
 import { useData } from "@/contexts/DataContext";
 import { useColors } from "@/hooks/useColors";
 
@@ -14,7 +15,7 @@ export default function NewProjectScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { createProject, updateProject } = useData();
+  const { createProject } = useData();
 
   const [name, setName] = useState("");
   const [client, setClient] = useState("");
@@ -32,14 +33,13 @@ export default function NewProjectScreen() {
     setSaving(true);
     setError(null);
     try {
-      const p = await createProject({ name, client, address });
-      // Save the lat/lng we got from Places (if any) so the map can pin it.
-      if (coords) {
-        await updateProject(p.id, {
-          latitude: coords.latitude,
-          longitude: coords.longitude,
-        });
-      }
+      const p = await createProject({
+        name,
+        client,
+        address,
+        latitude: coords?.latitude,
+        longitude: coords?.longitude,
+      });
       router.back();
       setTimeout(() => router.push(`/project/${p.id}`), 200);
     } catch (e) {
@@ -81,7 +81,6 @@ export default function NewProjectScreen() {
           value={address}
           onChangeText={(v) => {
             setAddress(v);
-            // If the user types after picking, drop the saved coords.
             if (coords) setCoords(null);
           }}
           onSelectPlace={(d) => {
@@ -90,6 +89,35 @@ export default function NewProjectScreen() {
             }
           }}
         />
+        {coords ? (
+          <View
+            style={[
+              styles.mapContainer,
+              { borderColor: colors.border },
+            ]}
+          >
+            <MapView
+              style={styles.map}
+              region={{
+                latitude: coords.latitude,
+                longitude: coords.longitude,
+                latitudeDelta: 0.005,
+                longitudeDelta: 0.005,
+              }}
+              scrollEnabled={false}
+              zoomEnabled={false}
+              pitchEnabled={false}
+              rotateEnabled={false}
+            >
+              <Marker
+                coordinate={{
+                  latitude: coords.latitude,
+                  longitude: coords.longitude,
+                }}
+              />
+            </MapView>
+          </View>
+        ) : null}
         {error ? (
           <Text style={{ color: colors.destructive, fontFamily: "Inter_500Medium" }}>
             {error}
@@ -99,7 +127,7 @@ export default function NewProjectScreen() {
           title="Create project"
           onPress={onSave}
           loading={saving}
-          disabled={!canSave}
+          disabled={!canSave || saving}
           size="lg"
         />
       </View>
@@ -116,4 +144,14 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   form: { gap: 14 },
+  mapContainer: {
+    height: 200,
+    borderRadius: 12,
+    borderWidth: 1,
+    overflow: "hidden",
+    marginTop: -2,
+  },
+  map: {
+    flex: 1,
+  },
 });

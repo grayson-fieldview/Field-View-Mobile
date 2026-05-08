@@ -435,6 +435,40 @@ export const api = {
   project: (id: string | number) =>
     apiFetch<BackendProjectDetail>(`/api/projects/${id}`),
 
+  createProject: (input: {
+    name: string;
+    address?: string | null;
+    description?: string | null;
+    latitude?: number | null;
+    longitude?: number | null;
+    status?: string;
+    color?: string;
+    tags?: string[];
+  }) =>
+    apiFetch<BackendProject>("/api/projects", {
+      method: "POST",
+      json: input,
+    }),
+
+  updateProject: (
+    id: number | string,
+    patch: Partial<{
+      name: string;
+      address: string | null;
+      description: string | null;
+      latitude: number | null;
+      longitude: number | null;
+      status: string;
+      color: string;
+      tags: string[];
+      coverPhotoId: number | null;
+    }>,
+  ) =>
+    apiFetch<BackendProject>(`/api/projects/${id}`, {
+      method: "PATCH",
+      json: patch,
+    }),
+
   geofenceEligibleProjects: () =>
     apiFetch<BackendGeofenceEligibleProject[]>(
       "/api/projects/geofence-eligible",

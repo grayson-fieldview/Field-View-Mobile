@@ -58,7 +58,10 @@ interface DataState {
   loadProjectDetail: (id: string) => Promise<void>;
 
   createProject: (
-    input: Pick<Project, "name" | "address" | "client">,
+    input: Pick<Project, "name" | "address" | "client"> & {
+      latitude?: number | null;
+      longitude?: number | null;
+    },
   ) => Promise<Project>;
   updateProject: (id: string, patch: Partial<Project>) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
@@ -311,36 +314,45 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     [user, persistProjects, persistPhotos, persistTasks],
   );
 
-  // --- Local CRUD (unchanged from before). Creates/updates stay local until
-  //     we wire backend write endpoints.
   const createProject: DataState["createProject"] = useCallback(
     async (input) => {
-      const now = new Date().toISOString();
-      const p: Project = {
-        id: newId(),
+      const backend = await api.createProject({
         name: input.name.trim(),
-        address: input.address.trim(),
-        client: input.client.trim(),
-        status: "active",
-        createdAt: now,
-        updatedAt: now,
-      };
-      await persistProjects([p, ...projects]);
+        address: input.address.trim() || null,
+        description: input.client.trim() || null,
+        latitude: input.latitude ?? null,
+        longitude: input.longitude ?? null,
+      });
+      const p = mapBackendProject(backend);
+      await persistProjects([p, ...projectsRef.current]);
       return p;
     },
-    [projects, persistProjects],
+    [persistProjects],
   );
 
   const updateProject: DataState["updateProject"] = useCallback(
     async (id, patch) => {
-      const next = projects.map((p) =>
-        p.id === id
-          ? { ...p, ...patch, updatedAt: new Date().toISOString() }
-          : p,
+      const numId = Number(id);
+      if (!Number.isFinite(numId)) {
+        throw new Error(`Cannot update project with non-numeric id "${id}"`);
+      }
+      const apiPatch: Record<string, unknown> = {};
+      if (patch.name !== undefined) apiPatch.name = patch.name;
+      if (patch.address !== undefined) apiPatch.address = patch.address || null;
+      if (patch.client !== undefined) apiPatch.description = patch.client || null;
+      if (patch.latitude !== undefined) apiPatch.latitude = patch.latitude ?? null;
+      if (patch.longitude !== undefined) apiPatch.longitude = patch.longitude ?? null;
+      if (patch.color !== undefined) apiPatch.color = patch.color || null;
+      if (patch.tags !== undefined) apiPatch.tags = patch.tags;
+      if (patch.status !== undefined) apiPatch.status = patch.status;
+      const backend = await api.updateProject(numId, apiPatch);
+      const updated = mapBackendProject(backend);
+      const next = projectsRef.current.map((p) =>
+        p.id === updated.id ? updated : p,
       );
       await persistProjects(next);
     },
-    [projects, persistProjects],
+    [persistProjects],
   );
 
   const deleteProject: DataState["deleteProject"] = useCallback(
