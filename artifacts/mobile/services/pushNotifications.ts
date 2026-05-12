@@ -123,6 +123,18 @@ export async function registerPushTokenWithServer(
   token: string,
 ): Promise<void> {
   try {
+    // TEMP DIAGNOSTIC (remove after triage). SDK 54 upgrade regressed
+    // server-side validation with 400 "Invalid Expo push token format".
+    // Log the exact wire value so we can compare to the legacy
+    // ExponentPushToken[…] shape.
+    console.log(
+      "[push diag] token =",
+      JSON.stringify(token),
+      "length:",
+      token?.length,
+      "type:",
+      typeof token,
+    );
     await api.registerPushToken(token);
     console.log("[push] token registered with server");
   } catch (err) {
