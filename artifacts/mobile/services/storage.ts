@@ -2,7 +2,6 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import type {
   Photo,
   Project,
-  Task,
   User,
 } from "./types";
 
@@ -16,7 +15,6 @@ const KEYS = {
   // the server. Safe to delete the cleanup below after a release or two.
   projects: "@fv/projects/v2",
   photos: "@fv/photos",
-  tasks: "@fv/tasks",
   // Preferences. Read/written directly by services/preferences.ts
   // (tri-state, can't use the binary getFlag/setFlag wrappers below).
   // Listed here to keep the @fv/ namespace registry in one place.
@@ -24,11 +22,18 @@ const KEYS = {
 } as const;
 
 // Orphaned cache keys to remove on every app start. `@fv/shares` is the
-// dropped fake-share-link cache from the pre-real-invites era; `@fv/checklists`
-// is the dropped local-only AsyncStorage checklist cache replaced by the v2
-// server-backed checklists in 2026-05. Leave both in this list for a release
-// or two so existing installs purge them.
-const LEGACY_KEYS = ["@fv/projects", "@fv/shares", "@fv/checklists"] as const;
+// dropped fake-share-link cache from the pre-real-invites era;
+// `@fv/checklists` is the dropped local-only AsyncStorage checklist cache
+// replaced by the v2 server-backed checklists in 2026-05; `@fv/tasks` is
+// the dropped local-only AsyncStorage task cache replaced by the v2
+// server-backed tasks (assigned_to_id) in 2026-05. Leave all three in
+// this list for a release or two so existing installs purge them.
+const LEGACY_KEYS = [
+  "@fv/projects",
+  "@fv/shares",
+  "@fv/checklists",
+  "@fv/tasks",
+] as const;
 
 async function readJson<T>(key: string, fallback: T): Promise<T> {
   try {
@@ -61,8 +66,9 @@ export const storage = {
   getPhotos: () => readJson<Photo[]>(KEYS.photos, []),
   setPhotos: (p: Photo[]) => writeJson(KEYS.photos, p),
 
-  getTasks: () => readJson<Task[]>(KEYS.tasks, []),
-  setTasks: (t: Task[]) => writeJson(KEYS.tasks, t),
+  // Tasks intentionally have no get/set helpers — they are server-only
+  // since the v2 rewrite (2026-05). The legacy @fv/tasks key is purged
+  // by pruneLegacyKeys() on every app start.
 
   clearSession: async () => {
     await AsyncStorage.multiRemove([KEYS.user, KEYS.authToken]);

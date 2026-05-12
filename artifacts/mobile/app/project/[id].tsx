@@ -25,6 +25,7 @@ import Animated, {
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { AssigneePickerSheet, type AssigneeSelection } from "@/components/AssigneePickerSheet";
 import { AssignUserToProjectModal } from "@/components/AssignUserToProjectModal";
 import { Button } from "@/components/Button";
 import { ClockReceiptBanner } from "@/components/ClockReceiptBanner";
@@ -1055,6 +1056,31 @@ export default function ProjectDetailScreen() {
                       >
                         {t.title}
                       </Text>
+                      {t.assignedToName ? (
+                        <View
+                          style={{
+                            flexDirection: "row",
+                            alignItems: "center",
+                            gap: 4,
+                            marginTop: 3,
+                          }}
+                        >
+                          <Feather
+                            name="user"
+                            size={11}
+                            color={colors.mutedForeground}
+                          />
+                          <Text
+                            style={[
+                              styles.taskNotes,
+                              { color: colors.mutedForeground },
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {t.assignedToName}
+                          </Text>
+                        </View>
+                      ) : null}
                       {t.notes ? (
                         <Text
                           style={[
@@ -1348,10 +1374,23 @@ export default function ProjectDetailScreen() {
 
       <TaskModal
         visible={showTaskModal}
+        projectId={project.id}
         onClose={() => setShowTaskModal(false)}
-        onSubmit={async (title, notes, assignee) => {
-          await createTask(project.id, title, notes, assignee);
-          setShowTaskModal(false);
+        onSubmit={async ({ title, notes, assignee }) => {
+          try {
+            await createTask(project.id, {
+              title,
+              description: notes,
+              assignedToId: assignee?.userId ?? null,
+              assignedToName: assignee?.displayName,
+            });
+            setShowTaskModal(false);
+          } catch (e) {
+            showToast(
+              e instanceof Error ? e.message : "Couldn't create task.",
+            );
+            throw e;
+          }
         }}
       />
       <TemplatePickerModal
@@ -1932,26 +1971,48 @@ function PhotosToolbar({
 
 function TaskModal({
   visible,
+  projectId,
   onClose,
   onSubmit,
 }: {
   visible: boolean;
+  projectId: string;
   onClose: () => void;
-  onSubmit: (title: string, notes?: string, assignee?: string) => Promise<void>;
+  onSubmit: (input: {
+    title: string;
+    notes?: string;
+    assignee: AssigneeSelection;
+  }) => Promise<void>;
 }) {
+  const colors = useColors();
   const [title, setTitle] = useState("");
   const [notes, setNotes] = useState("");
-  const [assignee, setAssignee] = useState("");
+  // null = explicitly Unassigned. The picker emits this shape directly so
+  // the modal doesn't have to maintain parallel id/name state.
+  const [assignee, setAssignee] = useState<AssigneeSelection>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // Reset on close so the next "Add task" starts clean.
+  useEffect(() => {
+    if (!visible) {
+      setTitle("");
+      setNotes("");
+      setAssignee(null);
+    }
+  }, [visible]);
 
   const save = async () => {
     if (!title.trim()) return;
     setSaving(true);
     try {
-      await onSubmit(title, notes, assignee);
-      setTitle("");
-      setNotes("");
-      setAssignee("");
+      await onSubmit({
+        title: title.trim(),
+        notes: notes.trim() || undefined,
+        assignee,
+      });
+    } catch {
+      // Toast handled by parent; keep modal open so user can retry.
     } finally {
       setSaving(false);
     }
@@ -1961,13 +2022,58 @@ function TaskModal({
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
       <ModalShell title="New task" onClose={onClose}>
         <Input label="Title" value={title} onChangeText={setTitle} autoFocus />
-        <Input
-          label="Assigned to"
-          value={assignee}
-          onChangeText={setAssignee}
-          placeholder="Teammate name (optional)"
-          autoCapitalize="words"
-        />
+
+        <View style={{ gap: 6 }}>
+          <Text
+            style={{
+              color: colors.foreground,
+              fontFamily: "Inter_600SemiBold",
+              fontSize: 13,
+            }}
+          >
+            Assigned to
+          </Text>
+          <Pressable
+            onPress={() => setPickerOpen(true)}
+            style={({ pressed }) => [
+              {
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 10,
+                paddingHorizontal: 14,
+                paddingVertical: 14,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: colors.border,
+                backgroundColor: colors.card,
+                opacity: pressed ? 0.85 : 1,
+              },
+            ]}
+          >
+            <Feather
+              name={assignee ? "user" : "user-x"}
+              size={16}
+              color={colors.mutedForeground}
+            />
+            <Text
+              style={{
+                flex: 1,
+                color: assignee ? colors.foreground : colors.mutedForeground,
+                fontFamily: "Inter_500Medium",
+                fontSize: 15,
+              }}
+              numberOfLines={1}
+            >
+              {assignee ? assignee.displayName : "Unassigned"}
+            </Text>
+            <Feather
+              name="chevron-down"
+              size={16}
+              color={colors.mutedForeground}
+            />
+          </Pressable>
+        </View>
+
         <Input
           label="Notes"
           value={notes}
@@ -1977,6 +2083,14 @@ function TaskModal({
         />
         <Button title="Add task" onPress={save} loading={saving} size="lg" />
       </ModalShell>
+
+      <AssigneePickerSheet
+        visible={pickerOpen}
+        projectId={projectId}
+        selectedUserId={assignee?.userId ?? null}
+        onClose={() => setPickerOpen(false)}
+        onSelect={setAssignee}
+      />
     </Modal>
   );
 }

@@ -18,7 +18,13 @@ import {
   mapBackendTask,
 } from "@/services/mappers";
 import { storage } from "@/services/storage";
-import type { Photo, Project, Task } from "@/services/types";
+import type {
+  Photo,
+  Project,
+  Task,
+  TaskPriority,
+  TaskStatus,
+} from "@/services/types";
 import {
   clearAll as clearUploadQueueAll,
   enqueueUpload,
@@ -67,12 +73,44 @@ interface DataState {
   deletePhoto: (id: string) => Promise<void>;
   updatePhoto: (id: string, patch: Partial<Photo>) => Promise<void>;
 
+  /**
+   * Create a server-backed task. The optimistic row is prepended with
+   * a synthetic `tmp-...` id and replaced with the server row on
+   * success. On failure the optimistic row is removed and the error
+   * re-thrown so the caller can show a toast.
+   */
   createTask: (
     projectId: string,
-    title: string,
-    notes?: string,
-    assignee?: string,
+    input: {
+      title: string;
+      description?: string;
+      priority?: TaskPriority;
+      assignedToId?: string | null;
+      /** Optimistic display name; preserved if the POST response omits the join. */
+      assignedToName?: string;
+      dueDate?: string;
+    },
   ) => Promise<Task>;
+  /**
+   * Patch any subset of mutable fields on an existing task. Optimistic
+   * merge → PATCH → replace with server response. On failure the
+   * pre-patch row is restored and the error re-thrown.
+   *
+   * Pass `null` to explicitly clear assignedToId / dueDate / priority /
+   * description. Omitted fields are unchanged.
+   */
+  updateTask: (
+    id: string,
+    patch: {
+      title?: string;
+      description?: string | null;
+      status?: TaskStatus;
+      priority?: TaskPriority | null;
+      assignedToId?: string | null;
+      assignedToName?: string | null;
+      dueDate?: string | null;
+    },
+  ) => Promise<void>;
   toggleTask: (id: string) => Promise<void>;
   deleteTask: (id: string) => Promise<void>;
 
@@ -106,20 +144,19 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const [syncError, setSyncError] = useState<string | null>(null);
 
   // Hydrate local cache on first mount so the app works offline immediately.
+  // Tasks are intentionally NOT hydrated from disk — they're server-only
+  // since the v2 rewrite (2026-05) and the legacy @fv/tasks key is purged
+  // by pruneLegacyKeys(). Initial render shows an empty list until the
+  // first refresh() lands.
   useEffect(() => {
     (async () => {
-      // Drop orphaned cache keys from earlier schema versions (e.g. the v1
-      // projects key that could be left in a truncated state by an older
-      // build of loadProjectDetail). Fire-and-forget; failures are harmless.
       storage.pruneLegacyKeys();
-      const [p, ph, ts] = await Promise.all([
+      const [p, ph] = await Promise.all([
         storage.getProjects(),
         storage.getPhotos(),
-        storage.getTasks(),
       ]);
       setProjects(p);
       setPhotos(ph);
-      setTasks(ts);
       setReady(true);
     })();
   }, []);
@@ -132,9 +169,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     setPhotos(next);
     await storage.setPhotos(next);
   }, []);
-  const persistTasks = useCallback(async (next: Task[]) => {
+  // Tasks are server-only: no persistence layer, just in-memory state.
+  // Wrapper kept (instead of inlining setTasks everywhere) so callers
+  // read symmetrically with persistProjects / persistPhotos.
+  const setTasksList = useCallback((next: Task[]) => {
     setTasks(next);
-    await storage.setTasks(next);
   }, []);
 
   // --- Backend sync ---
@@ -152,6 +191,21 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const syncingRef = useRef(false);
   const lastSyncRef = useRef(0);
 
+  // Per-task version counter — mirrors the useChecklistDetail pattern.
+  // Bumped on every local write to a given task id; the response handler
+  // checks the version is unchanged before applying server data, so a
+  // slow PATCH that returns AFTER a faster newer write doesn't clobber
+  // the newer state. Optimistic-create (tmp- ids) doesn't use this map.
+  const taskVersionsRef = useRef<Map<string, number>>(new Map());
+  const bumpTaskVersion = useCallback((id: string): number => {
+    const next = (taskVersionsRef.current.get(id) ?? 0) + 1;
+    taskVersionsRef.current.set(id, next);
+    return next;
+  }, []);
+  const getTaskVersion = useCallback((id: string): number => {
+    return taskVersionsRef.current.get(id) ?? 0;
+  }, []);
+
   const doSync = useCallback(async () => {
     setSyncing(true);
     setSyncError(null);
@@ -167,7 +221,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         ? backendTasks.map(mapBackendTask)
         : [];
       await persistProjects(mergeById(projectsRef.current, mappedProjects));
-      await persistTasks(mergeById(tasksRef.current, mappedTasks));
+      setTasksList(mergeById(tasksRef.current, mappedTasks));
       lastSyncRef.current = Date.now();
       return true;
     } catch (e) {
@@ -177,7 +231,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setSyncing(false);
     }
-  }, [persistProjects, persistTasks]);
+  }, [persistProjects, setTasksList]);
 
   const refresh = useCallback(
     async (opts?: { force?: boolean }) => {
@@ -264,10 +318,23 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         console.log("[photos] kept local:", keptLocalPhotos.length);
         console.log("[photos] total after persist:", (mappedMedia.length + keptLocalPhotos.length));
         await persistPhotos([...mappedMedia, ...keptLocalPhotos]);
+        // Always replace remote tasks for this project (even with empty list,
+        // so server-side deletions propagate); keep tasks for other projects
+        // and local-only tmp- rows for this project that are still mid-create.
+        // DO NOT use mergeById here — it assumes `incoming` is the FULL
+        // backend list and would drop every remote task from other projects.
         const mappedTasks = (detail.tasks ?? []).map(mapBackendTask);
-        if (mappedTasks.length) {
-          await persistTasks(mergeById(tasksRef.current, mappedTasks));
-        }
+        const keptOtherTasks = tasksRef.current.filter(
+          (t) => t.projectId !== idStr,
+        );
+        const keptLocalTasksForProject = tasksRef.current.filter(
+          (t) => t.projectId === idStr && !t.remote,
+        );
+        setTasksList([
+          ...keptOtherTasks,
+          ...mappedTasks,
+          ...keptLocalTasksForProject,
+        ]);
       } catch (e) {
         if (e instanceof ApiError && e.status === 404) return; // silently ignore
         if (!(e instanceof ApiError && e.status === 401)) {
@@ -277,7 +344,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         }
       }
     },
-    [user, persistProjects, persistPhotos, persistTasks],
+    [user, persistProjects, persistPhotos, setTasksList],
   );
 
   const createProject: DataState["createProject"] = useCallback(
@@ -325,7 +392,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     async (id) => {
       await persistProjects(projects.filter((p) => p.id !== id));
       await persistPhotos(photos.filter((p) => p.projectId !== id));
-      await persistTasks(tasks.filter((t) => t.projectId !== id));
+      setTasksList(tasks.filter((t) => t.projectId !== id));
     },
     [
       projects,
@@ -333,7 +400,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       tasks,
       persistProjects,
       persistPhotos,
-      persistTasks,
+      setTasksList,
     ],
   );
 
@@ -514,36 +581,177 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   );
 
   const createTask: DataState["createTask"] = useCallback(
-    async (projectId, title, notes, assignee) => {
-      const task: Task = {
-        id: newId(),
+    async (projectId, input) => {
+      const tmpId = `tmp-${newId()}`;
+      const trimmedTitle = input.title.trim();
+      const trimmedDesc = input.description?.trim() || undefined;
+      const optimistic: Task = {
+        id: tmpId,
         projectId,
-        title: title.trim(),
-        notes: notes?.trim() || undefined,
-        assignee: assignee?.trim() || undefined,
+        title: trimmedTitle,
+        notes: trimmedDesc,
         done: false,
+        status: "todo",
+        priority: input.priority,
+        assignedToId: input.assignedToId ?? undefined,
+        assignedToName: input.assignedToName,
+        dueDate: input.dueDate,
         createdAt: new Date().toISOString(),
+        // Intentionally NOT remote=true — the row is local until the
+        // POST resolves. mergeById preserves it across refreshes during
+        // that window.
       };
-      await persistTasks([task, ...tasks]);
-      return task;
+      setTasksList([optimistic, ...tasksRef.current]);
+      try {
+        const backend = await api.createTask(projectId, {
+          title: trimmedTitle,
+          description: trimmedDesc ?? null,
+          priority: input.priority ?? null,
+          assignedToId: input.assignedToId ?? null,
+          dueDate: input.dueDate ?? null,
+        });
+        const mapped = mapBackendTask(backend);
+        // Preserve the picker-supplied display name if the server's
+        // response didn't include the join.
+        const final: Task = {
+          ...mapped,
+          assignedToName: mapped.assignedToName ?? input.assignedToName,
+        };
+        setTasksList(
+          tasksRef.current.map((t) => (t.id === tmpId ? final : t)),
+        );
+        return final;
+      } catch (err) {
+        setTasksList(tasksRef.current.filter((t) => t.id !== tmpId));
+        throw err;
+      }
     },
-    [tasks, persistTasks],
+    [setTasksList],
+  );
+
+  const updateTask: DataState["updateTask"] = useCallback(
+    async (id, patch) => {
+      const before = tasksRef.current.find((t) => t.id === id);
+      if (!before) {
+        throw new Error(`updateTask: no task with id "${id}"`);
+      }
+      // Don't try to PATCH a row that's still mid-create (no server id yet).
+      if (id.startsWith("tmp-")) {
+        throw new Error("Task is still being created — try again in a moment.");
+      }
+
+      const version = bumpTaskVersion(id);
+
+      // Build the optimistic merge. `null` in patch means "clear" —
+      // map that to undefined for the local Task model.
+      const merged: Task = { ...before };
+      if (patch.title !== undefined) merged.title = patch.title;
+      if (patch.description !== undefined) {
+        merged.notes = patch.description ?? undefined;
+      }
+      if (patch.status !== undefined) {
+        merged.status = patch.status;
+        merged.done = patch.status === "done";
+      }
+      if (patch.priority !== undefined) {
+        merged.priority = patch.priority ?? undefined;
+      }
+      if (patch.assignedToId !== undefined) {
+        merged.assignedToId = patch.assignedToId ?? undefined;
+        // Clearing the id also clears the cached display name.
+        if (patch.assignedToId === null) {
+          merged.assignedToName = undefined;
+        }
+      }
+      if (patch.assignedToName !== undefined) {
+        merged.assignedToName = patch.assignedToName ?? undefined;
+      }
+      if (patch.dueDate !== undefined) {
+        merged.dueDate = patch.dueDate ?? undefined;
+      }
+      setTasksList(
+        tasksRef.current.map((t) => (t.id === id ? merged : t)),
+      );
+
+      try {
+        // Wire patch — strip our local-only `assignedToName` field and
+        // mirror the explicit-null semantics for clears.
+        const wirePatch: Parameters<typeof api.updateTask>[1] = {};
+        if (patch.title !== undefined) wirePatch.title = patch.title;
+        if (patch.description !== undefined)
+          wirePatch.description = patch.description;
+        if (patch.status !== undefined) wirePatch.status = patch.status;
+        if (patch.priority !== undefined) wirePatch.priority = patch.priority;
+        if (patch.assignedToId !== undefined)
+          wirePatch.assignedToId = patch.assignedToId;
+        if (patch.dueDate !== undefined) wirePatch.dueDate = patch.dueDate;
+
+        const backend = await api.updateTask(id, wirePatch);
+        // A newer write came in while we were waiting — drop the
+        // response so we don't clobber it.
+        if (getTaskVersion(id) !== version) return;
+        const mapped = mapBackendTask(backend);
+        const final: Task = {
+          ...mapped,
+          assignedToName:
+            mapped.assignedToName ??
+            (patch.assignedToName !== undefined
+              ? patch.assignedToName ?? undefined
+              : merged.assignedToName),
+        };
+        setTasksList(
+          tasksRef.current.map((t) => (t.id === id ? final : t)),
+        );
+      } catch (err) {
+        // Only revert if no newer write has happened in the meantime —
+        // otherwise the newer optimistic state is already correct.
+        if (getTaskVersion(id) === version) {
+          setTasksList(
+            tasksRef.current.map((t) => (t.id === id ? before : t)),
+          );
+        }
+        throw err;
+      }
+    },
+    [setTasksList, bumpTaskVersion, getTaskVersion],
   );
 
   const toggleTask: DataState["toggleTask"] = useCallback(
     async (id) => {
-      await persistTasks(
-        tasks.map((t) => (t.id === id ? { ...t, done: !t.done } : t)),
-      );
+      const current = tasksRef.current.find((t) => t.id === id);
+      if (!current) return;
+      const nextStatus: TaskStatus =
+        current.status === "done" ? "todo" : "done";
+      await updateTask(id, { status: nextStatus });
     },
-    [tasks, persistTasks],
+    [updateTask],
   );
 
   const deleteTask: DataState["deleteTask"] = useCallback(
     async (id) => {
-      await persistTasks(tasks.filter((t) => t.id !== id));
+      const before = tasksRef.current;
+      const beforeIndex = before.findIndex((t) => t.id === id);
+      if (beforeIndex === -1) return;
+      // Local-only tmp- rows (mid-create) never made it to the server,
+      // so just drop them locally.
+      if (id.startsWith("tmp-")) {
+        setTasksList(before.filter((t) => t.id !== id));
+        return;
+      }
+      // Optimistic remove.
+      setTasksList(before.filter((t) => t.id !== id));
+      try {
+        await api.deleteTask(id);
+      } catch (err) {
+        // Restore at original position so list ordering is preserved.
+        const restored = [...tasksRef.current];
+        const insertAt = Math.min(beforeIndex, restored.length);
+        restored.splice(insertAt, 0, before[beforeIndex]);
+        setTasksList(restored);
+        throw err;
+      }
     },
-    [tasks, persistTasks],
+    [setTasksList],
   );
 
   const clearAll: DataState["clearAll"] = useCallback(async () => {
@@ -554,12 +762,13 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     await Promise.all([
       persistProjects([]),
       persistPhotos([]),
-      persistTasks([]),
       clearUploadQueueAll().catch(() => {}),
     ]);
+    setTasksList([]);
+    taskVersionsRef.current.clear();
     setSyncError(null);
     lastSyncRef.current = 0;
-  }, [persistProjects, persistPhotos, persistTasks]);
+  }, [persistProjects, persistPhotos, setTasksList]);
 
   const value = useMemo<DataState>(
     () => ({
@@ -579,6 +788,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       deletePhoto,
       updatePhoto,
       createTask,
+      updateTask,
       toggleTask,
       deleteTask,
       clearAll,
@@ -600,6 +810,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       deletePhoto,
       updatePhoto,
       createTask,
+      updateTask,
       toggleTask,
       deleteTask,
       clearAll,

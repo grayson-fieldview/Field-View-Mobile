@@ -366,13 +366,35 @@ export interface BackendMedia {
   createdAt: string;
 }
 
+/** Task status enum — mirrors the postgres `tasks.status` enum exactly. */
+export type BackendTaskStatus = "todo" | "in_progress" | "done";
+
+/** Task priority enum — mirrors the postgres `tasks.priority` enum exactly. */
+export type BackendTaskPriority = "low" | "medium" | "high";
+
 export interface BackendTask {
   id: number | string;
   projectId: number | string;
   title: string;
   description?: string | null;
-  status?: string | null;
-  priority?: string | null;
+  status?: BackendTaskStatus | null;
+  priority?: BackendTaskPriority | null;
+  /** Single nullable FK to users.id. Server name is `assignedToId`. */
+  assignedToId?: string | null;
+  /** User id of the creator. Server-stamped on POST; never accepted from clients. */
+  createdById?: string | null;
+  /**
+   * Server-joined display fields for the assignee. Present on GET
+   * responses; may or may not be present on POST/PATCH responses
+   * depending on backend serializer. Mappers fall back to the
+   * optimistic display name passed by the picker when this is absent.
+   */
+  assignedTo?: {
+    id?: string;
+    firstName?: string | null;
+    lastName?: string | null;
+    email?: string | null;
+  } | null;
   dueDate?: string | null;
   createdAt: string;
   updatedAt?: string;
@@ -619,6 +641,56 @@ export const api = {
     ),
 
   tasks: () => apiFetch<BackendTask[]>("/api/tasks"),
+
+  /**
+   * Create a task on a project. Server stamps `createdById` from the
+   * session and defaults `status` to "todo" — clients must NOT send
+   * either field. Returns the created BackendTask (with joined
+   * `assignedTo` if `assignedToId` was provided).
+   */
+  createTask: (
+    projectId: string | number,
+    input: {
+      title: string;
+      description?: string | null;
+      priority?: BackendTaskPriority | null;
+      assignedToId?: string | null;
+      dueDate?: string | null;
+    },
+  ) =>
+    apiFetch<BackendTask>(`/api/projects/${projectId}/tasks`, {
+      method: "POST",
+      json: input,
+    }),
+
+  /**
+   * Patch a task. Server-side whitelist (anything else is silently
+   * dropped): title, description, status, priority, assignedToId,
+   * dueDate. Pass `null` to explicitly clear assignee / due date /
+   * description / priority.
+   */
+  updateTask: (
+    taskId: string | number,
+    patch: Partial<{
+      title: string;
+      description: string | null;
+      status: BackendTaskStatus;
+      priority: BackendTaskPriority | null;
+      assignedToId: string | null;
+      dueDate: string | null;
+    }>,
+  ) =>
+    apiFetch<BackendTask>(`/api/tasks/${taskId}`, {
+      method: "PATCH",
+      json: patch,
+    }),
+
+  /** Delete a task. Server returns 204 No Content on success. */
+  deleteTask: (taskId: string | number) =>
+    apiFetch<void>(`/api/tasks/${taskId}`, {
+      method: "DELETE",
+      allowEmptyBody: true,
+    }),
 
   // ----- Timesheets (manual clock-in/out) -----
   activeTimesheet: () =>

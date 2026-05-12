@@ -101,17 +101,39 @@ export interface Photo {
   annotations?: AnnotationStroke[];
 }
 
+/** Task status — mirrors the server enum exactly (tasks.status). */
+export type TaskStatus = "todo" | "in_progress" | "done";
+
+/** Task priority — mirrors the server enum exactly (tasks.priority). */
+export type TaskPriority = "low" | "medium" | "high";
+
 export interface Task {
   id: string;
   projectId: string;
   title: string;
+  /** Maps to BackendTask.description on the wire. */
   notes?: string;
+  /**
+   * Convenience derived from `status === "done"` so legacy callers
+   * (checkbox UIs) don't have to know the enum. Always populated by
+   * mapBackendTask + by the optimistic createTask path.
+   */
   done: boolean;
+  status?: TaskStatus;
+  priority?: TaskPriority;
+  /** User id of the assignee (single, nullable; FK to users.id). */
+  assignedToId?: string;
+  /**
+   * Display name joined server-side from the assignee user row.
+   * On optimistic create/update this is set from the picker so the
+   * row renders the right name before the PATCH response lands.
+   */
+  assignedToName?: string;
+  /** User id of the creator (server-stamped). */
+  createdById?: string;
   dueDate?: string;
   createdAt: string;
   remote?: boolean;
-  /** Display name of the person assigned to this task. Mobile-local for now. */
-  assignee?: string;
 }
 
 // Legacy local-only Checklist / ChecklistItem types removed in the v2
