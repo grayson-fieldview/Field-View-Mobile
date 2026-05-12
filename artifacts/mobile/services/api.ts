@@ -662,6 +662,15 @@ export interface DeleteAccountResponse {
   message?: string;
 }
 
+/**
+ * Response from POST /api/projects/:id/share. Server mints (or
+ * returns the existing) public share token for the project. The
+ * recipient-facing URL is `https://app.field-view.com/p/<token>`.
+ */
+export interface BackendShareTokenResponse {
+  shareToken: string;
+}
+
 // ----- Endpoint wrappers -----
 export const api = {
   base: API_BASE_URL,
@@ -772,6 +781,26 @@ export const api = {
   /** Delete a task. Server returns 204 No Content on success. */
   deleteTask: (taskId: string | number) =>
     apiFetch<void>(`/api/tasks/${taskId}`, {
+      method: "DELETE",
+      allowEmptyBody: true,
+    }),
+
+  // ----- Project public share tokens -----
+  /**
+   * Mint (or fetch the existing) public share token for a project.
+   * The recipient-facing URL is `https://app.field-view.com/p/<token>`,
+   * which renders the public read-only project page on the web app.
+   * Server is idempotent: calling twice returns the same token.
+   */
+  shareProject: (projectId: string | number) =>
+    apiFetch<BackendShareTokenResponse>(
+      `/api/projects/${projectId}/share`,
+      { method: "POST" },
+    ),
+
+  /** Revoke the current public share token. Server returns 204. */
+  unshareProject: (projectId: string | number) =>
+    apiFetch<void>(`/api/projects/${projectId}/share`, {
       method: "DELETE",
       allowEmptyBody: true,
     }),

@@ -455,23 +455,29 @@ export default function ProjectDetailScreen() {
     setSelected(new Set());
   };
 
-  const onSharePhotos = async () => {
-    const ids = Array.from(selected);
-    if (ids.length === 0) return;
-    // NOTE: We currently reuse the API host for share links because API and
-    // public web app are co-hosted at app.field-view.com. If we ever split
-    // them onto separate domains (e.g., api.field-view.com), introduce a
-    // separate EXPO_PUBLIC_WEB_URL env var.
-    const baseUrl = (process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://app.field-view.com").replace(/\/+$/, "");
-    const url = `${baseUrl}/share/project/${project!.id}?photos=${ids.join(",")}`;
+  const onShareProject = async () => {
+    if (!project) return;
+    // Project-level public share. Mint (or fetch existing) token
+    // first; only open the share sheet on success.
+    let token: string;
     try {
-      await Share.share(
-        {
-          url,
-          message: `${project!.name} — ${ids.length} photo${ids.length === 1 ? "" : "s"}\n${url}`,
-        },
-        { subject: `${project!.name} — Field View photos` },
-      );
+      const res = await api.shareProject(project.id);
+      token = res.shareToken;
+    } catch {
+      showToast("Couldn't generate share link");
+      return;
+    }
+    // Hard-coded public web origin (NOT EXPO_PUBLIC_API_BASE_URL):
+    // recipients open the link in Safari, so it must always point
+    // at the public marketing/web host regardless of which API base
+    // the build was pinned to.
+    const shareUrl = `https://app.field-view.com/p/${token}`;
+    showToast("Share link ready");
+    try {
+      // url-only — passing both `url` and `message` causes iMessage
+      // to render two link previews plus the body text. Keeping it
+      // minimal is the fix for the double-preview bug.
+      await Share.share({ url: shareUrl });
     } catch {
       /* user cancelled */
     }
@@ -667,16 +673,15 @@ export default function ProjectDetailScreen() {
               <Text style={styles.heroBackTxt}>Projects</Text>
             </Pressable>
             <View style={{ flexDirection: "row", gap: 8 }}>
-              {selected.size > 0 ? (
-                <Pressable
-                  onPress={onSharePhotos}
-                  hitSlop={10}
-                  accessibilityLabel={`Share ${selected.size} selected photo${selected.size === 1 ? "" : "s"}`}
-                  style={styles.heroIconBtn}
-                >
-                  <Feather name="share-2" size={16} color="#fff" />
-                </Pressable>
-              ) : null}
+              <Pressable
+                onPress={onShareProject}
+                hitSlop={10}
+                accessibilityRole="button"
+                accessibilityLabel="Share project"
+                style={styles.heroIconBtn}
+              >
+                <Feather name="share-2" size={16} color="#fff" />
+              </Pressable>
               <Pressable
                 onPress={() => setShowProjectMenu(true)}
                 hitSlop={10}
