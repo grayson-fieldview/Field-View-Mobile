@@ -3,7 +3,6 @@ import type {
   Checklist,
   Photo,
   Project,
-  ShareLink,
   Task,
   User,
 } from "./types";
@@ -20,14 +19,16 @@ const KEYS = {
   photos: "@fv/photos",
   tasks: "@fv/tasks",
   checklists: "@fv/checklists",
-  shares: "@fv/shares",
   // Preferences. Read/written directly by services/preferences.ts
   // (tri-state, can't use the binary getFlag/setFlag wrappers below).
   // Listed here to keep the @fv/ namespace registry in one place.
   prefs_autoTracking: "@fv/prefs/autoTracking",
 } as const;
 
-const LEGACY_KEYS = ["@fv/projects"] as const;
+// Orphaned cache keys to remove on every app start. `@fv/shares` is the
+// dropped fake-share-link cache from the pre-real-invites era — leave
+// it in this list for a release or two so existing installs purge it.
+const LEGACY_KEYS = ["@fv/projects", "@fv/shares"] as const;
 
 async function readJson<T>(key: string, fallback: T): Promise<T> {
   try {
@@ -65,9 +66,6 @@ export const storage = {
 
   getChecklists: () => readJson<Checklist[]>(KEYS.checklists, []),
   setChecklists: (c: Checklist[]) => writeJson(KEYS.checklists, c),
-
-  getShares: () => readJson<ShareLink[]>(KEYS.shares, []),
-  setShares: (s: ShareLink[]) => writeJson(KEYS.shares, s),
 
   clearSession: async () => {
     await AsyncStorage.multiRemove([KEYS.user, KEYS.authToken]);

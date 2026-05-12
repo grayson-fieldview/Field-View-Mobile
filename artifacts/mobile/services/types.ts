@@ -118,12 +118,4 @@ export interface Checklist {
   createdAt: string;
 }
 
-export interface ShareLink {
-  id: string;
-  projectId: string;
-  recipientEmail: string;
-  url: string;
-  createdAt: string;
-}
-
 export type Id = string;

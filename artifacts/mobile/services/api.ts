@@ -259,6 +259,8 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
 }
 
 // ----- Types returned by the backend -----
+export type UserRole = "admin" | "manager" | "standard" | "restricted";
+
 export interface BackendUser {
   id: string | number;
   email: string;
@@ -268,6 +270,13 @@ export interface BackendUser {
   /** Owner flag from /api/auth/user (web backend, deployed 2026-04-28). */
   isOwner?: boolean;
   /**
+   * Account role (web backend Team rework, 2026-05). Used to gate the
+   * "Add team member" button (admin-only) and to hide admin-only
+   * surfaces from non-admins. Optional because pre-rework user rows
+   * may not yet carry the field; absent → treated as non-admin.
+   */
+  role?: UserRole;
+  /**
    * Auto clock-in/out master switch (S33). Server is authoritative.
    * Mobile mirrors to AsyncStorage via services/preferences so the
    * geofence background task (which has no React context) can read it.
@@ -275,6 +284,46 @@ export interface BackendUser {
    */
   autoTrackingEnabled?: boolean;
   [key: string]: unknown;
+}
+
+/**
+ * Pending team invitation. Server creates the row in /api/invitations and
+ * sends the invite email; the row stays `status: "pending"` until the
+ * recipient accepts (becoming a real user) or the row is cancelled.
+ *
+ * `assignedProjectIds` is only meaningful when role === "restricted" —
+ * the server scopes the future user's project visibility to this list.
+ * For other roles the array is ignored / not sent.
+ */
+export interface BackendInvitation {
+  id: string | number;
+  email: string;
+  firstName: string;
+  lastName: string;
+  role: UserRole;
+  token: string;
+  status: "pending" | "accepted" | "cancelled" | "expired";
+  expiresAt: string;
+  createdAt: string;
+  accountId: string;
+  invitedById: string;
+}
+
+/**
+ * One row of the per-project team list returned by
+ * /api/projects/:id/assignments. Joins the assignment record with the
+ * user fields needed to render a member row (avatar, name, email,
+ * role badge) without a second round-trip.
+ */
+export interface BackendProjectAssignment {
+  id: string | number;
+  userId: string;
+  projectId: number | string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  avatarUrl?: string | null;
+  role: UserRole;
 }
 
 export interface BackendProject {
@@ -758,6 +807,71 @@ export const api = {
       { method: "POST", json: body },
     );
   },
+
+  // ----- Team / invitations (web rework, 2026-05) -----
+
+  /** All pending invitations for the current account (admin scope). */
+  listInvitations: () =>
+    apiFetch<BackendInvitation[]>("/api/invitations"),
+
+  /**
+   * Send a team invite. The server creates an `invitations` row, emails
+   * the recipient an accept link, and (when role === "restricted") writes
+   * the assignedProjectIds onto the row so the future user is project-
+   * scoped on accept.
+   *
+   * `assignedProjectIds` is sent ONLY when role === "restricted" — the
+   * server 400s if it's present for other roles, and ignores it if
+   * empty. Caller is responsible for the role-conditional include.
+   *
+   * Known server error codes the modal handles inline:
+   *   409 trial_cap_reached     — account on free trial, hit user cap
+   *   409 no_seats_available    — paid plan, all seats consumed
+   *   409 duplicate ("already been sent") — pending invite for this email
+   *   403                       — caller isn't allowed to invite at this role
+   *   400                       — missing/invalid fields
+   */
+  createInvitation: (input: {
+    email: string;
+    firstName: string;
+    lastName: string;
+    role: UserRole;
+    assignedProjectIds?: number[];
+  }) =>
+    apiFetch<BackendInvitation>("/api/invitations", {
+      method: "POST",
+      json: input,
+    }),
+
+  /** Cancel a pending invitation (admin only on the server). */
+  cancelInvitation: (id: string | number) =>
+    apiFetch<void>(`/api/invitations/${id}`, {
+      method: "DELETE",
+      allowEmptyBody: true,
+    }),
+
+  /** Real "who has access to this project" list. Replaces the local-only ShareLink cache. */
+  listProjectAssignments: (projectId: string | number) =>
+    apiFetch<BackendProjectAssignment[]>(
+      `/api/projects/${projectId}/assignments`,
+    ),
+
+  /** Grant an existing user access to a project (restricted-role assignment edit). */
+  assignUserToProject: (projectId: string | number, userId: string) =>
+    apiFetch<BackendProjectAssignment>(
+      `/api/projects/${projectId}/assignments`,
+      { method: "POST", json: { userId } },
+    ),
+
+  /**
+   * Remove a user from a project. Their account isn't deleted — they
+   * just lose access to this one project. UX copy mirrors that distinction.
+   */
+  unassignUserFromProject: (projectId: string | number, userId: string) =>
+    apiFetch<void>(
+      `/api/projects/${projectId}/assignments/${userId}`,
+      { method: "DELETE", allowEmptyBody: true },
+    ),
 };
 
 /** Normalize the various user shapes the backend might return. */

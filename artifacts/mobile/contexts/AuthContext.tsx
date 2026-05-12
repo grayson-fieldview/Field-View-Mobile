@@ -16,6 +16,7 @@ import {
   loadSession,
   normalizeUser,
   type BackendUser,
+  type UserRole,
 } from "@/services/api";
 import { autoTrackingPref } from "@/services/preferences";
 import {
@@ -33,6 +34,12 @@ export interface AuthUser {
   name: string;
   /** True when this user owns their account (can delete the whole account). */
   isOwner: boolean;
+  /**
+   * Account role from the web backend. `null` when the server didn't
+   * return a role (legacy user rows pre-Team-rework). All admin-only
+   * UI must treat `null` as non-admin.
+   */
+  role: UserRole | null;
   /**
    * Auto clock-in/out master switch (S33). Default true on null/missing
    * from the server. Mirrored to AsyncStorage via autoTrackingPref so
@@ -58,6 +65,11 @@ function toAuthUser(raw: BackendUser | null): AuthUser | null {
   const first = raw.firstName ?? "";
   const last = raw.lastName ?? "";
   const combined = `${first} ${last}`.trim();
+  const validRoles: UserRole[] = ["admin", "manager", "standard", "restricted"];
+  const role: UserRole | null =
+    typeof raw.role === "string" && (validRoles as string[]).includes(raw.role)
+      ? (raw.role as UserRole)
+      : null;
   return {
     id: String(raw.id),
     email: String(raw.email),
@@ -65,6 +77,7 @@ function toAuthUser(raw: BackendUser | null): AuthUser | null {
     lastName: raw.lastName,
     name: raw.name ? String(raw.name) : combined || String(raw.email),
     isOwner: raw.isOwner === true,
+    role,
     autoTrackingEnabled: raw.autoTrackingEnabled !== false,
   };
 }

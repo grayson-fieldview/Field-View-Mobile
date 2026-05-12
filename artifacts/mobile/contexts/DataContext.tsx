@@ -23,7 +23,6 @@ import type {
   ChecklistItem,
   Photo,
   Project,
-  ShareLink,
   Task,
 } from "@/services/types";
 import {
@@ -46,7 +45,6 @@ interface DataState {
   photos: Photo[];
   tasks: Task[];
   checklists: Checklist[];
-  shares: ShareLink[];
   ready: boolean;
   syncing: boolean;
   syncError: string | null;
@@ -91,11 +89,6 @@ interface DataState {
   ) => Promise<void>;
   deleteChecklist: (id: string) => Promise<void>;
 
-  createShare: (
-    projectId: string,
-    recipientEmail: string,
-  ) => Promise<ShareLink>;
-  revokeShare: (id: string) => Promise<void>;
   /** Wipe all local data (used by account-deletion / leave-team flows). */
   clearAll: () => Promise<void>;
 }
@@ -122,7 +115,6 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [checklists, setChecklists] = useState<Checklist[]>([]);
-  const [shares, setShares] = useState<ShareLink[]>([]);
   const [ready, setReady] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -134,18 +126,16 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       // projects key that could be left in a truncated state by an older
       // build of loadProjectDetail). Fire-and-forget; failures are harmless.
       storage.pruneLegacyKeys();
-      const [p, ph, ts, cl, sh] = await Promise.all([
+      const [p, ph, ts, cl] = await Promise.all([
         storage.getProjects(),
         storage.getPhotos(),
         storage.getTasks(),
         storage.getChecklists(),
-        storage.getShares(),
       ]);
       setProjects(p);
       setPhotos(ph);
       setTasks(ts);
       setChecklists(cl);
-      setShares(sh);
       setReady(true);
     })();
   }, []);
@@ -165,10 +155,6 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const persistChecklists = useCallback(async (next: Checklist[]) => {
     setChecklists(next);
     await storage.setChecklists(next);
-  }, []);
-  const persistShares = useCallback(async (next: ShareLink[]) => {
-    setShares(next);
-    await storage.setShares(next);
   }, []);
 
   // --- Backend sync ---
@@ -361,19 +347,16 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       await persistPhotos(photos.filter((p) => p.projectId !== id));
       await persistTasks(tasks.filter((t) => t.projectId !== id));
       await persistChecklists(checklists.filter((c) => c.projectId !== id));
-      await persistShares(shares.filter((s) => s.projectId !== id));
     },
     [
       projects,
       photos,
       tasks,
       checklists,
-      shares,
       persistProjects,
       persistPhotos,
       persistTasks,
       persistChecklists,
-      persistShares,
     ],
   );
 
@@ -615,31 +598,6 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     [checklists, persistChecklists],
   );
 
-  const createShare: DataState["createShare"] = useCallback(
-    async (projectId, recipientEmail) => {
-      const s: ShareLink = {
-        id: newId(),
-        projectId,
-        recipientEmail: recipientEmail.trim().toLowerCase(),
-        // NOTE: We reuse the API host for share links because API and public
-        // web app are co-hosted at app.field-view.com. If they ever split
-        // onto separate domains, introduce a separate EXPO_PUBLIC_WEB_URL.
-        url: `${(process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://app.field-view.com").replace(/\/+$/, "")}/share/${newId()}`,
-        createdAt: new Date().toISOString(),
-      };
-      await persistShares([s, ...shares]);
-      return s;
-    },
-    [shares, persistShares],
-  );
-
-  const revokeShare: DataState["revokeShare"] = useCallback(
-    async (id) => {
-      await persistShares(shares.filter((s) => s.id !== id));
-    },
-    [shares, persistShares],
-  );
-
   const clearAll: DataState["clearAll"] = useCallback(async () => {
     // Wipe in-memory + persisted local data. Used by account-deletion and
     // leave-team flows to ensure a deleted user's data doesn't linger and
@@ -650,12 +608,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       persistPhotos([]),
       persistTasks([]),
       persistChecklists([]),
-      persistShares([]),
       clearUploadQueueAll().catch(() => {}),
     ]);
     setSyncError(null);
     lastSyncRef.current = 0;
-  }, [persistProjects, persistPhotos, persistTasks, persistChecklists, persistShares]);
+  }, [persistProjects, persistPhotos, persistTasks, persistChecklists]);
 
   const value = useMemo<DataState>(
     () => ({
@@ -663,7 +620,6 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       photos,
       tasks,
       checklists,
-      shares,
       ready,
       syncing,
       syncError,
@@ -682,8 +638,6 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       createChecklist,
       toggleChecklistItem,
       deleteChecklist,
-      createShare,
-      revokeShare,
       clearAll,
     }),
     [
@@ -691,7 +645,6 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       photos,
       tasks,
       checklists,
-      shares,
       ready,
       syncing,
       syncError,
@@ -710,8 +663,6 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       createChecklist,
       toggleChecklistItem,
       deleteChecklist,
-      createShare,
-      revokeShare,
       clearAll,
     ],
   );

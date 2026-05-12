@@ -25,17 +25,19 @@ import Animated, {
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { AddTeamMemberModal } from "@/components/AddTeamMemberModal";
 import { Button } from "@/components/Button";
 import { ClockReceiptBanner } from "@/components/ClockReceiptBanner";
 import { EmptyState } from "@/components/EmptyState";
 import { Input } from "@/components/Input";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
+import { useAuth } from "@/contexts/AuthContext";
 import { useData } from "@/contexts/DataContext";
 import { useTimesheet, type TimesheetState } from "@/contexts/TimesheetContext";
 import { useToast } from "@/contexts/ToastContext";
 import { useUploadStatus } from "@/contexts/UploadStatusContext";
 import { useColors } from "@/hooks/useColors";
-import { api, ApiError } from "@/services/api";
+import { api, ApiError, type BackendProjectAssignment } from "@/services/api";
 import {
   removeItem as removeUploadQueueItem,
   retryItem as retryUploadQueueItem,
@@ -64,7 +66,6 @@ export default function ProjectDetailScreen() {
     photos,
     tasks,
     checklists,
-    shares,
     deleteProject,
     createTask,
     toggleTask,
@@ -72,11 +73,11 @@ export default function ProjectDetailScreen() {
     createChecklist,
     toggleChecklistItem,
     deleteChecklist,
-    createShare,
-    revokeShare,
     deletePhoto,
     loadProjectDetail,
   } = useData();
+  const { user: currentUser } = useAuth();
+  const isAdmin = currentUser?.role === "admin";
 
   // When opening a project that originated from the backend, pull its latest
   // photos / tasks / checklists so the tabs aren't empty.
@@ -100,15 +101,70 @@ export default function ProjectDetailScreen() {
     () => checklists.filter((c) => c.projectId === id),
     [checklists, id],
   );
-  const projectShares = useMemo(
-    () => shares.filter((s) => s.projectId === id),
-    [shares, id],
-  );
+  // Real per-project team list (replaces the local-only ShareLink cache).
+  // Loaded on demand when the Team tab is opened — no point pinging the
+  // server for assignments the user may never view. Refreshed after a
+  // successful invite or remove so the list stays in sync without a
+  // full screen refresh.
+  const [assignments, setAssignments] = useState<BackendProjectAssignment[]>([]);
+  const [assignmentsLoading, setAssignmentsLoading] = useState(false);
+  const [assignmentsError, setAssignmentsError] = useState<string | null>(null);
 
   const [tab, setTab] = useState<TabKey>("photos");
   const [showTaskModal, setShowTaskModal] = useState(false);
   const [showChecklistModal, setShowChecklistModal] = useState(false);
-  const [showShareModal, setShowShareModal] = useState(false);
+  const [showAddMemberModal, setShowAddMemberModal] = useState(false);
+
+  const refreshAssignments = useCallback(async () => {
+    if (!id) return;
+    setAssignmentsLoading(true);
+    setAssignmentsError(null);
+    try {
+      const rows = await api.listProjectAssignments(id);
+      setAssignments(Array.isArray(rows) ? rows : []);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) return;
+      setAssignmentsError(
+        e instanceof Error ? e.message : "Couldn't load team members.",
+      );
+    } finally {
+      setAssignmentsLoading(false);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    if (tab !== "team") return;
+    void refreshAssignments();
+  }, [tab, refreshAssignments]);
+
+  const removeMember = useCallback(
+    (member: BackendProjectAssignment) => {
+      const fullName = `${member.firstName} ${member.lastName}`.trim() || member.email;
+      Alert.alert(
+        `Remove ${fullName} from this project?`,
+        "Their account is not deleted — they just lose access to this project.",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Remove",
+            style: "destructive",
+            onPress: async () => {
+              try {
+                await api.unassignUserFromProject(id, member.userId);
+                showToast(`${fullName} removed`);
+                await refreshAssignments();
+              } catch (e) {
+                showToast(
+                  e instanceof Error ? e.message : "Couldn't remove member.",
+                );
+              }
+            },
+          },
+        ],
+      );
+    },
+    [id, refreshAssignments, showToast],
+  );
 
   // ----- Clock-in receipt banner (S31b) -----
   // Visible iff (a) the screen was deep-linked from a notification
@@ -733,7 +789,7 @@ export default function ProjectDetailScreen() {
                 label: "Checklists",
                 count: projectChecklists.length,
               },
-              { key: "team", label: "Team", count: projectShares.length },
+              { key: "team", label: "Team", count: assignments.length },
             ] as { key: TabKey; label: string; count: number }[]
           ).map((t) => {
             const active = tab === t.key;
@@ -1151,16 +1207,50 @@ export default function ProjectDetailScreen() {
 
         {tab === "team" ? (
           <View style={styles.body}>
-            {projectShares.length === 0 ? (
+            {assignmentsLoading && assignments.length === 0 ? (
+              <View style={{ paddingVertical: 32, alignItems: "center" }}>
+                <ActivityIndicator color={colors.mutedForeground} />
+              </View>
+            ) : assignmentsError ? (
+              <View style={{ gap: 10 }}>
+                <Text
+                  style={{
+                    color: colors.destructive,
+                    fontFamily: "Inter_500Medium",
+                    fontSize: 14,
+                  }}
+                >
+                  {assignmentsError}
+                </Text>
+                <Button
+                  title="Retry"
+                  variant="secondary"
+                  onPress={() => void refreshAssignments()}
+                />
+              </View>
+            ) : assignments.length === 0 ? (
               <EmptyState
                 icon="users"
                 title="No team members yet"
-                description="Invite a teammate or client by email to give them access to this project."
+                description={
+                  isAdmin
+                    ? "Invite a teammate to give them access to this project."
+                    : "Ask an admin to invite teammates to this project."
+                }
                 action={
-                  <Button
-                    title="Add user"
-                    onPress={() => setShowShareModal(true)}
-                  />
+                  isAdmin ? (
+                    <Button
+                      title="Add team member"
+                      icon={
+                        <Feather
+                          name="user-plus"
+                          size={14}
+                          color={colors.primaryForeground}
+                        />
+                      }
+                      onPress={() => setShowAddMemberModal(true)}
+                    />
+                  ) : undefined
                 }
               />
             ) : (
@@ -1175,21 +1265,20 @@ export default function ProjectDetailScreen() {
                     marginBottom: 2,
                   }}
                 >
-                  Has access ({projectShares.length})
+                  Has access ({assignments.length})
                 </Text>
-                {projectShares.map((s) => {
-                  const initials = s.recipientEmail
-                    .split("@")[0]
-                    .split(/[._-]+/)
-                    .filter(Boolean)
-                    .slice(0, 2)
-                    .map((p) => p[0]?.toUpperCase() ?? "")
-                    .join("");
+                {assignments.map((m) => {
+                  const fullName =
+                    `${m.firstName ?? ""} ${m.lastName ?? ""}`.trim() ||
+                    m.email;
+                  const initials =
+                    `${(m.firstName ?? "")[0] ?? ""}${(m.lastName ?? "")[0] ?? ""}`.toUpperCase() ||
+                    (m.email[0]?.toUpperCase() ?? "?");
                   return (
                     <View
-                      key={s.id}
+                      key={String(m.id)}
                       style={[
-                        styles.shareCard,
+                        styles.memberCard,
                         {
                           backgroundColor: colors.card,
                           borderColor: colors.border,
@@ -1214,55 +1303,59 @@ export default function ProjectDetailScreen() {
                             fontSize: 13,
                           }}
                         >
-                          {initials || "?"}
+                          {initials}
                         </Text>
                       </View>
                       <View style={{ flex: 1 }}>
                         <Text
                           style={[
-                            styles.shareEmail,
+                            styles.memberName,
                             { color: colors.foreground },
                           ]}
                           numberOfLines={1}
                         >
-                          {s.recipientEmail}
+                          {fullName}
                         </Text>
                         <Text
                           style={[
-                            styles.shareUrl,
+                            styles.memberSub,
                             { color: colors.mutedForeground },
                           ]}
                           numberOfLines={1}
                         >
-                          Can view photos, tasks &amp; checklists
+                          {m.email} · {m.role}
                         </Text>
                       </View>
-                      <Pressable
-                        onPress={() => revokeShare(s.id)}
-                        hitSlop={10}
-                        accessibilityLabel={`Remove ${s.recipientEmail}`}
-                      >
-                        <Feather
-                          name="x"
-                          size={18}
-                          color={colors.mutedForeground}
-                        />
-                      </Pressable>
+                      {isAdmin && m.userId !== currentUser?.id ? (
+                        <Pressable
+                          onPress={() => removeMember(m)}
+                          hitSlop={10}
+                          accessibilityLabel={`Remove ${fullName} from project`}
+                        >
+                          <Feather
+                            name="x"
+                            size={18}
+                            color={colors.mutedForeground}
+                          />
+                        </Pressable>
+                      ) : null}
                     </View>
                   );
                 })}
-                <Button
-                  title="Add user"
-                  variant="secondary"
-                  icon={
-                    <Feather
-                      name="user-plus"
-                      size={14}
-                      color={colors.foreground}
-                    />
-                  }
-                  onPress={() => setShowShareModal(true)}
-                />
+                {isAdmin ? (
+                  <Button
+                    title="Add team member"
+                    variant="secondary"
+                    icon={
+                      <Feather
+                        name="user-plus"
+                        size={14}
+                        color={colors.foreground}
+                      />
+                    }
+                    onPress={() => setShowAddMemberModal(true)}
+                  />
+                ) : null}
               </View>
             )}
           </View>
@@ -1294,12 +1387,13 @@ export default function ProjectDetailScreen() {
           setShowChecklistModal(false);
         }}
       />
-      <ShareModal
-        visible={showShareModal}
-        onClose={() => setShowShareModal(false)}
-        onSubmit={async (email) => {
-          await createShare(project.id, email);
-          setShowShareModal(false);
+      <AddTeamMemberModal
+        visible={showAddMemberModal}
+        onClose={() => setShowAddMemberModal(false)}
+        projects={projects}
+        currentProjectId={project.id}
+        onSuccess={() => {
+          void refreshAssignments();
         }}
       />
     </View>
@@ -1951,52 +2045,6 @@ function ChecklistModal({
   );
 }
 
-function ShareModal({
-  visible,
-  onClose,
-  onSubmit,
-}: {
-  visible: boolean;
-  onClose: () => void;
-  onSubmit: (email: string) => Promise<void>;
-}) {
-  const [email, setEmail] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const save = async () => {
-    setError(null);
-    if (!/^\S+@\S+\.\S+$/.test(email.trim())) {
-      setError("Enter a valid email address.");
-      return;
-    }
-    setSaving(true);
-    try {
-      await onSubmit(email);
-      setEmail("");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <ModalShell title="Share with client" onClose={onClose}>
-        <Input
-          label="Client email"
-          value={email}
-          onChangeText={setEmail}
-          autoCapitalize="none"
-          keyboardType="email-address"
-          autoFocus
-          error={error}
-        />
-        <Button title="Create share link" onPress={save} loading={saving} size="lg" />
-      </ModalShell>
-    </Modal>
-  );
-}
-
 function ModalShell({
   title,
   onClose,
@@ -2438,7 +2486,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   checklistItemText: { flex: 1, fontSize: 14, fontFamily: "Inter_500Medium" },
-  shareCard: {
+  memberCard: {
     flexDirection: "row",
     alignItems: "center",
     padding: 14,
@@ -2446,8 +2494,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     gap: 10,
   },
-  shareEmail: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
-  shareUrl: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
+  memberName: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  memberSub: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
   modalHeader: {
     flexDirection: "row",
     alignItems: "center",
