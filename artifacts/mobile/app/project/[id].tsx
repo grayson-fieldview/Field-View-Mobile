@@ -1656,8 +1656,12 @@ export default function ProjectDetailScreen() {
                 onPress={() => {
                   setShowProjectMenu(false);
                   const doClockOut = () => {
-                    void timesheetClockOut().then(() => {
-                      showToast("Clocked out.");
+                    void timesheetClockOut().then((entry) => {
+                      // Context returns null on failure (and toasts the
+                      // error itself), so guard the success toast to
+                      // avoid the "Couldn't clock out: …" + "Clocked
+                      // out." double-toast. Mirrors the Clock In guard.
+                      if (entry) showToast("Clocked out.");
                     });
                   };
                   if (Platform.OS === "web") {
