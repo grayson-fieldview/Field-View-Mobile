@@ -116,25 +116,36 @@ export async function registerForPushNotificationsAsync(): Promise<
 }
 
 /**
+ * Type guard for the Expo push-service wire format. The server
+ * (Expo's push API + our backend's validator) rejects anything else.
+ * Native APNS / FCM tokens leak through `addPushTokenListener` and
+ * must NEVER reach the API. Accepts both `ExpoPushToken[…]` (current)
+ * and the legacy `ExponentPushToken[…]` shape.
+ */
+const isValidExpoPushToken = (t: unknown): t is string =>
+  typeof t === "string" && /^Expo(nent)?PushToken\[.+\]$/.test(t);
+
+/**
  * POST the captured Expo push token to the server. Errors are logged
  * but never thrown — push registration must NEVER block app start.
+ *
+ * Defensive validator: silently skip non-Expo tokens (raw native
+ * APNS/FCM strings). The diagnostic log that confirmed the
+ * native-token leak path has been removed now that the bug is
+ * understood.
  */
 export async function registerPushTokenWithServer(
   token: string,
 ): Promise<void> {
+  if (!isValidExpoPushToken(token)) {
+    // `token` is typed `string` at the param boundary, but the guard
+    // narrows it to `never` on the false branch. Re-widen via the
+    // value, not the binding, to keep the diagnostic safe.
+    const preview = String(token).slice(0, 16);
+    console.warn("[push] skipping non-Expo token:", preview + "...");
+    return;
+  }
   try {
-    // TEMP DIAGNOSTIC (remove after triage). SDK 54 upgrade regressed
-    // server-side validation with 400 "Invalid Expo push token format".
-    // Log the exact wire value so we can compare to the legacy
-    // ExponentPushToken[…] shape.
-    console.log(
-      "[push diag] token =",
-      JSON.stringify(token),
-      "length:",
-      token?.length,
-      "type:",
-      typeof token,
-    );
     await api.registerPushToken(token);
     console.log("[push] token registered with server");
   } catch (err) {
@@ -168,6 +179,12 @@ export function subscribeToPushTokenRotation(
 ): () => void {
   if (!notificationsAvailable || !Notifications) return () => {};
   const sub = Notifications.addPushTokenListener((tok) => {
+    // The listener fires for ALL token types — including the native
+    // APNS / FCM token, which the server rejects with 400. We only
+    // want the wrapped Expo token (type === "expo"); anything else
+    // is dropped here. The defensive validator inside
+    // registerPushTokenWithServer is the second line of defense.
+    if ((tok as { type?: string }).type !== "expo") return;
     if (typeof tok.data === "string" && tok.data.length > 0) {
       handler(tok.data);
     }
