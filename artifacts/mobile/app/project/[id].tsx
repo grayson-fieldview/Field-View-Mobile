@@ -142,6 +142,9 @@ export default function ProjectDetailScreen() {
   // clocked into THIS project — auto-exit is the happy path; the
   // kebab is the manual fallback).
   const [showProjectMenu, setShowProjectMenu] = useState(false);
+  // True while the share-token POST is in flight. Used to disable
+  // the share button so impatient double-taps don't fire two POSTs.
+  const [sharingProject, setSharingProject] = useState(false);
   const isClockedInToThisProject =
     !!activeTimesheet && String(activeTimesheet.projectId) === String(id);
 
@@ -457,16 +460,20 @@ export default function ProjectDetailScreen() {
 
   const onShareProject = async () => {
     if (!project) return;
+    if (sharingProject) return;
     // Project-level public share. Mint (or fetch existing) token
     // first; only open the share sheet on success.
+    setSharingProject(true);
     let token: string;
     try {
       const res = await api.shareProject(project.id);
       token = res.shareToken;
     } catch {
       showToast("Couldn't generate share link");
+      setSharingProject(false);
       return;
     }
+    setSharingProject(false);
     // Hard-coded public web origin (NOT EXPO_PUBLIC_API_BASE_URL):
     // recipients open the link in Safari, so it must always point
     // at the public marketing/web host regardless of which API base
@@ -676,11 +683,20 @@ export default function ProjectDetailScreen() {
               <Pressable
                 onPress={onShareProject}
                 hitSlop={10}
+                disabled={sharingProject}
                 accessibilityRole="button"
                 accessibilityLabel="Share project"
-                style={styles.heroIconBtn}
+                accessibilityState={{ disabled: sharingProject, busy: sharingProject }}
+                style={({ pressed }) => [
+                  styles.heroIconBtn,
+                  { opacity: sharingProject ? 0.5 : pressed ? 0.7 : 1 },
+                ]}
               >
-                <Feather name="share-2" size={16} color="#fff" />
+                {sharingProject ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Feather name="share-2" size={16} color="#fff" />
+                )}
               </Pressable>
               <Pressable
                 onPress={() => setShowProjectMenu(true)}
