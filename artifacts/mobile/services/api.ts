@@ -990,9 +990,21 @@ export const api = {
   // shipping spec — backend support is a peer change. If a path 404s,
   // the spec author has the source of truth.
 
-  /** Project's checklist instances (id/title/template/createdAt only). */
-  listChecklistsForProject: (projectId: string | number) =>
-    apiFetch<BackendChecklist[]>(`/api/projects/${projectId}/checklists`),
+  /**
+   * Project's checklist instances (id/title/template/createdAt only).
+   *
+   * The server doesn't expose a per-project list endpoint — only the
+   * account-scoped `GET /api/checklists`. We fetch that and filter
+   * client-side on `projectId`. The v2 schema guarantees `projectId`
+   * on every row, so this is a type-safe filter (no shape changes).
+   */
+  listChecklistsForProject: async (projectId: string | number) => {
+    const all = await apiFetch<BackendChecklist[]>(`/api/checklists`);
+    const target = String(projectId);
+    return (Array.isArray(all) ? all : []).filter(
+      (c) => String(c.projectId) === target,
+    );
+  },
 
   /** Sections within a checklist instance, in sortOrder. */
   listChecklistSections: (checklistId: string | number) =>
