@@ -624,6 +624,30 @@ export const api = {
     }),
 
   /**
+   * Register the current device's Expo push token with the server so
+   * the geofence-exit cron can deliver clock_out_receipt pushes.
+   * Server returns 204 on success. Wire-only — caller is responsible
+   * for capturing the token via expo-notifications first.
+   */
+  registerPushToken: (token: string) =>
+    apiFetch<void>("/api/users/push-token", {
+      method: "POST",
+      json: { token },
+      allowEmptyBody: true,
+    }),
+
+  /**
+   * Clear the server-stored push token for the current user. Called
+   * pre-logout so a signed-out device stops receiving pushes.
+   * Server returns 204 on success.
+   */
+  unregisterPushToken: () =>
+    apiFetch<void>("/api/users/push-token", {
+      method: "DELETE",
+      allowEmptyBody: true,
+    }),
+
+  /**
    * Update one or more user preferences. Currently only autoTrackingEnabled
    * (S33 master switch for OS-driven clock in/out). Server returns the
    * full updated BackendUser so callers can replace their local copy in

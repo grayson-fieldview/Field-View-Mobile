@@ -18,6 +18,12 @@ import {
   type BackendUser,
 } from "@/services/api";
 import { autoTrackingPref } from "@/services/preferences";
+import {
+  registerForPushNotificationsAsync,
+  registerPushTokenWithServer,
+  subscribeToPushTokenRotation,
+  unregisterPushTokenWithServer,
+} from "@/services/pushNotifications";
 
 export interface AuthUser {
   id: string;
@@ -158,9 +164,49 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
+    // Unregister push token BEFORE the session is invalidated so the
+    // DELETE request still authenticates. Failure is logged inside
+    // the helper and never thrown — sign-out must always proceed.
+    await unregisterPushTokenWithServer();
     await api.logout().catch(() => null);
     await clearSession();
     setUser(null);
+  }, []);
+
+  // Push token capture + rotation. Two effects so they have
+  // independent lifecycles:
+  //
+  //   1. Capture-on-login: gated on `user` becoming non-null.
+  //      Requests permission (once per install via the OS), captures
+  //      the Expo push token if granted, and POSTs it to the server.
+  //      No-op for signed-out users so we don't prompt at cold start
+  //      before the user has even logged in. Re-runs on every fresh
+  //      sign-in (after a sign-out / sign-in cycle); the OS prompt
+  //      doesn't reappear once granted/denied, so this is cheap.
+  //
+  //   2. Rotation listener: mounted for the lifetime of the
+  //      provider. Expo can rotate the token at any time; when it
+  //      does, we re-POST so the server's record stays fresh.
+  //      Subscription is created once and torn down on unmount.
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    void (async () => {
+      const token = await registerForPushNotificationsAsync();
+      if (cancelled) return;
+      if (token) await registerPushTokenWithServer(token);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
+  useEffect(() => {
+    const unsub = subscribeToPushTokenRotation((token) => {
+      console.log("[push] token rotated, re-registering");
+      void registerPushTokenWithServer(token);
+    });
+    return unsub;
   }, []);
 
   const requestPasswordReset = useCallback(async (email: string) => {

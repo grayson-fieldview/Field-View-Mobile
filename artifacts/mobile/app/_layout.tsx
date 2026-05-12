@@ -22,12 +22,16 @@ import { DataProvider } from "@/contexts/DataContext";
 import { TimesheetProvider } from "@/contexts/TimesheetContext";
 import { ToastProvider } from "@/contexts/ToastContext";
 import { UploadStatusProvider } from "@/contexts/UploadStatusContext";
+import { useTimesheet } from "@/contexts/TimesheetContext";
+import type { BackendTimesheetEntry } from "@/services/api";
 import {
   configureNotificationHandler,
   getLastNotificationResponseData,
   parseClockInReceiptData,
+  parseClockOutReceiptData,
   subscribeToNotificationResponses,
 } from "@/services/notifications";
+import { subscribeToForegroundNotifications } from "@/services/pushNotifications";
 import {
   locationOnboardingFlags,
   useLocationPermission,
@@ -116,14 +120,62 @@ function AuthGate({ children }: { children: React.ReactNode }) {
  * `pending` is a one-shot — cleared after consume so subsequent auth
  * state changes don't re-fire the same navigation.
  */
+type PendingDeepLink =
+  | { kind: "in"; projectId: number; entryId: string }
+  | { kind: "out"; projectId: number; timeEntryId: number; clockOutAt: string };
+
+function parseDeepLink(data: unknown): PendingDeepLink | null {
+  const inReceipt = parseClockInReceiptData(data);
+  if (inReceipt) {
+    return {
+      kind: "in",
+      projectId: inReceipt.projectId,
+      entryId: inReceipt.entryId,
+    };
+  }
+  const outReceipt = parseClockOutReceiptData(data);
+  if (outReceipt) {
+    return {
+      kind: "out",
+      projectId: outReceipt.projectId,
+      timeEntryId: outReceipt.timeEntryId,
+      clockOutAt: outReceipt.clockOutAt,
+    };
+  }
+  return null;
+}
+
+/**
+ * Build a synthetic BackendTimesheetEntry from a clock_out_receipt
+ * push payload. ClockReceiptBanner kind="out" reads only `entry.id`,
+ * `entry.projectId`, and the sibling `firedAt` field — all other
+ * BackendTimesheetEntry fields are placeholders. We set `clockIn`
+ * to clockOutAt because the wire payload doesn't carry the original
+ * clock-in time and the banner doesn't display it. `clockOut` is
+ * set to clockOutAt for correctness (the entry IS closed at this
+ * point, server-side).
+ */
+function syntheticEntryFromPush(payload: {
+  timeEntryId: number;
+  projectId: number;
+  clockOutAt: string;
+}): BackendTimesheetEntry {
+  return {
+    id: payload.timeEntryId,
+    projectId: payload.projectId,
+    clockIn: payload.clockOutAt,
+    clockOut: payload.clockOutAt,
+    source: "auto_geofence",
+    notes: null,
+  } as unknown as BackendTimesheetEntry;
+}
+
 function NotificationDeepLinkHandler() {
   const router = useRouter();
   const segments = useSegments();
   const { user, ready } = useAuth();
-  const [pending, setPending] = useState<{
-    projectId: number;
-    entryId: string;
-  } | null>(null);
+  const { setFiredExit } = useTimesheet();
+  const [pending, setPending] = useState<PendingDeepLink | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -134,24 +186,20 @@ function NotificationDeepLinkHandler() {
     // exactly once.
     void getLastNotificationResponseData().then((data) => {
       if (!alive) return;
-      const receipt = parseClockInReceiptData(data);
-      if (!receipt) return;
-      console.log(
-        `[notifications] cold-launch tap: project ${receipt.projectId}, entry ${receipt.entryId}`,
-      );
-      setPending({ projectId: receipt.projectId, entryId: receipt.entryId });
+      const link = parseDeepLink(data);
+      if (!link) return;
+      console.log(`[notifications] cold-launch tap kind=${link.kind}`);
+      setPending(link);
     });
 
     // Foreground/background case: listener fires for taps that
     // happen while the JS runtime is alive. These are independent
     // events from the cold-launch path — no double-handling.
     const unsub = subscribeToNotificationResponses((data) => {
-      const receipt = parseClockInReceiptData(data);
-      if (!receipt) return;
-      console.log(
-        `[notifications] tap received: project ${receipt.projectId}, entry ${receipt.entryId}`,
-      );
-      setPending({ projectId: receipt.projectId, entryId: receipt.entryId });
+      const link = parseDeepLink(data);
+      if (!link) return;
+      console.log(`[notifications] tap received kind=${link.kind}`);
+      setPending(link);
     });
 
     return () => {
@@ -180,16 +228,72 @@ function NotificationDeepLinkHandler() {
       setPending(null);
       return;
     }
-    router.push({
-      pathname: "/project/[id]",
-      params: {
-        id: String(pending.projectId),
-        recentClockIn: pending.entryId,
-      },
-    });
+    if (pending.kind === "in") {
+      router.push({
+        pathname: "/project/[id]",
+        params: {
+          id: String(pending.projectId),
+          recentClockIn: pending.entryId,
+        },
+      });
+    } else {
+      // Seed firedExit BEFORE navigating so the kind="out" banner
+      // is visible the moment the project screen mounts.
+      setFiredExit({
+        entry: syntheticEntryFromPush({
+          timeEntryId: pending.timeEntryId,
+          projectId: pending.projectId,
+          clockOutAt: pending.clockOutAt,
+        }),
+        firedAt: pending.clockOutAt,
+      });
+      router.push({
+        pathname: "/project/[id]",
+        params: { id: String(pending.projectId) },
+      });
+    }
     setPending(null);
-  }, [pending, ready, user, router, segments]);
+  }, [pending, ready, user, router, segments, setFiredExit]);
 
+  return null;
+}
+
+/**
+ * Foreground-received handler for server-pushed clock_out_receipt.
+ * Distinct from NotificationDeepLinkHandler (which handles TAP
+ * events): this fires when the push arrives while the JS runtime
+ * is foregrounded, BEFORE any user interaction. We don't navigate
+ * (intrusive), only seed `firedExit` so that:
+ *   - if the user is already on /project/[id] for the matching
+ *     project, the kind="out" banner appears immediately
+ *   - if the user is elsewhere, the OS banner (rendered by
+ *     setNotificationHandler's shouldShowBanner: true) is the
+ *     foreground signal; on subsequent navigation to the project,
+ *     the in-app banner is also there
+ *
+ * Other notification types are ignored (forward-compat for future
+ * S3x receipt kinds reusing the same channel).
+ */
+function ForegroundPushHandler() {
+  const { setFiredExit } = useTimesheet();
+  useEffect(() => {
+    const unsub = subscribeToForegroundNotifications((data) => {
+      const out = parseClockOutReceiptData(data);
+      if (!out) return;
+      console.log(
+        `[push] foreground clock_out_receipt: project ${out.projectId}, entry ${out.timeEntryId}`,
+      );
+      setFiredExit({
+        entry: syntheticEntryFromPush({
+          timeEntryId: out.timeEntryId,
+          projectId: out.projectId,
+          clockOutAt: out.clockOutAt,
+        }),
+        firedAt: out.clockOutAt,
+      });
+    });
+    return unsub;
+  }, [setFiredExit]);
   return null;
 }
 
@@ -259,6 +363,7 @@ export default function RootLayout() {
                       <UploadStatusProvider>
                         <AuthGate>
                           <NotificationDeepLinkHandler />
+                          <ForegroundPushHandler />
                           <RootLayoutNav />
                         </AuthGate>
                       </UploadStatusProvider>

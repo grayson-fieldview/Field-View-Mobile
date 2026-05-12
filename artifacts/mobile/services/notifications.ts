@@ -44,6 +44,25 @@ export type NotificationPermissionStatus =
  * receipts, etc.) should use a different literal so the tap handler
  * can branch cleanly without inferring intent from data shape.
  */
+/**
+ * Server-pushed payload announcing that the geofence-exit cron
+ * fired an auto-clock-out for the user. Wire shape is owned by the
+ * web server; mobile narrows incoming push `data` through
+ * `parseClockOutReceiptData` before doing anything with it.
+ *
+ * The mobile-side ClockReceiptBanner (kind="out") is driven by
+ * TimesheetContext.firedExit. The push handler in app/_layout.tsx
+ * synthesizes a FiredExit from this payload (we don't have the full
+ * BackendTimesheetEntry over the wire — only enough to identify it
+ * + render the banner copy).
+ */
+export interface ClockOutReceiptData {
+  type: "clock_out_receipt";
+  timeEntryId: number;
+  projectId: number;
+  clockOutAt: string;
+}
+
 export interface ClockInReceiptData {
   type: "clock_in_receipt";
   projectId: number;
@@ -225,6 +244,34 @@ export function parseClockInReceiptData(
     projectName: d.projectName,
     entryId: d.entryId,
     clockInTime: d.clockInTime,
+  };
+}
+
+/**
+ * Type-narrow an unknown notification payload into a clock-out
+ * receipt. Sibling to `parseClockInReceiptData` — same defensive
+ * shape, different `type` discriminator. Server wire contract:
+ *   { type: "clock_out_receipt", timeEntryId: number,
+ *     projectId: number, clockOutAt: ISO string }
+ */
+export function parseClockOutReceiptData(
+  raw: unknown,
+): ClockOutReceiptData | null {
+  if (!raw || typeof raw !== "object") return null;
+  const d = raw as Record<string, unknown>;
+  if (d.type !== "clock_out_receipt") return null;
+  if (
+    typeof d.timeEntryId !== "number" ||
+    typeof d.projectId !== "number" ||
+    typeof d.clockOutAt !== "string"
+  ) {
+    return null;
+  }
+  return {
+    type: "clock_out_receipt",
+    timeEntryId: d.timeEntryId,
+    projectId: d.projectId,
+    clockOutAt: d.clockOutAt,
   };
 }
 

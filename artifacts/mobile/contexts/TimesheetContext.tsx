@@ -89,6 +89,17 @@ export interface TimesheetState {
    */
   firedExit: FiredExit | null;
   dismissFiredExit: () => void;
+  /**
+   * Imperative setter so the foreground push handler can surface a
+   * server-pushed clock_out_receipt as a kind="out" receipt banner.
+   * Construction of the synthetic FiredExit happens at the call site
+   * (the push payload doesn't carry the full BackendTimesheetEntry —
+   * only id + projectId + clockOutAt — but the kind="out" banner
+   * reads only those fields plus firedAt, so a minimal entry is
+   * sufficient). Pass null to clear; callers preferring symmetry
+   * with `dismissFiredExit` should use that instead.
+   */
+  setFiredExit: (next: FiredExit | null) => void;
 }
 
 const TimesheetContext = createContext<TimesheetState | undefined>(undefined);
@@ -411,6 +422,7 @@ export function TimesheetProvider({ children }: { children: React.ReactNode }) {
       clockOut,
       firedExit,
       dismissFiredExit,
+      setFiredExit,
     }),
     [
       active,
@@ -421,6 +433,7 @@ export function TimesheetProvider({ children }: { children: React.ReactNode }) {
       clockOut,
       firedExit,
       dismissFiredExit,
+      setFiredExit,
     ],
   );
 
