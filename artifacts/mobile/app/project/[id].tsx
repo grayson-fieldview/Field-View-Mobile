@@ -66,6 +66,7 @@ export default function ProjectDetailScreen() {
     refresh: refreshTimesheet,
     firedExit,
     dismissFiredExit,
+    clockIn: timesheetClockIn,
     clockOut: timesheetClockOut,
     loading: timesheetLoading,
   } = useTimesheet() as TimesheetState;
@@ -145,6 +146,11 @@ export default function ProjectDetailScreen() {
   // True while the share-token POST is in flight. Used to disable
   // the share button so impatient double-taps don't fire two POSTs.
   const [sharingProject, setSharingProject] = useState(false);
+  // True while the manual kebab-menu "Clock In" call is in flight.
+  // The menu closes before the API call fires (matches the Clock out
+  // pattern), so this primarily protects against the user reopening
+  // the menu and double-tapping during the brief window.
+  const [clockingIn, setClockingIn] = useState(false);
   const isClockedInToThisProject =
     !!activeTimesheet && String(activeTimesheet.projectId) === String(id);
 
@@ -1587,6 +1593,64 @@ export default function ProjectDetailScreen() {
             ]}
             onPress={(e) => e.stopPropagation()}
           >
+            {!activeTimesheet ? (
+              <Pressable
+                onPress={() => {
+                  if (!project) return;
+                  setShowProjectMenu(false);
+                  const projectName = project.name;
+                  const projectId = project.id;
+                  const doClockIn = async () => {
+                    setClockingIn(true);
+                    // Context toasts the error itself on failure
+                    // ("Couldn't clock in: …") and returns null;
+                    // we only toast the success case here.
+                    const entry = await timesheetClockIn(projectId);
+                    setClockingIn(false);
+                    if (entry) showToast("Clocked in.");
+                  };
+                  if (Platform.OS === "web") {
+                    void doClockIn();
+                    return;
+                  }
+                  Alert.alert(`Clock in to ${projectName}?`, undefined, [
+                    { text: "Cancel", style: "cancel" },
+                    {
+                      text: "Clock in",
+                      onPress: () => {
+                        void doClockIn();
+                      },
+                    },
+                  ]);
+                }}
+                disabled={clockingIn || timesheetLoading}
+                style={({ pressed }) => [
+                  styles.menuItem,
+                  {
+                    opacity:
+                      clockingIn || timesheetLoading ? 0.5 : pressed ? 0.6 : 1,
+                  },
+                ]}
+              >
+                <Feather
+                  name="play-circle"
+                  size={16}
+                  color={colors.foreground}
+                />
+                <Text
+                  style={[styles.menuItemTxt, { color: colors.foreground }]}
+                >
+                  Clock In
+                </Text>
+                {clockingIn ? (
+                  <ActivityIndicator
+                    size="small"
+                    color={colors.mutedForeground}
+                    style={{ marginLeft: "auto" }}
+                  />
+                ) : null}
+              </Pressable>
+            ) : null}
             {isClockedInToThisProject ? (
               <Pressable
                 onPress={() => {
@@ -1687,7 +1751,7 @@ function ClockBar({
   lastScrollY: SharedValue<number>;
   autoHideEnabled: SharedValue<number>;
 }) {
-  const { active, ready, loading, clockIn, clockOut } =
+  const { active, ready, loading, clockOut } =
     useTimesheet() as TimesheetState;
   const { projects } = useData();
   const [now, setNow] = useState(() => Date.now());
@@ -1726,10 +1790,6 @@ function ClockBar({
     const t = setInterval(() => setNow(Date.now()), 60_000);
     return () => clearInterval(t);
   }, [isClockedInHere, active?.id, active]);
-
-  const onClockIn = () => {
-    void clockIn(thisProjectId);
-  };
 
   const confirmClockOut = (otherName?: string) => {
     const title = otherName
@@ -1770,31 +1830,55 @@ function ClockBar({
     );
   }
 
-  // State 1: not clocked in anywhere → quiet, full-bar tappable area with
-  // orange icon + label on the card background. Subordinate to the primary
-  // photo workflow above it; auto-hides on scroll-down.
+  // State 1: not clocked in anywhere → neutral status pill (no CTA).
+  // Manual Clock In moved into the kebab menu, mirroring the earlier
+  // Clock Out demotion. Same pill shape/position as State 2's orange
+  // pill; only color + icon weight differ so the bottom area's
+  // visual rhythm stays constant across state transitions.
+  // Auto-hides on scroll-down (this is the only state where
+  // shouldAutoHide is true).
   if (!active) {
     return (
       <Animated.View style={[containerStyle, animatedBarStyle]}>
-        <Pressable
-          onPress={onClockIn}
-          disabled={loading}
-          accessibilityRole="button"
-          accessibilityLabel="Clock in to this project"
-          style={({ pressed }) => [
-            styles.clockBarTapArea,
-            { opacity: loading ? 0.6 : pressed ? 0.6 : 1 },
+        <View
+          style={[
+            styles.clockStatusPill,
+            {
+              backgroundColor: colors.muted,
+              borderColor: colors.border,
+            },
           ]}
+          accessibilityRole="text"
+          accessibilityLabel="Not clocked in to this project. Use the more options menu to clock in."
         >
+          <Feather name="clock" size={14} color={colors.mutedForeground} />
+          <View style={styles.clockNeutralCol}>
+            <Text
+              style={[
+                styles.clockStatusPillTxt,
+                { color: colors.mutedForeground },
+              ]}
+              numberOfLines={1}
+            >
+              Not clocked in to this project
+            </Text>
+            <Text
+              style={[
+                styles.clockNeutralHint,
+                { color: colors.mutedForeground },
+              ]}
+              numberOfLines={1}
+            >
+              Use ⋯ menu to clock in
+            </Text>
+          </View>
           {loading ? (
-            <ActivityIndicator color="#ef9003" />
-          ) : (
-            <>
-              <Feather name="play-circle" size={18} color="#ef9003" />
-              <Text style={styles.clockBarQuietTxt}>Clock In</Text>
-            </>
-          )}
-        </Pressable>
+            <ActivityIndicator
+              size="small"
+              color={colors.mutedForeground}
+            />
+          ) : null}
+        </View>
       </Animated.View>
     );
   }
@@ -2514,23 +2598,6 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingHorizontal: 16,
   },
-  // Quiet State 1: the whole bar is the tap target. No filled button — just
-  // an icon + label sitting on the card background.
-  clockBarTapArea: {
-    flex: 1,
-    minHeight: 44,
-    paddingVertical: 6,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-  },
-  clockBarQuietTxt: {
-    color: "#ef9003",
-    fontSize: 15,
-    fontFamily: "Inter_700Bold",
-    letterSpacing: 0.2,
-  },
   clockBtnInline: {
     flex: 0,
     paddingHorizontal: 18,
@@ -2577,6 +2644,19 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 13,
     fontFamily: "Inter_600SemiBold",
+  },
+  // State 1 neutral pill — two-line column (primary label + hint
+  // pointing the user at the kebab menu). Sized to fit inside the
+  // same pill shape as State 2 without changing the bar's overall
+  // vertical rhythm.
+  clockNeutralCol: {
+    flex: 1,
+  },
+  clockNeutralHint: {
+    fontSize: 11,
+    fontFamily: "Inter_500Medium",
+    opacity: 0.8,
+    marginTop: 1,
   },
   // Kebab popover (top-right overflow menu).
   menuBackdrop: {
