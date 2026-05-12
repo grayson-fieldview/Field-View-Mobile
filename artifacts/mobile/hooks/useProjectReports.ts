@@ -70,15 +70,32 @@ export function useProjectReports(
   const deleteReport = useCallback(
     async (id: string | number) => {
       const target = String(id);
-      let snapshot: BackendReport[] = [];
+      // Per-entity rollback: capture only the removed report and its
+      // original index. On failure we re-insert *just that row* iff
+      // no other state op has already re-introduced it. A whole-array
+      // snapshot restore would resurrect rows that a concurrent delete
+      // successfully removed (the race the architect flagged).
+      let removed: BackendReport | undefined;
+      let removedIndex = -1;
       setReports((curr) => {
-        snapshot = curr;
-        return curr.filter((r) => String(r.id) !== target);
+        removedIndex = curr.findIndex((r) => String(r.id) === target);
+        if (removedIndex < 0) return curr;
+        removed = curr[removedIndex];
+        return curr.filter((_, i) => i !== removedIndex);
       });
       try {
         await api.deleteReport(id);
       } catch (e) {
-        setReports(snapshot);
+        if (removed) {
+          const restored = removed;
+          const idx = removedIndex;
+          setReports((curr) => {
+            if (curr.some((r) => String(r.id) === target)) return curr;
+            const next = curr.slice();
+            next.splice(Math.min(idx, next.length), 0, restored);
+            return next;
+          });
+        }
         throw e;
       }
     },

@@ -185,15 +185,30 @@ export function useReportDetail(
 
   const deleteSection = useCallback(async (sectionId: string | number) => {
     const key = String(sectionId);
-    let snapshot: SectionWithPhotos[] = [];
+    // Per-entity rollback (see useProjectReports.deleteReport for
+    // rationale): never restore a whole-array snapshot, or we'd
+    // resurrect sections that a concurrent delete already removed.
+    let removed: SectionWithPhotos | undefined;
+    let removedIndex = -1;
     setSections((curr) => {
-      snapshot = curr;
-      return curr.filter((s) => String(s.id) !== key);
+      removedIndex = curr.findIndex((s) => String(s.id) === key);
+      if (removedIndex < 0) return curr;
+      removed = curr[removedIndex];
+      return curr.filter((_, i) => i !== removedIndex);
     });
     try {
       await api.deleteReportSection(sectionId);
     } catch (e) {
-      setSections(snapshot);
+      if (removed) {
+        const restored = removed;
+        const idx = removedIndex;
+        setSections((curr) => {
+          if (curr.some((s) => String(s.id) === key)) return curr;
+          const next = curr.slice();
+          next.splice(Math.min(idx, next.length), 0, restored);
+          return next;
+        });
+      }
       throw e;
     }
   }, []);
@@ -296,19 +311,38 @@ export function useReportDetail(
     async (sectionId: string | number, photoId: string | number) => {
       const skey = String(sectionId);
       const pkey = String(photoId);
-      let snapshot: SectionWithPhotos[] = [];
-      setSections((curr) => {
-        snapshot = curr;
-        return curr.map((s) =>
-          String(s.id) !== skey
-            ? s
-            : { ...s, photos: s.photos.filter((p) => String(p.id) !== pkey) },
-        );
-      });
+      // Per-entity rollback: capture only the removed photo + its index
+      // within its section. Restoring a full array snapshot on failure
+      // would resurrect photos that a concurrent detach successfully
+      // removed.
+      let removed: BackendReportSectionPhoto | undefined;
+      let removedIndex = -1;
+      setSections((curr) =>
+        curr.map((s) => {
+          if (String(s.id) !== skey) return s;
+          const idx = s.photos.findIndex((p) => String(p.id) === pkey);
+          if (idx < 0) return s;
+          removed = s.photos[idx];
+          removedIndex = idx;
+          return { ...s, photos: s.photos.filter((_, i) => i !== idx) };
+        }),
+      );
       try {
         await api.detachSectionPhoto(photoId);
       } catch (e) {
-        setSections(snapshot);
+        if (removed) {
+          const restored = removed;
+          const idx = removedIndex;
+          setSections((curr) =>
+            curr.map((s) => {
+              if (String(s.id) !== skey) return s;
+              if (s.photos.some((p) => String(p.id) === pkey)) return s;
+              const next = s.photos.slice();
+              next.splice(Math.min(idx, next.length), 0, restored);
+              return { ...s, photos: next };
+            }),
+          );
+        }
         throw e;
       }
     },
