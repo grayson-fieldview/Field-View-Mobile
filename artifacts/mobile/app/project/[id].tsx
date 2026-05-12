@@ -66,6 +66,8 @@ export default function ProjectDetailScreen() {
     refresh: refreshTimesheet,
     firedExit,
     dismissFiredExit,
+    clockOut: timesheetClockOut,
+    loading: timesheetLoading,
   } = useTimesheet() as TimesheetState;
   const {
     projects,
@@ -135,6 +137,13 @@ export default function ProjectDetailScreen() {
   const [showChecklistModal, setShowChecklistModal] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false);
   const [showAssignUserModal, setShowAssignUserModal] = useState(false);
+  // Top-right kebab overflow menu. Houses destructive / infrequent
+  // actions (Delete, plus manual Clock Out when the user is currently
+  // clocked into THIS project — auto-exit is the happy path; the
+  // kebab is the manual fallback).
+  const [showProjectMenu, setShowProjectMenu] = useState(false);
+  const isClockedInToThisProject =
+    !!activeTimesheet && String(activeTimesheet.projectId) === String(id);
 
   const refreshAssignments = useCallback(async () => {
     if (!id) return;
@@ -669,8 +678,9 @@ export default function ProjectDetailScreen() {
                 </Pressable>
               ) : null}
               <Pressable
-                onPress={onDelete}
+                onPress={() => setShowProjectMenu(true)}
                 hitSlop={10}
+                accessibilityRole="button"
                 accessibilityLabel="More options"
                 style={styles.heroIconBtn}
               >
@@ -1528,6 +1538,94 @@ export default function ProjectDetailScreen() {
           void refreshAssignments();
         }}
       />
+      {/* Top-right kebab overflow menu. Lightweight Modal-as-popover
+          (matches the rest of this screen's modal patterns). Items:
+          - Clock out (only when clocked into THIS project) — the
+            manual fallback for auto-exit; calls the same timesheet
+            action the old prominent button used.
+          - Delete project — destructive, was the kebab's single
+            action before. */}
+      <Modal
+        visible={showProjectMenu}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowProjectMenu(false)}
+      >
+        <Pressable
+          style={styles.menuBackdrop}
+          onPress={() => setShowProjectMenu(false)}
+        >
+          <Pressable
+            style={[
+              styles.menuSheet,
+              {
+                backgroundColor: colors.card,
+                borderColor: colors.border,
+                top: insets.top + 56,
+              },
+            ]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            {isClockedInToThisProject ? (
+              <Pressable
+                onPress={() => {
+                  setShowProjectMenu(false);
+                  const doClockOut = () => {
+                    void timesheetClockOut().then(() => {
+                      showToast("Clocked out.");
+                    });
+                  };
+                  if (Platform.OS === "web") {
+                    doClockOut();
+                    return;
+                  }
+                  Alert.alert("Clock out?", undefined, [
+                    { text: "Cancel", style: "cancel" },
+                    {
+                      text: "Clock out",
+                      style: "destructive",
+                      onPress: doClockOut,
+                    },
+                  ]);
+                }}
+                disabled={timesheetLoading}
+                style={({ pressed }) => [
+                  styles.menuItem,
+                  { opacity: timesheetLoading ? 0.5 : pressed ? 0.6 : 1 },
+                ]}
+              >
+                <Feather
+                  name="stop-circle"
+                  size={16}
+                  color={colors.foreground}
+                />
+                <Text
+                  style={[styles.menuItemTxt, { color: colors.foreground }]}
+                >
+                  Clock out
+                </Text>
+              </Pressable>
+            ) : null}
+            <Pressable
+              onPress={() => {
+                setShowProjectMenu(false);
+                onDelete();
+              }}
+              style={({ pressed }) => [
+                styles.menuItem,
+                { opacity: pressed ? 0.6 : 1 },
+              ]}
+            >
+              <Feather name="trash-2" size={16} color={colors.destructive} />
+              <Text
+                style={[styles.menuItemTxt, { color: colors.destructive }]}
+              >
+                Delete project
+              </Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -1540,6 +1638,17 @@ function formatElapsed(startIso: string, nowMs: number): string {
   const h = Math.floor(totalMins / 60);
   const m = totalMins % 60;
   return `${h}h ${m}m`;
+}
+
+/** "3:15 PM" style local-time label for the clock-in moment. Returns
+ *  empty string on unparseable input so the caller can fall back. */
+function formatClockInTime(startIso: string): string {
+  const t = Date.parse(startIso);
+  if (!Number.isFinite(t)) return "";
+  return new Date(t).toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 function ClockBar({
@@ -1670,42 +1779,37 @@ function ClockBar({
   }
 
   // State 2: clocked into THIS project.
+  // The manual "Clock Out" button used to live here. It moved into
+  // the project's top-right kebab menu so the bottom CTA stays a
+  // single, predictable affordance: it's only ever a Clock-In path
+  // (or, while clocked in, ambient feedback). The kebab is the
+  // manual fallback for when auto-exit (geofence cron) doesn't fire.
   if (isClockedInHere) {
+    const sinceLabel = formatClockInTime(active.clockIn);
     return (
       <Animated.View style={[containerStyle, animatedBarStyle]}>
-        <View style={styles.clockStatusCol}>
-          <Text style={[styles.clockStatusLbl, { color: colors.mutedForeground }]}>
-            CLOCKED IN
-          </Text>
-          <Text style={[styles.clockStatusVal, { color: colors.foreground }]}>
-            {formatElapsed(active.clockIn, now)}
-          </Text>
-        </View>
-        <Pressable
-          onPress={() => confirmClockOut()}
-          disabled={loading}
-          accessibilityRole="button"
-          accessibilityLabel="Clock out"
-          style={({ pressed }) => [
-            styles.clockBtn,
-            styles.clockBtnInline,
+        <View
+          style={[
+            styles.clockStatusPill,
             {
-              backgroundColor: colors.foreground,
-              opacity: loading ? 0.6 : pressed ? 0.85 : 1,
+              backgroundColor: "#ef9003" + "1A",
+              borderColor: "#ef9003" + "55",
             },
           ]}
         >
+          <Feather name="clock" size={14} color="#ef9003" />
+          <Text
+            style={[styles.clockStatusPillTxt, { color: "#ef9003" }]}
+            numberOfLines={1}
+          >
+            {sinceLabel
+              ? `Clocked in since ${sinceLabel} · ${formatElapsed(active.clockIn, now)}`
+              : `Clocked in · ${formatElapsed(active.clockIn, now)}`}
+          </Text>
           {loading ? (
-            <ActivityIndicator color={colors.background} />
-          ) : (
-            <>
-              <Feather name="stop-circle" size={18} color={colors.background} />
-              <Text style={[styles.clockBtnTxt, { color: colors.background }]}>
-                Clock Out
-              </Text>
-            </>
-          )}
-        </Pressable>
+            <ActivityIndicator size="small" color="#ef9003" />
+          ) : null}
+        </View>
       </Animated.View>
     );
   }
@@ -2434,6 +2538,53 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: "Inter_600SemiBold",
     marginTop: 2,
+  },
+  // State 2 status pill — replaces the old "Clock Out" button. Tinted
+  // orange so it reads as ambient feedback (project is on the clock)
+  // without acting as a CTA. Manual clock-out lives in the kebab.
+  clockStatusPill: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  clockStatusPillTxt: {
+    flex: 1,
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+  },
+  // Kebab popover (top-right overflow menu).
+  menuBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.25)",
+  },
+  menuSheet: {
+    position: "absolute",
+    right: 12,
+    minWidth: 200,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingVertical: 6,
+    shadowColor: "#000",
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
+  menuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
+  menuItemTxt: {
+    fontSize: 14,
+    fontFamily: "Inter_600SemiBold",
   },
   pillTabsRow: {
     paddingHorizontal: 16,
