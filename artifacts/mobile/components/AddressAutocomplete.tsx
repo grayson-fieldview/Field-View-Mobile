@@ -3,6 +3,7 @@ import Constants from "expo-constants";
 import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -15,13 +16,25 @@ import { useColors } from "@/hooks/useColors";
 const PLACES_API_KEY =
   (process.env.EXPO_PUBLIC_GOOGLE_PLACES_API_KEY as string | undefined) ?? "";
 
-// TEMP DIAGNOSTIC (remove after triage). Logs once per app launch, not
-// per mount. Tracks whether the API key is wired and what bundle
-// identity Google sees from this client (Expo Go vs production build
-// vs dev build all have different bundle ids — a common cause of
-// REQUEST_DENIED on a key that's restricted by iOS bundle id /
-// Android package).
-let __PLACES_DIAG_LOGGED__ = false;
+// Places API (New) does not auto-infer the calling app's bundle id
+// the way the legacy SDK did. iOS- / Android-restricted keys 403 with
+// API_KEY_IOS_APP_BLOCKED unless we explicitly send the bundle id /
+// package as a header on every request. Fall back to the production
+// bundle id if the runtime config is missing (e.g. some dev clients).
+const FALLBACK_BUNDLE_ID = "com.fieldview.app";
+function placesAuthHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    "X-Goog-Api-Key": PLACES_API_KEY,
+  };
+  if (Platform.OS === "ios") {
+    headers["X-Ios-Bundle-Identifier"] =
+      Constants.expoConfig?.ios?.bundleIdentifier ?? FALLBACK_BUNDLE_ID;
+  } else if (Platform.OS === "android") {
+    headers["X-Android-Package"] =
+      Constants.expoConfig?.android?.package ?? FALLBACK_BUNDLE_ID;
+  }
+  return headers;
+}
 
 interface PlacePrediction {
   placeId: string;
@@ -51,28 +64,6 @@ export function AddressAutocomplete({
   const [open, setOpen] = useState(false);
   const sessionToken = useRef<string>(generateToken());
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const firstRequestLoggedRef = useRef(false);
-
-  // TEMP DIAGNOSTIC (remove after triage).
-  useEffect(() => {
-    if (__PLACES_DIAG_LOGGED__) return;
-    __PLACES_DIAG_LOGGED__ = true;
-    const ios = Constants.expoConfig?.ios?.bundleIdentifier ?? "(none)";
-    const android = Constants.expoConfig?.android?.package ?? "(none)";
-    // eslint-disable-next-line no-console
-    console.log("[Places diag]", {
-      keyPresent: PLACES_API_KEY.length > 0,
-      keyLength: PLACES_API_KEY.length,
-      executionEnvironment: Constants.executionEnvironment,
-      appOwnership: Constants.appOwnership,
-      configuredBundleIdIOS: ios,
-      configuredPackageAndroid: android,
-      // Note: in Expo Go the *actual* runtime bundle id is
-      // host.exp.Exponent (iOS) / host.exp.exponent (Android) — NOT
-      // the value above — and Google will reject the key if it's
-      // restricted to com.fieldview.app.
-    });
-  }, []);
 
   useEffect(() => {
     if (!PLACES_API_KEY) return;
@@ -90,7 +81,7 @@ export function AddressAutocomplete({
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              "X-Goog-Api-Key": PLACES_API_KEY,
+              ...placesAuthHeaders(),
             },
             body: JSON.stringify({
               input: value,
@@ -99,33 +90,8 @@ export function AddressAutocomplete({
           },
         );
         if (!res.ok) {
-          // TEMP DIAGNOSTIC (remove after triage). Log the *first*
-          // failed response per launch with status + body so we can
-          // distinguish REQUEST_DENIED (key/restriction/billing) from
-          // INVALID_ARGUMENT (bad request shape) from quota.
-          if (!firstRequestLoggedRef.current) {
-            firstRequestLoggedRef.current = true;
-            const bodyText = await res
-              .text()
-              .catch(() => "(failed to read body)");
-            // eslint-disable-next-line no-console
-            console.log("[Places diag] autocomplete non-OK", {
-              status: res.status,
-              statusText: res.statusText,
-              bodySnippet: bodyText.slice(0, 500),
-            });
-          }
           setPredictions([]);
           return;
-        }
-        // TEMP DIAGNOSTIC (remove after triage). Confirm a successful
-        // first response so we know the key works on the current build.
-        if (!firstRequestLoggedRef.current) {
-          firstRequestLoggedRef.current = true;
-          // eslint-disable-next-line no-console
-          console.log("[Places diag] autocomplete OK", {
-            status: res.status,
-          });
         }
         const data = (await res.json()) as {
           suggestions?: Array<{
@@ -150,17 +116,7 @@ export function AddressAutocomplete({
             };
           });
         setPredictions(next);
-      } catch (err) {
-        // TEMP DIAGNOSTIC (remove after triage). Network/DNS/TLS
-        // failures show up here, not in the !res.ok branch.
-        if (!firstRequestLoggedRef.current) {
-          firstRequestLoggedRef.current = true;
-          // eslint-disable-next-line no-console
-          console.log("[Places diag] autocomplete threw", {
-            name: err instanceof Error ? err.name : typeof err,
-            message: err instanceof Error ? err.message : String(err),
-          });
-        }
+      } catch {
         setPredictions([]);
       } finally {
         setLoading(false);
@@ -181,7 +137,7 @@ export function AddressAutocomplete({
         )}?sessionToken=${sessionToken.current}`,
         {
           headers: {
-            "X-Goog-Api-Key": PLACES_API_KEY,
+            ...placesAuthHeaders(),
             "X-Goog-FieldMask": "formattedAddress,location",
           },
         },
