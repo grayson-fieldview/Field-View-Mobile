@@ -393,6 +393,94 @@ export interface BackendTimesheetEntry {
   [key: string]: unknown;
 }
 
+// ----- Checklists v2 (field-MVP, 2026-05) -----
+//
+// Read-mostly mobile surface over the server's checklist schema. Mobile
+// can read templates + instances and write item values / notes / photo
+// attachments. Authoring NEW instances / items / templates is web-only —
+// mobile can only "apply template" to spawn an instance from an existing
+// template. All field names are camelCase to match the wire format the
+// rest of api.ts already assumes.
+
+export type ChecklistFieldType =
+  | "yes_no"
+  | "rating"
+  | "text"
+  | "multiple_choice";
+
+export interface BackendChecklist {
+  id: number | string;
+  projectId: number | string;
+  title: string;
+  /** Source template if this instance was applied from one (null for ad-hoc). */
+  templateId?: number | string | null;
+  templateTitle?: string | null;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface BackendChecklistSection {
+  id: number | string;
+  checklistId: number | string;
+  title: string;
+  sortOrder: number;
+}
+
+export interface BackendChecklistItem {
+  id: number | string;
+  checklistId: number | string;
+  /** May be null for items not grouped into a section. */
+  sectionId?: number | string | null;
+  label: string;
+  fieldType: ChecklistFieldType;
+  sortOrder: number;
+  /** Server-side hint that the field is required to "complete" the item. */
+  required?: boolean;
+  /** Number of photos required before the item is considered complete (0 = none). */
+  photosRequired?: number;
+  /** Optional helper text rendered under the label. */
+  helpText?: string | null;
+  // ----- value fields (only the one matching fieldType is meaningful) -----
+  valueBool?: boolean | null;
+  valueRating?: number | null;
+  valueText?: string | null;
+  selectedOptionId?: number | null;
+  notes?: string | null;
+  /** Server-stamped when the item transitions to "has value". */
+  completedAt?: string | null;
+  /** Optional per-item assignee. */
+  assignedToUserId?: string | null;
+}
+
+export interface BackendChecklistItemOption {
+  id: number | string;
+  itemId: number | string;
+  label: string;
+  sortOrder: number;
+}
+
+export interface BackendChecklistItemPhoto {
+  /** Junction row id — pass to detachPhotoFromItem. */
+  id: number | string;
+  itemId: number | string;
+  mediaId: number;
+  /** Convenience copy from the joined media row, for immediate render. */
+  url: string;
+  createdAt?: string;
+}
+
+export interface BackendChecklistTemplate {
+  id: number | string;
+  title: string;
+  description?: string | null;
+  /** Optional short tag (e.g. "Punch list", "Site walk"). */
+  category?: string | null;
+  /** Counts so the picker can preview without a second round-trip. */
+  sectionCount?: number;
+  itemCount?: number;
+  createdAt: string;
+}
+
 export interface BackendProjectDetail {
   project: BackendProject;
   media?: BackendMedia[];
@@ -894,6 +982,101 @@ export const api = {
       `/api/projects/${projectId}/assignments/${userId}`,
       { method: "DELETE", allowEmptyBody: true },
     ),
+
+  // ===== Checklists v2 (server-backed; field-MVP, 2026-05) =====
+  // Read everything; write item values, notes, photo attachments, and
+  // template-application. Cannot author new instances/items/templates
+  // (web-only). Endpoint contracts mirror the v2 schema described in the
+  // shipping spec — backend support is a peer change. If a path 404s,
+  // the spec author has the source of truth.
+
+  /** Project's checklist instances (id/title/template/createdAt only). */
+  listChecklistsForProject: (projectId: string | number) =>
+    apiFetch<BackendChecklist[]>(`/api/projects/${projectId}/checklists`),
+
+  /** Sections within a checklist instance, in sortOrder. */
+  listChecklistSections: (checklistId: string | number) =>
+    apiFetch<BackendChecklistSection[]>(
+      `/api/checklists/${checklistId}/sections`,
+    ),
+
+  /** All items within a checklist instance (across sections), in sortOrder. */
+  listChecklistItems: (checklistId: string | number) =>
+    apiFetch<BackendChecklistItem[]>(
+      `/api/checklists/${checklistId}/items`,
+    ),
+
+  /** Multiple-choice options for a single item (empty for non-MC items). */
+  listChecklistItemOptions: (itemId: string | number) =>
+    apiFetch<BackendChecklistItemOption[]>(
+      `/api/checklist-items/${itemId}/options`,
+    ),
+
+  /** Photos already attached to a single item. */
+  listChecklistItemPhotos: (itemId: string | number) =>
+    apiFetch<BackendChecklistItemPhoto[]>(
+      `/api/checklist-items/${itemId}/photos`,
+    ),
+
+  /**
+   * Patch one or more value fields on an item. Pass only the fields you
+   * intend to change; omitted fields are untouched server-side. Server
+   * stamps completedAt automatically when the item transitions from
+   * "no value" → "any value" (and clears it on the reverse), so callers
+   * generally do not need to send completedAt themselves.
+   */
+  updateChecklistItem: (
+    itemId: string | number,
+    patch: Partial<{
+      valueBool: boolean | null;
+      valueRating: number | null;
+      valueText: string | null;
+      selectedOptionId: number | null;
+      notes: string | null;
+      assignedToUserId: string | null;
+      completedAt: string | null;
+    }>,
+  ) =>
+    apiFetch<BackendChecklistItem>(`/api/checklist-items/${itemId}`, {
+      method: "PATCH",
+      json: patch,
+    }),
+
+  /**
+   * Attach an existing media row to a checklist item. Returns the
+   * created junction row (id + mediaId + url for immediate render).
+   * Idempotent on (itemId, mediaId) server-side.
+   */
+  attachPhotoToItem: (itemId: string | number, mediaId: number) =>
+    apiFetch<BackendChecklistItemPhoto>(
+      `/api/checklist-items/${itemId}/photos`,
+      { method: "POST", json: { mediaId } },
+    ),
+
+  /** Detach a previously-attached photo. The media row itself is preserved. */
+  detachPhotoFromItem: (itemPhotoId: string | number) =>
+    apiFetch<void>(`/api/checklist-item-photos/${itemPhotoId}`, {
+      method: "DELETE",
+      allowEmptyBody: true,
+    }),
+
+  /** Available templates for the current account. Used by the picker modal. */
+  listChecklistTemplates: () =>
+    apiFetch<BackendChecklistTemplate[]>("/api/checklist-templates"),
+
+  /**
+   * Apply a template to a project: server clones the template's sections +
+   * items into a fresh checklist instance and returns it. The list view
+   * should refetch after this resolves.
+   */
+  applyChecklistTemplate: (
+    projectId: string | number,
+    templateId: string | number,
+  ) =>
+    apiFetch<BackendChecklist>(`/api/projects/${projectId}/checklists`, {
+      method: "POST",
+      json: { templateId },
+    }),
 };
 
 /** Normalize the various user shapes the backend might return. */

@@ -18,13 +18,7 @@ import {
   mapBackendTask,
 } from "@/services/mappers";
 import { storage } from "@/services/storage";
-import type {
-  Checklist,
-  ChecklistItem,
-  Photo,
-  Project,
-  Task,
-} from "@/services/types";
+import type { Photo, Project, Task } from "@/services/types";
 import {
   clearAll as clearUploadQueueAll,
   enqueueUpload,
@@ -33,18 +27,21 @@ import {
 } from "@/services/uploadQueue";
 
 /** Shape callers pass to addPhoto/addPhotosBatch. The optional upload-meta
- *  fields trigger background enqueue when all three are present. */
+ *  fields trigger background enqueue when all three are present.
+ *  `checklistItemId` (optional) tags the resulting upload so the upload
+ *  queue's post-upload tagger attaches the new media to that checklist
+ *  item once it lands server-side. */
 type AddPhotoInput = Omit<Photo, "id" | "uploaded" | "uploadQueueId"> & {
   originalName?: string;
   mimeType?: string;
   fileSize?: number;
+  checklistItemId?: string;
 };
 
 interface DataState {
   projects: Project[];
   photos: Photo[];
   tasks: Task[];
-  checklists: Checklist[];
   ready: boolean;
   syncing: boolean;
   syncError: string | null;
@@ -52,7 +49,8 @@ interface DataState {
   /** Re-sync projects + tasks from the backend (pass `{force:true}` to bypass throttling). */
   refresh: (opts?: { force?: boolean }) => Promise<void>;
 
-  /** Load a single project's detail (photos + tasks + checklists) into state. */
+  /** Load a single project's detail (photos + tasks) into state. Checklists
+   *  are loaded separately via the useProjectChecklists hook (server-backed). */
   loadProjectDetail: (id: string) => Promise<void>;
 
   createProject: (
@@ -77,17 +75,6 @@ interface DataState {
   ) => Promise<Task>;
   toggleTask: (id: string) => Promise<void>;
   deleteTask: (id: string) => Promise<void>;
-
-  createChecklist: (
-    projectId: string,
-    title: string,
-    items: string[],
-  ) => Promise<Checklist>;
-  toggleChecklistItem: (
-    checklistId: string,
-    itemId: string,
-  ) => Promise<void>;
-  deleteChecklist: (id: string) => Promise<void>;
 
   /** Wipe all local data (used by account-deletion / leave-team flows). */
   clearAll: () => Promise<void>;
@@ -114,7 +101,6 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [checklists, setChecklists] = useState<Checklist[]>([]);
   const [ready, setReady] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -126,16 +112,14 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       // projects key that could be left in a truncated state by an older
       // build of loadProjectDetail). Fire-and-forget; failures are harmless.
       storage.pruneLegacyKeys();
-      const [p, ph, ts, cl] = await Promise.all([
+      const [p, ph, ts] = await Promise.all([
         storage.getProjects(),
         storage.getPhotos(),
         storage.getTasks(),
-        storage.getChecklists(),
       ]);
       setProjects(p);
       setPhotos(ph);
       setTasks(ts);
-      setChecklists(cl);
       setReady(true);
     })();
   }, []);
@@ -151,10 +135,6 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const persistTasks = useCallback(async (next: Task[]) => {
     setTasks(next);
     await storage.setTasks(next);
-  }, []);
-  const persistChecklists = useCallback(async (next: Checklist[]) => {
-    setChecklists(next);
-    await storage.setChecklists(next);
   }, []);
 
   // --- Backend sync ---
@@ -346,23 +326,21 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       await persistProjects(projects.filter((p) => p.id !== id));
       await persistPhotos(photos.filter((p) => p.projectId !== id));
       await persistTasks(tasks.filter((t) => t.projectId !== id));
-      await persistChecklists(checklists.filter((c) => c.projectId !== id));
     },
     [
       projects,
       photos,
       tasks,
-      checklists,
       persistProjects,
       persistPhotos,
       persistTasks,
-      persistChecklists,
     ],
   );
 
   const addPhoto: DataState["addPhoto"] = useCallback(
     async (input) => {
-      const { originalName, mimeType, fileSize, ...photoFields } = input;
+      const { originalName, mimeType, fileSize, checklistItemId, ...photoFields } =
+        input;
       let uploadQueueId: string | undefined;
       if (
         originalName &&
@@ -379,6 +357,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
             fileSize,
             latitude: input.latitude,
             longitude: input.longitude,
+            checklistItemId,
           });
           uploadQueueId = queued.id;
         } catch (e) {
@@ -418,6 +397,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
                 fileSize: i.fileSize,
                 latitude: i.latitude,
                 longitude: i.longitude,
+                checklistItemId: i.checklistItemId,
               });
               return queued.id;
             } catch (e) {
@@ -429,10 +409,12 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         }),
       );
       const created: Photo[] = inputs.map((i, idx) => {
-        const { originalName, mimeType, fileSize, ...photoFields } = i;
+        const { originalName, mimeType, fileSize, checklistItemId, ...photoFields } =
+          i;
         void originalName;
         void mimeType;
         void fileSize;
+        void checklistItemId;
         return {
           ...photoFields,
           id: newId(),
@@ -483,6 +465,15 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
                 remoteUrl: url,
                 uploaded: true,
                 remote: true,
+                // Persist the server media id so consumers (e.g. the
+                // checklist photo-picker) can reference this photo by its
+                // server identity even before a full project refetch
+                // remaps `id`. We intentionally keep `id` as the local
+                // UUID so list keys stay stable.
+                mediaId:
+                  typeof item.uploadedMediaId === "number"
+                    ? item.uploadedMediaId
+                    : p.mediaId,
               }
             : p,
         );
@@ -555,49 +546,6 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     [tasks, persistTasks],
   );
 
-  const createChecklist: DataState["createChecklist"] = useCallback(
-    async (projectId, title, items) => {
-      const checklist: Checklist = {
-        id: newId(),
-        projectId,
-        title: title.trim(),
-        items: items
-          .map((t) => t.trim())
-          .filter(Boolean)
-          .map<ChecklistItem>((text) => ({ id: newId(), text, done: false })),
-        createdAt: new Date().toISOString(),
-      };
-      await persistChecklists([checklist, ...checklists]);
-      return checklist;
-    },
-    [checklists, persistChecklists],
-  );
-
-  const toggleChecklistItem: DataState["toggleChecklistItem"] = useCallback(
-    async (checklistId, itemId) => {
-      await persistChecklists(
-        checklists.map((c) =>
-          c.id === checklistId
-            ? {
-                ...c,
-                items: c.items.map((i) =>
-                  i.id === itemId ? { ...i, done: !i.done } : i,
-                ),
-              }
-            : c,
-        ),
-      );
-    },
-    [checklists, persistChecklists],
-  );
-
-  const deleteChecklist: DataState["deleteChecklist"] = useCallback(
-    async (id) => {
-      await persistChecklists(checklists.filter((c) => c.id !== id));
-    },
-    [checklists, persistChecklists],
-  );
-
   const clearAll: DataState["clearAll"] = useCallback(async () => {
     // Wipe in-memory + persisted local data. Used by account-deletion and
     // leave-team flows to ensure a deleted user's data doesn't linger and
@@ -607,19 +555,17 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       persistProjects([]),
       persistPhotos([]),
       persistTasks([]),
-      persistChecklists([]),
       clearUploadQueueAll().catch(() => {}),
     ]);
     setSyncError(null);
     lastSyncRef.current = 0;
-  }, [persistProjects, persistPhotos, persistTasks, persistChecklists]);
+  }, [persistProjects, persistPhotos, persistTasks]);
 
   const value = useMemo<DataState>(
     () => ({
       projects,
       photos,
       tasks,
-      checklists,
       ready,
       syncing,
       syncError,
@@ -635,16 +581,12 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       createTask,
       toggleTask,
       deleteTask,
-      createChecklist,
-      toggleChecklistItem,
-      deleteChecklist,
       clearAll,
     }),
     [
       projects,
       photos,
       tasks,
-      checklists,
       ready,
       syncing,
       syncError,
@@ -660,9 +602,6 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       createTask,
       toggleTask,
       deleteTask,
-      createChecklist,
-      toggleChecklistItem,
-      deleteChecklist,
       clearAll,
     ],
   );

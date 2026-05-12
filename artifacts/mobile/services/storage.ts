@@ -1,6 +1,5 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import type {
-  Checklist,
   Photo,
   Project,
   Task,
@@ -18,7 +17,6 @@ const KEYS = {
   projects: "@fv/projects/v2",
   photos: "@fv/photos",
   tasks: "@fv/tasks",
-  checklists: "@fv/checklists",
   // Preferences. Read/written directly by services/preferences.ts
   // (tri-state, can't use the binary getFlag/setFlag wrappers below).
   // Listed here to keep the @fv/ namespace registry in one place.
@@ -26,9 +24,11 @@ const KEYS = {
 } as const;
 
 // Orphaned cache keys to remove on every app start. `@fv/shares` is the
-// dropped fake-share-link cache from the pre-real-invites era — leave
-// it in this list for a release or two so existing installs purge it.
-const LEGACY_KEYS = ["@fv/projects", "@fv/shares"] as const;
+// dropped fake-share-link cache from the pre-real-invites era; `@fv/checklists`
+// is the dropped local-only AsyncStorage checklist cache replaced by the v2
+// server-backed checklists in 2026-05. Leave both in this list for a release
+// or two so existing installs purge them.
+const LEGACY_KEYS = ["@fv/projects", "@fv/shares", "@fv/checklists"] as const;
 
 async function readJson<T>(key: string, fallback: T): Promise<T> {
   try {
@@ -63,9 +63,6 @@ export const storage = {
 
   getTasks: () => readJson<Task[]>(KEYS.tasks, []),
   setTasks: (t: Task[]) => writeJson(KEYS.tasks, t),
-
-  getChecklists: () => readJson<Checklist[]>(KEYS.checklists, []),
-  setChecklists: (c: Checklist[]) => writeJson(KEYS.checklists, c),
 
   clearSession: async () => {
     await AsyncStorage.multiRemove([KEYS.user, KEYS.authToken]);

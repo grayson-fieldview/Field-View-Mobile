@@ -106,7 +106,16 @@ export default function CaptureScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { projectId } = useLocalSearchParams<{ projectId: string }>();
+  const { projectId, checklistItemId } = useLocalSearchParams<{
+    projectId: string;
+    /**
+     * Optional. When set, every photo captured (single shot OR burst) in
+     * this session is auto-attached to the named checklist item once it
+     * finishes uploading. Forwarded into the upload-queue entries so the
+     * post-upload tagger calls api.attachPhotoToItem on success.
+     */
+    checklistItemId?: string;
+  }>();
   const { projects, addPhoto, addPhotosBatch } = useData();
   const project = projects.find((p) => p.id === projectId);
 
@@ -278,6 +287,7 @@ export default function CaptureScreen() {
           originalName: prepared?.originalName,
           mimeType: prepared?.mimeType,
           fileSize: prepared?.fileSize,
+          checklistItemId,
         });
         setSessionCount((s) => s + 1);
         Haptics.notificationAsync(
@@ -331,6 +341,7 @@ export default function CaptureScreen() {
           originalName: p?.originalName,
           mimeType: p?.mimeType,
           fileSize: p?.fileSize,
+          checklistItemId,
         })),
       );
       setSessionCount((s) => s + buffer.current.length);
@@ -426,6 +437,7 @@ export default function CaptureScreen() {
           originalName: p?.originalName,
           mimeType: p?.mimeType,
           fileSize: p?.fileSize,
+          checklistItemId,
         })),
       );
       setSessionCount((s) => s + res.assets.length);

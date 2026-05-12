@@ -1,6 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import NetInfo from "@react-native-community/netinfo";
-import { api, UploadExpiredError } from "./api";
+import {
+  api,
+  UploadExpiredError,
+  type BackendChecklistItemPhoto,
+} from "./api";
 import { newId } from "./id";
 
 const STORAGE_KEY = "@fv/upload_queue";
@@ -27,6 +31,13 @@ export interface QueuedUpload {
   fileSize: number;
   latitude?: number;
   longitude?: number;
+  /**
+   * Optional checklist-item attach target. When set, the post-upload tagger
+   * (see processItem) calls api.attachPhotoToItem(checklistItemId, mediaId)
+   * after the Media row is created. Errors there are logged but do not fail
+   * the upload — the photo still lands on the project.
+   */
+  checklistItemId?: string;
   status: "pending" | "uploading" | "uploaded" | "failed";
   attemptCount: number;
   nextRetryAt?: number;
@@ -43,11 +54,30 @@ export type EnqueueInput = Omit<
 
 type Listener = (queue: QueuedUpload[]) => void;
 
+/**
+ * Result of the post-upload checklist-item attach step. Emitted exactly
+ * once per upload that carried a `checklistItemId`, after the attach
+ * settles (success OR final failure following retries). Subscribers can
+ * use this to update their UI immediately without polling — the success
+ * payload includes the server-issued junction row, so a refetch is not
+ * required on the happy path.
+ */
+export interface ChecklistAttachEvent {
+  checklistItemId: string;
+  mediaId: number;
+  /** Present on success — the new junction row. */
+  photo?: BackendChecklistItemPhoto;
+  /** Present on failure — human-readable message. */
+  error?: string;
+}
+type AttachListener = (event: ChecklistAttachEvent) => void;
+
 // ---- Module state ----
 let queue: QueuedUpload[] = [];
 let loaded = false;
 let loadPromise: Promise<void> | null = null;
 const subscribers = new Set<Listener>();
+const attachSubscribers = new Set<AttachListener>();
 const inFlight = new Set<string>();
 let tickInterval: ReturnType<typeof setInterval> | null = null;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -102,6 +132,46 @@ function notifySubscribers(): void {
       console.log("[upload-queue] subscriber threw:", e);
     }
   }
+}
+
+function emitAttach(event: ChecklistAttachEvent): void {
+  for (const fn of attachSubscribers) {
+    try {
+      fn(event);
+    } catch (e) {
+      console.log("[upload-queue] attach subscriber threw:", e);
+    }
+  }
+}
+
+const ATTACH_RETRY_DELAYS_MS = [0, 2_000, 8_000];
+
+async function attachWithRetry(
+  checklistItemId: string,
+  mediaId: number,
+): Promise<void> {
+  let lastErr: unknown;
+  for (let i = 0; i < ATTACH_RETRY_DELAYS_MS.length; i++) {
+    const delay = ATTACH_RETRY_DELAYS_MS[i] ?? 0;
+    if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+    try {
+      const photo = await api.attachPhotoToItem(checklistItemId, mediaId);
+      console.log(
+        `[upload-queue] ✓ attached media ${mediaId} → item ${checklistItemId} (attempt ${i + 1})`,
+      );
+      emitAttach({ checklistItemId, mediaId, photo });
+      return;
+    } catch (e) {
+      lastErr = e;
+      console.log(
+        `[upload-queue] attach attempt ${i + 1} failed for media ${mediaId} → item ${checklistItemId}:`,
+        e,
+      );
+    }
+  }
+  const message =
+    lastErr instanceof Error ? lastErr.message : String(lastErr ?? "unknown error");
+  emitAttach({ checklistItemId, mediaId, error: message });
 }
 
 function schedulePersist(): void {
@@ -211,6 +281,16 @@ async function processItem(item: QueuedUpload): Promise<void> {
       nextRetryAt: undefined,
     });
     console.log(`[upload-queue] ✓ uploaded ${tag} → mediaId=${created.id}`);
+
+    // Post-upload tagger: if this upload was scoped to a checklist item,
+    // attach the new media to that item. Async-with-retry — the upload
+    // itself stays "uploaded" regardless (the photo is already on the
+    // project). The result of the attach (success or final failure) is
+    // emitted via subscribeAttach so the checklist UI can react without
+    // polling/timing hacks.
+    if (item.checklistItemId && Number.isFinite(mediaId)) {
+      void attachWithRetry(item.checklistItemId, mediaId);
+    }
     // TODO: notify DataContext to refresh project media after successful upload
   } catch (e) {
     if (!queue.some((it) => it.id === item.id)) {
@@ -303,6 +383,19 @@ export async function enqueueUpload(
 export async function getQueue(): Promise<QueuedUpload[]> {
   await ensureLoaded();
   return [...queue];
+}
+
+/**
+ * Subscribe to attach-step results for uploads that carried a
+ * `checklistItemId`. Fires exactly once per such upload with either a
+ * `photo` (success) or an `error` (final failure after retries).
+ * Returns an unsubscribe function.
+ */
+export function subscribeAttach(listener: AttachListener): () => void {
+  attachSubscribers.add(listener);
+  return () => {
+    attachSubscribers.delete(listener);
+  };
 }
 
 export function subscribe(listener: Listener): () => void {

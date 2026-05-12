@@ -31,12 +31,14 @@ import { ClockReceiptBanner } from "@/components/ClockReceiptBanner";
 import { EmptyState } from "@/components/EmptyState";
 import { Input } from "@/components/Input";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
+import { TemplatePickerModal } from "@/components/TemplatePickerModal";
 import { useAuth } from "@/contexts/AuthContext";
 import { useData } from "@/contexts/DataContext";
 import { useTimesheet, type TimesheetState } from "@/contexts/TimesheetContext";
 import { useToast } from "@/contexts/ToastContext";
 import { useUploadStatus } from "@/contexts/UploadStatusContext";
 import { useColors } from "@/hooks/useColors";
+import { useProjectChecklists } from "@/hooks/useProjectChecklists";
 import { api, ApiError, type BackendProjectAssignment } from "@/services/api";
 import {
   removeItem as removeUploadQueueItem,
@@ -65,14 +67,10 @@ export default function ProjectDetailScreen() {
     projects,
     photos,
     tasks,
-    checklists,
     deleteProject,
     createTask,
     toggleTask,
     deleteTask,
-    createChecklist,
-    toggleChecklistItem,
-    deleteChecklist,
     deletePhoto,
     loadProjectDetail,
   } = useData();
@@ -97,10 +95,17 @@ export default function ProjectDetailScreen() {
     () => tasks.filter((t) => t.projectId === id),
     [tasks, id],
   );
-  const projectChecklists = useMemo(
-    () => checklists.filter((c) => c.projectId === id),
-    [checklists, id],
-  );
+  // Server-backed checklist instances for this project (v2 schema, 2026-05).
+  // The hook owns its own loading + error state and refetches whenever the
+  // project id changes; we just consume the array for the tab body and
+  // forward the apply-template callback to the picker modal.
+  const {
+    checklists: projectChecklists,
+    loading: checklistsLoading,
+    error: checklistsError,
+    refresh: refreshChecklists,
+    applyTemplate,
+  } = useProjectChecklists(id);
   // Real per-project team list (replaces the local-only ShareLink cache).
   // Loaded on demand when the Team tab is opened — no point pinging the
   // server for assignments the user may never view. Refreshed after a
@@ -1076,34 +1081,68 @@ export default function ProjectDetailScreen() {
 
         {tab === "checklists" ? (
           <View style={styles.body}>
-            {projectChecklists.length === 0 ? (
+            {checklistsLoading && projectChecklists.length === 0 ? (
+              <View style={{ paddingVertical: 32, alignItems: "center" }}>
+                <ActivityIndicator color={colors.mutedForeground} />
+              </View>
+            ) : checklistsError && projectChecklists.length === 0 ? (
+              <View style={{ gap: 10 }}>
+                <Text
+                  style={{
+                    color: colors.destructive,
+                    fontFamily: "Inter_500Medium",
+                    fontSize: 14,
+                  }}
+                >
+                  {checklistsError}
+                </Text>
+                <Button
+                  title="Retry"
+                  variant="secondary"
+                  onPress={() => void refreshChecklists()}
+                />
+              </View>
+            ) : projectChecklists.length === 0 ? (
               <EmptyState
                 icon="list"
                 title="No checklists yet"
-                description="Build repeatable checklists for site walks and handoffs."
+                description="Apply a template to spawn a checklist for this project. New templates and items are managed on the web."
                 action={
                   <Button
-                    title="New checklist"
+                    title="Apply template"
                     onPress={() => setShowChecklistModal(true)}
                   />
                 }
               />
             ) : (
-              <View style={{ gap: 14 }}>
+              <View style={{ gap: 12 }}>
                 {projectChecklists.map((c) => {
-                  const done = c.items.filter((i) => i.done).length;
+                  // Tappable summary row — opens the detail screen which owns
+                  // sections + items + photo workflow. We don't fetch counts
+                  // here (would mean N+1); the detail screen shows progress.
                   return (
-                    <View
-                      key={c.id}
-                      style={[
+                    <Pressable
+                      key={String(c.id)}
+                      onPress={() =>
+                        router.push({
+                          pathname: "/checklist/[id]",
+                          params: {
+                            id: String(c.id),
+                            title: c.title,
+                            projectId: project.id,
+                          },
+                        })
+                      }
+                      style={({ pressed }) => [
                         styles.checklistCard,
                         {
                           backgroundColor: colors.card,
                           borderColor: colors.border,
+                          opacity: pressed ? 0.85 : 1,
                         },
                       ]}
                     >
-                      <View style={styles.checklistHeader}>
+                      <View style={{ flex: 1, gap: 4 }}>
                         <Text
                           style={[
                             styles.checklistTitle,
@@ -1112,91 +1151,27 @@ export default function ProjectDetailScreen() {
                         >
                           {c.title}
                         </Text>
-                        <Text
-                          style={[
-                            styles.checklistMeta,
-                            { color: colors.mutedForeground },
-                          ]}
-                        >
-                          {done}/{c.items.length}
-                        </Text>
-                      </View>
-                      <View style={{ gap: 6 }}>
-                        {c.items.map((item) => (
-                          <Pressable
-                            key={item.id}
-                            onPress={() => toggleChecklistItem(c.id, item.id)}
-                            style={styles.checklistItemRow}
+                        {c.templateTitle ? (
+                          <Text
+                            style={[
+                              styles.checklistMeta,
+                              { color: colors.mutedForeground },
+                            ]}
                           >
-                            <View
-                              style={[
-                                styles.checkboxSmall,
-                                {
-                                  borderColor: item.done
-                                    ? colors.primary
-                                    : colors.border,
-                                  backgroundColor: item.done
-                                    ? colors.primary
-                                    : "transparent",
-                                },
-                              ]}
-                            >
-                              {item.done ? (
-                                <Feather
-                                  name="check"
-                                  size={11}
-                                  color={colors.primaryForeground}
-                                />
-                              ) : null}
-                            </View>
-                            <Text
-                              style={[
-                                styles.checklistItemText,
-                                {
-                                  color: item.done
-                                    ? colors.mutedForeground
-                                    : colors.foreground,
-                                  textDecorationLine: item.done
-                                    ? "line-through"
-                                    : "none",
-                                },
-                              ]}
-                            >
-                              {item.text}
-                            </Text>
-                          </Pressable>
-                        ))}
+                            From: {c.templateTitle}
+                          </Text>
+                        ) : null}
                       </View>
-                      <Pressable
-                        onPress={() => {
-                          if (Platform.OS === "web")
-                            return deleteChecklist(c.id);
-                          Alert.alert("Delete checklist?", undefined, [
-                            { text: "Cancel", style: "cancel" },
-                            {
-                              text: "Delete",
-                              style: "destructive",
-                              onPress: () => deleteChecklist(c.id),
-                            },
-                          ]);
-                        }}
-                        style={{ alignSelf: "flex-end", paddingTop: 8 }}
-                      >
-                        <Text
-                          style={{
-                            color: colors.mutedForeground,
-                            fontFamily: "Inter_500Medium",
-                            fontSize: 13,
-                          }}
-                        >
-                          Delete
-                        </Text>
-                      </Pressable>
-                    </View>
+                      <Feather
+                        name="chevron-right"
+                        size={18}
+                        color={colors.mutedForeground}
+                      />
+                    </Pressable>
                   );
                 })}
                 <Button
-                  title="New checklist"
+                  title="Apply template"
                   variant="secondary"
                   onPress={() => setShowChecklistModal(true)}
                 />
@@ -1379,12 +1354,19 @@ export default function ProjectDetailScreen() {
           setShowTaskModal(false);
         }}
       />
-      <ChecklistModal
+      <TemplatePickerModal
         visible={showChecklistModal}
         onClose={() => setShowChecklistModal(false)}
-        onSubmit={async (title, items) => {
-          await createChecklist(project.id, title, items);
-          setShowChecklistModal(false);
+        onPick={async (templateId) => {
+          try {
+            const created = await applyTemplate(templateId);
+            showToast(`Applied "${created.title}".`);
+          } catch (e) {
+            showToast(
+              e instanceof Error ? e.message : "Couldn't apply template.",
+            );
+            throw e;
+          }
         }}
       />
       <AssignUserToProjectModal
@@ -1994,53 +1976,6 @@ function TaskModal({
           style={{ minHeight: 80, textAlignVertical: "top" }}
         />
         <Button title="Add task" onPress={save} loading={saving} size="lg" />
-      </ModalShell>
-    </Modal>
-  );
-}
-
-function ChecklistModal({
-  visible,
-  onClose,
-  onSubmit,
-}: {
-  visible: boolean;
-  onClose: () => void;
-  onSubmit: (title: string, items: string[]) => Promise<void>;
-}) {
-  const [title, setTitle] = useState("");
-  const [raw, setRaw] = useState("");
-  const [saving, setSaving] = useState(false);
-
-  const save = async () => {
-    if (!title.trim()) return;
-    setSaving(true);
-    try {
-      const items = raw
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean);
-      await onSubmit(title, items);
-      setTitle("");
-      setRaw("");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <ModalShell title="New checklist" onClose={onClose}>
-        <Input label="Title" value={title} onChangeText={setTitle} autoFocus />
-        <Input
-          label="Items (one per line)"
-          value={raw}
-          onChangeText={setRaw}
-          multiline
-          style={{ minHeight: 140, textAlignVertical: "top" }}
-          placeholder={"Verify framing\nCheck insulation\nPhotograph electrical"}
-        />
-        <Button title="Create checklist" onPress={save} loading={saving} size="lg" />
       </ModalShell>
     </Modal>
   );

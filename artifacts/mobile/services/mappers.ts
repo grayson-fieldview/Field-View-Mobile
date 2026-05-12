@@ -43,6 +43,7 @@ export function mapBackendMedia(m: BackendMedia): Photo {
     tags: m.tags ?? undefined,
     uploaded: true,
     remote: true,
+    mediaId: typeof m.id === "number" ? m.id : Number(m.id),
   };
 }
 

@@ -86,6 +86,16 @@ export interface Photo {
   uploaded: boolean;
   /** Links a local photo to its background-upload queue item until reconciled. */
   uploadQueueId?: string;
+  /**
+   * Server-side Media row id. Populated for two cases:
+   *  - photos that originated on the backend (set by mapBackendMedia), and
+   *  - locally-captured photos AFTER the upload queue reconciles (mirrored
+   *    from QueuedUpload.uploadedMediaId). The local photo's `id` field
+   *    remains the locally-generated UUID for stable list keys, so any
+   *    code that needs the *server* id (e.g. attaching to a checklist
+   *    item) must read mediaId, not id.
+   */
+  mediaId?: number;
   tags?: string[];
   remote?: boolean;
   annotations?: AnnotationStroke[];
@@ -104,18 +114,10 @@ export interface Task {
   assignee?: string;
 }
 
-export interface ChecklistItem {
-  id: string;
-  text: string;
-  done: boolean;
-}
-
-export interface Checklist {
-  id: string;
-  projectId: string;
-  title: string;
-  items: ChecklistItem[];
-  createdAt: string;
-}
+// Legacy local-only Checklist / ChecklistItem types removed in the v2
+// rewrite (mobile checklists field-MVP). Real checklists are now fetched
+// from the server via api.listChecklistsForProject + the
+// useProjectChecklists hook; their shape lives in services/api.ts as
+// BackendChecklist + BackendChecklistSection + BackendChecklistItem.
 
 export type Id = string;
