@@ -308,6 +308,10 @@ function RootLayoutNav() {
         options={{ title: "Project", headerBackTitle: "Back" }}
       />
       <Stack.Screen
+        name="report/[id]"
+        options={{ title: "Report", headerBackTitle: "Back" }}
+      />
+      <Stack.Screen
         name="project/new"
         options={{
           title: "New project",

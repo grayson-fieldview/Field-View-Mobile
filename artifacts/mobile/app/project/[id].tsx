@@ -32,6 +32,8 @@ import { ClockReceiptBanner } from "@/components/ClockReceiptBanner";
 import { EmptyState } from "@/components/EmptyState";
 import { Input } from "@/components/Input";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
+import { ApplyReportTemplateModal } from "@/components/ApplyReportTemplateModal";
+import { ReportListItem } from "@/components/ReportListItem";
 import { TemplatePickerModal } from "@/components/TemplatePickerModal";
 import { useAuth } from "@/contexts/AuthContext";
 import { useData } from "@/contexts/DataContext";
@@ -40,13 +42,14 @@ import { useToast } from "@/contexts/ToastContext";
 import { useUploadStatus } from "@/contexts/UploadStatusContext";
 import { useColors } from "@/hooks/useColors";
 import { useProjectChecklists } from "@/hooks/useProjectChecklists";
+import { useProjectReports } from "@/hooks/useProjectReports";
 import { api, ApiError, type BackendProjectAssignment } from "@/services/api";
 import {
   removeItem as removeUploadQueueItem,
   retryItem as retryUploadQueueItem,
 } from "@/services/uploadQueue";
 
-type TabKey = "photos" | "tasks" | "checklists" | "team";
+type TabKey = "photos" | "tasks" | "checklists" | "reports" | "team";
 
 export default function ProjectDetailScreen() {
   const colors = useColors();
@@ -107,6 +110,17 @@ export default function ProjectDetailScreen() {
     refresh: refreshChecklists,
     applyTemplate,
   } = useProjectChecklists(id);
+  // Server-backed reports for this project (Mobile Reports R1).
+  // Same pattern as checklists: hook owns its loading/error state,
+  // refetches on project id change, and exposes optimistic create +
+  // delete callbacks. The "+ New report" modal forwards to createReport.
+  const {
+    reports: projectReports,
+    loading: reportsLoading,
+    error: reportsError,
+    refresh: refreshReports,
+    createReport,
+  } = useProjectReports(id);
   // Real per-project team list (replaces the local-only ShareLink cache).
   // Loaded on demand when the Team tab is opened — no point pinging the
   // server for assignments the user may never view. Refreshed after a
@@ -119,6 +133,7 @@ export default function ProjectDetailScreen() {
   const [tab, setTab] = useState<TabKey>("photos");
   const [showTaskModal, setShowTaskModal] = useState(false);
   const [showChecklistModal, setShowChecklistModal] = useState(false);
+  const [showReportModal, setShowReportModal] = useState(false);
   const [showAssignUserModal, setShowAssignUserModal] = useState(false);
 
   const refreshAssignments = useCallback(async () => {
@@ -795,6 +810,11 @@ export default function ProjectDetailScreen() {
                 label: "Checklists",
                 count: projectChecklists.length,
               },
+              {
+                key: "reports",
+                label: "Reports",
+                count: projectReports.length,
+              },
               { key: "team", label: "Team", count: assignments.length },
             ] as { key: TabKey; label: string; count: number }[]
           ).map((t) => {
@@ -1206,6 +1226,68 @@ export default function ProjectDetailScreen() {
           </View>
         ) : null}
 
+        {tab === "reports" ? (
+          <View style={styles.body}>
+            {reportsLoading && projectReports.length === 0 ? (
+              <View style={{ paddingVertical: 32, alignItems: "center" }}>
+                <ActivityIndicator color={colors.mutedForeground} />
+              </View>
+            ) : reportsError && projectReports.length === 0 ? (
+              <View style={{ gap: 10 }}>
+                <Text
+                  style={{
+                    color: colors.destructive,
+                    fontFamily: "Inter_500Medium",
+                    fontSize: 14,
+                  }}
+                >
+                  {reportsError}
+                </Text>
+                <Button
+                  title="Retry"
+                  variant="secondary"
+                  onPress={() => void refreshReports()}
+                />
+              </View>
+            ) : projectReports.length === 0 ? (
+              <EmptyState
+                icon="file-text"
+                title="No reports yet"
+                description="Create a blank report or apply a template to get started. Templates are managed on the web."
+                action={
+                  <Button
+                    title="New report"
+                    onPress={() => setShowReportModal(true)}
+                  />
+                }
+              />
+            ) : (
+              <View style={{ gap: 12 }}>
+                {projectReports.map((r) => (
+                  <ReportListItem
+                    key={String(r.id)}
+                    report={r}
+                    onPress={() =>
+                      router.push({
+                        pathname: "/report/[id]",
+                        params: {
+                          id: String(r.id),
+                          projectId: project.id,
+                        },
+                      })
+                    }
+                  />
+                ))}
+                <Button
+                  title="New report"
+                  variant="secondary"
+                  onPress={() => setShowReportModal(true)}
+                />
+              </View>
+            )}
+          </View>
+        ) : null}
+
         {tab === "team" ? (
           <View style={styles.body}>
             {assignmentsLoading && assignments.length === 0 ? (
@@ -1403,6 +1485,34 @@ export default function ProjectDetailScreen() {
           } catch (e) {
             showToast(
               e instanceof Error ? e.message : "Couldn't apply template.",
+            );
+            throw e;
+          }
+        }}
+      />
+      <ApplyReportTemplateModal
+        visible={showReportModal}
+        onClose={() => setShowReportModal(false)}
+        onCreate={async (input) => {
+          try {
+            const created = await createReport(input);
+            showToast(
+              input.templateId
+                ? `Created "${created.title}" from template.`
+                : `Created "${created.title}".`,
+            );
+            // Jump straight into the new report so the user can start
+            // editing immediately.
+            router.push({
+              pathname: "/report/[id]",
+              params: {
+                id: String(created.id),
+                projectId: project.id,
+              },
+            });
+          } catch (e) {
+            showToast(
+              e instanceof Error ? e.message : "Couldn't create report.",
             );
             throw e;
           }

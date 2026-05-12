@@ -508,8 +508,92 @@ export interface BackendProjectDetail {
   media?: BackendMedia[];
   tasks?: BackendTask[];
   checklists?: unknown[];
-  reports?: unknown[];
+  reports?: BackendReport[];
 }
+
+// ----- Reports (Mobile Reports R1, 2026-05) -----
+//
+// Read + write surface for the report builder. Mobile can list, create
+// (blank or from template), edit metadata, author sections, attach +
+// detach project photos, edit photo captions, and trigger server-side
+// PDF generation. Template AUTHORING is web-only — mobile only picks
+// from existing report_templates rows. All field names are camelCase
+// to match the wire format.
+
+export type ReportStatus = "draft" | "submitted" | "approved";
+
+export interface BackendReport {
+  id: number | string;
+  projectId: number | string;
+  accountId: number | string;
+  title: string;
+  description?: string | null;
+  /** Free-form jsonb cover-page config (logo, branding, etc.). */
+  coverConfig?: unknown;
+  status: ReportStatus;
+  /** Public share-link token (web-only feature for R1; surfaced for read). */
+  shareToken?: string | null;
+  createdById: number | string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface BackendReportSection {
+  id: number | string;
+  reportId: number | string;
+  title: string;
+  summary?: string | null;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface BackendReportSectionPhoto {
+  /** Junction row id — pass to detachSectionPhoto / updateSectionPhoto. */
+  id: number | string;
+  sectionId: number | string;
+  mediaId: number;
+  caption?: string | null;
+  description?: string | null;
+  sortOrder: number;
+  createdAt?: string;
+  /**
+   * Convenience copy of the joined media row's URL for immediate render.
+   * Some server responses inline the URL at the top level; others nest
+   * it under `media`. Both shapes are tolerated by readers.
+   */
+  url?: string;
+  media?: {
+    id: number;
+    s3Key?: string;
+    url?: string;
+  };
+}
+
+export interface BackendReportTemplate {
+  id: number | string;
+  accountId: number | string;
+  title: string;
+  /**
+   * The full template structure (sections + items) lives inside this
+   * jsonb blob — there is no separate report_template_sections table.
+   * Server validates the shape via templateConfigSchema; mobile parses
+   * `templateConfig.sections.length` for the picker preview.
+   */
+  templateConfig: unknown;
+  /** Optional pre-computed section count (saves a parse on the picker). */
+  sectionCount?: number;
+  createdById: number | string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+/** Full-tree response from GET /api/reports/:id. */
+export type BackendReportTreeResponse = BackendReport & {
+  sections: Array<
+    BackendReportSection & { photos: BackendReportSectionPhoto[] }
+  >;
+};
 
 /**
  * Geofence-eligible project (server-side filtered + sorted + capped).
@@ -1161,6 +1245,192 @@ export const api = {
       method: "POST",
       json: { templateId },
     }),
+
+  // ----- Reports (Mobile Reports R1) -----
+  // DELETE endpoints in this group return 200 + body `{message: "Deleted"}`
+  // (NOT 204 — that's the tasks endpoint's contract). `allowEmptyBody`
+  // is set so that if the server is upgraded to 204 in the future, the
+  // mobile call keeps working without code changes.
+
+  /** Project-scoped list of report rows (no sections / no photos). */
+  listReportsForProject: (projectId: string | number) =>
+    apiFetch<BackendReport[]>(`/api/projects/${projectId}/reports`),
+
+  /** Full report tree: report + sections + per-section photos with URLs. */
+  getReport: (id: string | number) =>
+    apiFetch<BackendReportTreeResponse>(`/api/reports/${id}`),
+
+  /**
+   * Create a report on a project. Pass `templateId` to instantiate from
+   * a template (server clones the template's sections); OMIT it (don't
+   * send null/0) for a blank report.
+   */
+  createReport: (
+    projectId: string | number,
+    input: {
+      title: string;
+      description?: string;
+      templateId?: string | number;
+    },
+  ) => {
+    const body: Record<string, unknown> = { title: input.title };
+    if (input.description !== undefined) body.description = input.description;
+    if (input.templateId !== undefined && input.templateId !== null) {
+      body.templateId = input.templateId;
+    }
+    return apiFetch<BackendReport>(`/api/projects/${projectId}/reports`, {
+      method: "POST",
+      json: body,
+    });
+  },
+
+  updateReport: (
+    id: string | number,
+    patch: Partial<{
+      title: string;
+      description: string | null;
+      coverConfig: unknown;
+      status: ReportStatus;
+    }>,
+  ) =>
+    apiFetch<BackendReport>(`/api/reports/${id}`, {
+      method: "PATCH",
+      json: patch,
+    }),
+
+  deleteReport: (id: string | number) =>
+    apiFetch<void>(`/api/reports/${id}`, {
+      method: "DELETE",
+      allowEmptyBody: true,
+    }),
+
+  addReportSection: (
+    reportId: string | number,
+    input: { title: string; summary?: string },
+  ) =>
+    apiFetch<BackendReportSection>(`/api/reports/${reportId}/sections`, {
+      method: "POST",
+      json: input,
+    }),
+
+  /** NOTE the path is /api/sections/:id, NOT /api/report-sections/:id. */
+  updateReportSection: (
+    sectionId: string | number,
+    patch: Partial<{
+      title: string;
+      summary: string | null;
+      sortOrder: number;
+    }>,
+  ) =>
+    apiFetch<BackendReportSection>(`/api/sections/${sectionId}`, {
+      method: "PATCH",
+      json: patch,
+    }),
+
+  deleteReportSection: (sectionId: string | number) =>
+    apiFetch<void>(`/api/sections/${sectionId}`, {
+      method: "DELETE",
+      allowEmptyBody: true,
+    }),
+
+  /**
+   * Batch-attach existing project media to a section. Server enforces
+   * mediaIds.length in [1, 50] AND that every mediaId belongs to the
+   * report's project (else the entire batch 400s — no partial commits).
+   * Returns the created junction rows in their final sortOrder.
+   */
+  attachPhotosToSection: (
+    sectionId: string | number,
+    mediaIds: number[],
+  ) =>
+    apiFetch<BackendReportSectionPhoto[]>(
+      `/api/sections/${sectionId}/photos`,
+      { method: "POST", json: { mediaIds } },
+    ),
+
+  /** NOTE the path is /api/section-photos/:id, NOT /api/report-section-photos/:id. */
+  updateSectionPhoto: (
+    photoId: string | number,
+    patch: Partial<{
+      caption: string | null;
+      description: string | null;
+      sortOrder: number;
+    }>,
+  ) =>
+    apiFetch<BackendReportSectionPhoto>(`/api/section-photos/${photoId}`, {
+      method: "PATCH",
+      json: patch,
+    }),
+
+  detachSectionPhoto: (photoId: string | number) =>
+    apiFetch<void>(`/api/section-photos/${photoId}`, {
+      method: "DELETE",
+      allowEmptyBody: true,
+    }),
+
+  /** All report templates available to the current account. */
+  listReportTemplates: () =>
+    apiFetch<BackendReportTemplate[]>("/api/report-templates"),
+
+  /**
+   * Generate a server-rendered PDF and return it as a Blob.
+   *
+   * SPECIAL: this endpoint returns `application/pdf` (binary), not
+   * JSON, so it cannot use apiFetch — that helper insists on a JSON
+   * content-type. We replicate apiFetch's auth path here:
+   *  - on native, attach the Cookie header from the in-memory jar,
+   *  - on web, rely on `credentials: "include"`,
+   *  - capture rotated session cookies from the response,
+   *  - parse JSON error bodies on 4xx/5xx for a useful message.
+   *
+   * Server contract: 50-photo cap enforced — caller should surface the
+   * count next to the trigger UI and disable at the cap.
+   */
+  generateReportPdf: async (reportId: string | number): Promise<Blob> => {
+    if (!API_BASE_URL) {
+      throw new ApiError(
+        0,
+        "EXPO_PUBLIC_API_BASE_URL is not configured. Check artifacts/mobile/.env.",
+      );
+    }
+    if (!loaded) await loadSession();
+    const headers: Record<string, string> = {
+      Accept: "application/pdf",
+      "X-FieldView-Client": "mobile-1",
+    };
+    if (cookieJar.size > 0 && Platform.OS !== "web") {
+      headers["Cookie"] = serializeCookieJar();
+    }
+    let res: Response;
+    try {
+      res = await fetch(`${API_BASE_URL}/api/reports/${reportId}/pdf`, {
+        method: "POST",
+        headers,
+        credentials: Platform.OS === "web" ? "include" : "omit",
+      });
+    } catch (e) {
+      throw new ApiError(
+        0,
+        `Network request failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    const setCookie = res.headers.get("set-cookie");
+    if (setCookie) parseAndPersistSetCookie(setCookie);
+    if (!res.ok) {
+      let message = `PDF request failed (${res.status})`;
+      try {
+        const ct = res.headers.get("content-type") ?? "";
+        if (ct.includes("application/json")) {
+          const j = (await res.json()) as { message?: unknown };
+          if (j && typeof j.message === "string") message = j.message;
+        }
+      } catch {
+        /* ignore — fall back to generic message */
+      }
+      throw new ApiError(res.status, message);
+    }
+    return await res.blob();
+  },
 };
 
 /** Normalize the various user shapes the backend might return. */
