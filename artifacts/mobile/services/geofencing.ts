@@ -1,3 +1,4 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Location from "expo-location";
 import { AppState, Platform } from "react-native";
 
@@ -71,8 +72,19 @@ export interface RegistrationResult {
 
 const TASK_NAME = "fv-geofence-task";
 const REGION_PREFIX = "fv-project-";
-const RADIUS_METERS = 30;
+// Apple's recommended minimum for reliable region monitoring. Smaller radii
+// produce unreliable enter/exit events due to GPS accuracy floor. Downstream
+// proximity filter (PROXIMITY_THRESHOLD_M=200m) still gates actual clock-in.
+const RADIUS_METERS = 100;
 const MAX_REGIONS = 20;
+// Bumped suffix invalidates the persisted snapshot if we ever change the
+// serialized shape (e.g. add fields to GeofenceEligibleProject).
+const REGISTERED_CACHE_STORAGE_KEY = "fv.geofence.registered-cache.v1";
+// Hard ceiling on the rehydration await inside the task body. AsyncStorage
+// reads on iOS are typically <50ms; 3s is generous enough to absorb a cold
+// disk + worst-case Keychain contention without leaving the OS-dispatched
+// task hanging long enough to be killed.
+const REHYDRATE_TIMEOUT_MS = 3_000;
 
 // Filter-chain thresholds. See docstring on the task body below for
 // rationale on each. Tunable based on field reports.
@@ -124,6 +136,135 @@ function haversineMeters(
 // body can look up the full project record by region identifier in O(1).
 
 const lastRegisteredCache = new Map<string, GeofenceEligibleProject>();
+
+// ---------------------------------------------------------------------------
+// Persistence: cache snapshot ↔ AsyncStorage
+// ---------------------------------------------------------------------------
+//
+// The in-memory `lastRegisteredCache` only survives as long as the JS
+// runtime. On a true headless cold-launch (iOS terminated the app, then
+// dispatches a region event) the runtime is fresh and the Map is empty —
+// the task body's lat/lng lookup misses and the event is dropped before
+// the filter chain runs.
+//
+// Fix: mirror the cache to AsyncStorage on every successful
+// `registerGeofences()` and rehydrate at module-evaluation time. The
+// rehydration Promise is stashed module-scope so the task body can `await`
+// it on cache miss exactly once per process — subsequent fires hit the
+// already-resolved Promise without re-reading storage.
+
+interface SerializedCacheEntry {
+  id: string;
+  project: GeofenceEligibleProject;
+}
+
+function serializeCache(): string {
+  const entries: SerializedCacheEntry[] = [];
+  for (const [id, project] of lastRegisteredCache) entries.push({ id, project });
+  return JSON.stringify(entries);
+}
+
+function parseSerializedCache(raw: string): SerializedCacheEntry[] | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    const out: SerializedCacheEntry[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") return null;
+      const r = item as Record<string, unknown>;
+      const id = r.id;
+      const p = r.project;
+      if (typeof id !== "string" || !p || typeof p !== "object") return null;
+      const pr = p as Record<string, unknown>;
+      if (
+        typeof pr.id !== "number" ||
+        typeof pr.name !== "string" ||
+        typeof pr.latitude !== "number" ||
+        typeof pr.longitude !== "number" ||
+        typeof pr.lastActivityAt !== "string"
+      ) {
+        return null;
+      }
+      out.push({
+        id,
+        project: {
+          id: pr.id,
+          name: pr.name,
+          latitude: pr.latitude,
+          longitude: pr.longitude,
+          lastActivityAt: pr.lastActivityAt,
+        },
+      });
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+async function rehydrateRegisteredCacheFromStorage(): Promise<void> {
+  let raw: string | null;
+  try {
+    raw = await AsyncStorage.getItem(REGISTERED_CACHE_STORAGE_KEY);
+  } catch (err) {
+    console.log(
+      "[geofence] rehydrate: AsyncStorage read failed:",
+      err instanceof Error ? err.message : err,
+    );
+    return;
+  }
+  if (!raw) {
+    console.log("[geofence] rehydrate: no persisted snapshot");
+    return;
+  }
+  const entries = parseSerializedCache(raw);
+  if (!entries) {
+    console.log("[geofence] rehydrate: snapshot unparseable, ignoring");
+    return;
+  }
+  // Fill ONLY missing keys. A concurrent foreground sync may have run
+  // between module load and rehydrate resolution — its data is fresher
+  // (came from server, not snapshot), so we never overwrite.
+  let filled = 0;
+  for (const { id, project } of entries) {
+    if (!lastRegisteredCache.has(id)) {
+      lastRegisteredCache.set(id, project);
+      filled++;
+    }
+  }
+  console.log(
+    `[geofence] rehydrate: filled ${filled} of ${entries.length} entries from storage`,
+  );
+}
+
+// Module-scoped Promise so the task body can await the same in-flight
+// rehydration. Initialized when the bootstrap block below runs.
+let rehydrationPromise: Promise<void> | null = null;
+
+async function persistRegisteredCacheToStorage(): Promise<void> {
+  try {
+    await AsyncStorage.setItem(
+      REGISTERED_CACHE_STORAGE_KEY,
+      serializeCache(),
+    );
+  } catch (err) {
+    console.log(
+      "[geofence] persist: AsyncStorage write failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+async function clearRegisteredCacheStorage(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(REGISTERED_CACHE_STORAGE_KEY);
+  } catch (err) {
+    console.log(
+      "[geofence] clear-storage failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
 
 // Per-region debounce timestamps (epoch ms). Set after a successful
 // clock-in (via `recordClockInForRegion`, called from the banner) and
@@ -218,29 +359,48 @@ async function runGeofenceTaskBody(
     console.log(`[geofence] rejected: malformed region id "${regionId}"`);
     return;
   }
-  const project = lastRegisteredCache.get(regionId);
+  let project = lastRegisteredCache.get(regionId);
   if (!project) {
-    // Region fired but we have no record of registering it. Either
-    // (a) cold-launch and registerGeofences hasn't run yet to
-    // populate the cache, or (b) a stale region from a previous
-    // version. Either way we can't compute proximity without lat/lng.
+    // Cache miss path. On a true headless cold-launch from a background
+    // region event, iOS instantiates a fresh JS runtime → modules
+    // evaluate → defineTask + rehydrationPromise both kick off → this
+    // task body fires before the React tree (and therefore before the
+    // foreground `registerGeofences` call) ever runs.
     //
-    // Trade-off accepted for v1:
-    //   1. The miss is bounded to a single event — iOS retriggers
-    //      on the next region transition, by which point the
-    //      foreground React tree will have populated the cache.
-    //   2. The fix would require an AsyncStorage prefetch of the
-    //      registered-region snapshot at module-evaluation time,
-    //      which adds a persistence layer + cache-invalidation
-    //      complexity (stale lat/lng if the project moves between
-    //      app launches).
-    //   3. Revisit only if field reports indicate "first auto
-    //      clock-in of the day misses" — that's the symptom this
-    //      gap would produce.
-    console.log(
-      `[geofence] rejected: ${regionId} not in registration cache (cold-launch race?)`,
-    );
-    return;
+    // Await the module-load rehydration (with a hard cap so an
+    // unresponsive AsyncStorage can't pin the OS task forever) and
+    // retry the lookup. On second miss we give up — the region is
+    // genuinely unknown (e.g. user removed from project between
+    // launches, or stale region from an earlier app version).
+    if (rehydrationPromise) {
+      try {
+        await Promise.race([
+          rehydrationPromise,
+          new Promise<void>((_, reject) =>
+            setTimeout(
+              () => reject(new Error("rehydrate timeout")),
+              REHYDRATE_TIMEOUT_MS,
+            ),
+          ),
+        ]);
+      } catch (err) {
+        console.log(
+          "[geofence] rehydrate await failed:",
+          err instanceof Error ? err.message : err,
+        );
+      }
+      project = lastRegisteredCache.get(regionId);
+    }
+    if (project) {
+      console.log(
+        `[geofence] cache rehydrated from storage: ${regionId} (${project.name})`,
+      );
+    } else {
+      console.log(
+        `[geofence] rejected: ${regionId} not in registration cache (cold-launch race?)`,
+      );
+      return;
+    }
   }
 
   // ----- Branch on event type -----
@@ -881,6 +1041,12 @@ try {
   );
 }
 
+// Kick off cache rehydration at module-evaluation time, in parallel with
+// whatever else mounts. Stash the Promise so the task body can await it
+// on cache miss (cold-launch path). Fire-and-forget at module scope —
+// awaiting here would block module import.
+rehydrationPromise = rehydrateRegisteredCacheFromStorage();
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -969,6 +1135,11 @@ export async function registerGeofences(
     lastRegisteredCache.clear();
     for (const [id, project] of desired) lastRegisteredCache.set(id, project);
 
+    // Mirror to AsyncStorage so headless cold-launch fires can rehydrate
+    // before the React tree mounts. Best-effort: write failure logs but
+    // never throws — registration itself already succeeded with the OS.
+    await persistRegisteredCacheToStorage();
+
     console.log(
       `[geofence] registered ${desired.size} regions (skipped ${result.skipped.length} as unchanged)`,
     );
@@ -998,6 +1169,10 @@ export async function unregisterAllGeofences(): Promise<void> {
   } finally {
     lastRegisteredCache.clear();
     lastClockInByRegion.clear();
+    // Drop the persisted snapshot too — otherwise after sign-out a stale
+    // cache could fire events for the previous user's projects if the
+    // device crosses one of those geofences before re-registration.
+    await clearRegisteredCacheStorage();
   }
 }
 
