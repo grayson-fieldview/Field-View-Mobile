@@ -276,6 +276,13 @@ export interface BackendUser {
    * may not yet carry the field; absent → treated as non-admin.
    */
   role?: UserRole;
+  /** Avatar URL from /api/users (account-wide user list). Optional/null. */
+  profileImageUrl?: string | null;
+  /**
+   * Soft-delete marker from /api/users. Non-null means the user has been
+   * deactivated and should be filtered out of any "pick a teammate" UI.
+   */
+  deletedAt?: string | null;
   /**
    * Auto clock-in/out master switch (S33). Server is authoritative.
    * Mobile mirrors to AsyncStorage via services/preferences so the
@@ -810,6 +817,16 @@ export const api = {
 
   // ----- Team / invitations (web rework, 2026-05) -----
 
+  /**
+   * All users in the caller's account (active + soft-deleted; includes
+   * the caller themselves). Used by the "Add user to project" picker —
+   * the caller is responsible for filtering out self, soft-deleted
+   * (deletedAt != null), and users already on the target project.
+   */
+  listAccountUsers: () => apiFetch<BackendUser[]>("/api/users"),
+
+  // TODO: not used in mobile yet; web handles invites. Mobile consumer
+  // = invitations list view if/when we build it.
   /** All pending invitations for the current account (admin scope). */
   listInvitations: () =>
     apiFetch<BackendInvitation[]>("/api/invitations"),
@@ -830,6 +847,9 @@ export const api = {
    *   409 duplicate ("already been sent") — pending invite for this email
    *   403                       — caller isn't allowed to invite at this role
    *   400                       — missing/invalid fields
+   *
+   * TODO: not used in mobile yet; web handles invites. Mobile consumer
+   * = invitations list view if/when we build it.
    */
   createInvitation: (input: {
     email: string;
@@ -843,6 +863,8 @@ export const api = {
       json: input,
     }),
 
+  // TODO: not used in mobile yet; web handles invites. Mobile consumer
+  // = invitations list view if/when we build it.
   /** Cancel a pending invitation (admin only on the server). */
   cancelInvitation: (id: string | number) =>
     apiFetch<void>(`/api/invitations/${id}`, {

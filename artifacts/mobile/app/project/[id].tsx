@@ -25,7 +25,7 @@ import Animated, {
 } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { AddTeamMemberModal } from "@/components/AddTeamMemberModal";
+import { AssignUserToProjectModal } from "@/components/AssignUserToProjectModal";
 import { Button } from "@/components/Button";
 import { ClockReceiptBanner } from "@/components/ClockReceiptBanner";
 import { EmptyState } from "@/components/EmptyState";
@@ -113,7 +113,7 @@ export default function ProjectDetailScreen() {
   const [tab, setTab] = useState<TabKey>("photos");
   const [showTaskModal, setShowTaskModal] = useState(false);
   const [showChecklistModal, setShowChecklistModal] = useState(false);
-  const [showAddMemberModal, setShowAddMemberModal] = useState(false);
+  const [showAssignUserModal, setShowAssignUserModal] = useState(false);
 
   const refreshAssignments = useCallback(async () => {
     if (!id) return;
@@ -1231,16 +1231,16 @@ export default function ProjectDetailScreen() {
             ) : assignments.length === 0 ? (
               <EmptyState
                 icon="users"
-                title="No team members yet"
+                title="No team members assigned to this project yet."
                 description={
                   isAdmin
-                    ? "Invite a teammate to give them access to this project."
-                    : "Ask an admin to invite teammates to this project."
+                    ? "Tap 'Add user' to assign existing teammates."
+                    : "Ask your admin to add teammates."
                 }
                 action={
                   isAdmin ? (
                     <Button
-                      title="Add team member"
+                      title="Add user"
                       icon={
                         <Feather
                           name="user-plus"
@@ -1248,7 +1248,7 @@ export default function ProjectDetailScreen() {
                           color={colors.primaryForeground}
                         />
                       }
-                      onPress={() => setShowAddMemberModal(true)}
+                      onPress={() => setShowAssignUserModal(true)}
                     />
                   ) : undefined
                 }
@@ -1344,7 +1344,7 @@ export default function ProjectDetailScreen() {
                 })}
                 {isAdmin ? (
                   <Button
-                    title="Add team member"
+                    title="Add user"
                     variant="secondary"
                     icon={
                       <Feather
@@ -1353,7 +1353,7 @@ export default function ProjectDetailScreen() {
                         color={colors.foreground}
                       />
                     }
-                    onPress={() => setShowAddMemberModal(true)}
+                    onPress={() => setShowAssignUserModal(true)}
                   />
                 ) : null}
               </View>
@@ -1387,12 +1387,13 @@ export default function ProjectDetailScreen() {
           setShowChecklistModal(false);
         }}
       />
-      <AddTeamMemberModal
-        visible={showAddMemberModal}
-        onClose={() => setShowAddMemberModal(false)}
-        projects={projects}
-        currentProjectId={project.id}
-        onSuccess={() => {
+      <AssignUserToProjectModal
+        visible={showAssignUserModal}
+        projectId={project.id}
+        currentlyAssignedUserIds={assignments.map((a) => a.userId)}
+        currentUserId={currentUser?.id}
+        onClose={() => setShowAssignUserModal(false)}
+        onAssigned={() => {
           void refreshAssignments();
         }}
       />
