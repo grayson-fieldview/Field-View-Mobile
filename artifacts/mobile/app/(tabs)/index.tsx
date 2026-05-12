@@ -580,6 +580,10 @@ const styles = StyleSheet.create({
     gap: 8,
     marginHorizontal: 16,
     marginTop: 4,
+    // Breathing room between the (non-sticky) search bar and the
+    // FlatList viewport below — without this, scrolling cards clip
+    // flush against the search bar's bottom edge.
+    marginBottom: 8,
     paddingHorizontal: 12,
     paddingVertical: Platform.OS === "ios" ? 10 : 6,
     borderRadius: 12,
