@@ -171,12 +171,19 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
   // CSRF defense: the web backend's CSRF middleware allows mobile
   // requests through on presence of this custom header. RN's native
   // fetch can't reliably set Origin, so the Origin allowlist used
-  // for web isn't usable here. Mobile MUST ship this before web
-  // CSRF flips to enforce mode, or every state-changing call 403s.
+  // for web isn't usable here — X-FieldView-Client is the only
+  // deterministic mobile-identity signal.
+  //
+  // Attach on EVERY request (not just non-GETs) so the server's CSRF
+  // middleware can match the mobile bypass on reads as well as
+  // writes. Without this on GETs, /api/auth/user can 401 in
+  // CSRF-enforce mode even with a valid session cookie, and
+  // refreshUser then misreads it as "logged out" and yanks the user
+  // (root cause of the TestFlight Build 6 instant-logout bug).
   // Header value is versioned so future deprecations don't brick
   // older mobile builds.
   const method = opts.method ?? "GET";
-  if (method !== "GET") {
+  if (Platform.OS === "ios" || Platform.OS === "android") {
     headers["X-FieldView-Client"] = "mobile-1";
   }
   console.log("[cookie-outgoing]", headers["Cookie"]);

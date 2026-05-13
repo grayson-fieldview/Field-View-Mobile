@@ -119,8 +119,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [bootstrap]);
 
   const refreshUser = useCallback(async () => {
-    const me = await api.me().catch(() => null);
-    setUser(toAuthUser(normalizeUser(me)));
+    // Distinguish "explicitly unauthenticated" (401 → real logout)
+    // from "request couldn't complete" (network blip, 5xx, CSRF
+    // block, transient cookie-jar miss). Only the former should
+    // clear the in-memory user; the latter must preserve state so
+    // the user isn't yanked back to the login screen mid-session.
+    // Root cause of the TestFlight Build 6 instant-logout bug — the
+    // prior `.catch(() => null)` collapsed every failure mode into
+    // null and called setUser(null).
+    let me: BackendUser | null = null;
+    let isNetworkOrCsrfFailure = false;
+    try {
+      me = await api.me();
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        me = null;
+      } else {
+        isNetworkOrCsrfFailure = true;
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn("[auth] refreshUser failed (non-401):", msg);
+      }
+    }
+    if (!isNetworkOrCsrfFailure) {
+      setUser(toAuthUser(normalizeUser(me)));
+    }
   }, []);
 
   // Refresh user on every foreground transition. Mirrors the
@@ -204,13 +226,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
-    void (async () => {
-      const token = await registerForPushNotificationsAsync();
-      if (cancelled) return;
-      if (token) await registerPushTokenWithServer(token);
-    })();
+    // Defer the push permission prompt by 3s post-login. The native
+    // iOS prompt triggers an AppState inactive→active transition,
+    // which fires the foreground refreshUser() listener below. Doing
+    // that mid-login races with the just-set session cookie and (in
+    // CSRF-enforce mode pre-fix) caused refreshUser to 401 and yank
+    // the user. The 3s delay lets the login flow + initial nav
+    // settle before iOS surfaces its modal.
+    const timer = setTimeout(() => {
+      void (async () => {
+        const token = await registerForPushNotificationsAsync();
+        if (cancelled) return;
+        if (token) await registerPushTokenWithServer(token);
+      })();
+    }, 3000);
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [user]);
 
