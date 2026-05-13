@@ -101,17 +101,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const bootstrap = useCallback(async () => {
     try {
       await loadSession();
-      const me = await api.me().catch((e) => {
-        if (e instanceof ApiError && e.status === 401) return null;
-        throw e;
-      });
-      setUser(toAuthUser(normalizeUser(me)));
-    } catch {
-      // Network/other error on launch — treat as signed out.
-      setUser(null);
-    } finally {
+    } catch (e) {
+      // Keychain unreachable at cold start (rare but real on iOS
+      // pre-unlock). Don't treat as logged out — the foreground
+      // refresh effect will re-attempt once the device is in a
+      // usable state. setReady so the app proceeds past splash.
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn("[auth] bootstrap loadSession failed:", msg);
       setReady(true);
+      return;
     }
+    let me: BackendUser | null = null;
+    let isNetworkOrCsrfFailure = false;
+    try {
+      me = await api.me();
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        // Explicit unauthenticated response — stay on null user.
+        me = null;
+      } else {
+        // Network blip / 5xx / CSRF block at launch. Mirror the
+        // refreshUser hardening: don't yank the user to the login
+        // screen on a flaky cold start. Leave user at its initial
+        // null and let the AppState foreground listener re-attempt
+        // (services will retry once connectivity returns).
+        isNetworkOrCsrfFailure = true;
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn("[auth] bootstrap api.me failed (non-401):", msg);
+      }
+    }
+    if (!isNetworkOrCsrfFailure) {
+      setUser(toAuthUser(normalizeUser(me)));
+    }
+    setReady(true);
   }, []);
 
   useEffect(() => {
