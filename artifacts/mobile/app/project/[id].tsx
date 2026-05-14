@@ -30,6 +30,7 @@ import { AssignUserToProjectModal } from "@/components/AssignUserToProjectModal"
 import { Button } from "@/components/Button";
 import { ClockReceiptBanner } from "@/components/ClockReceiptBanner";
 import { EmptyState } from "@/components/EmptyState";
+import KebabIcon from "@/components/KebabIcon";
 import { Input } from "@/components/Input";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { ApplyReportTemplateModal } from "@/components/ApplyReportTemplateModal";
@@ -594,7 +595,13 @@ export default function ProjectDetailScreen() {
 
       <Animated.ScrollView
         contentContainerStyle={{
-          paddingBottom: insets.bottom + 120,
+          // Reserve room for the bottom ClockBar only when it
+          // actually renders (States 2/3 — clocked in here, or
+          // clocked into another project). State 1 ("not clocked
+          // in") now returns null from ClockBar, so we tighten
+          // the reserve to the safe-area inset plus a small gutter,
+          // reclaiming ~96px of usable viewport for the photo grid.
+          paddingBottom: insets.bottom + (activeTimesheet ? 120 : 24),
         }}
         onScroll={scrollHandler}
         // onScrollBeginDrag fires once per user-initiated scroll
@@ -711,7 +718,7 @@ export default function ProjectDetailScreen() {
                 accessibilityLabel="More options"
                 style={styles.heroIconBtn}
               >
-                <Feather name="more-horizontal" size={18} color="#fff" />
+                <KebabIcon size={18} color="#fff" />
               </Pressable>
             </View>
           </View>
@@ -1834,57 +1841,17 @@ function ClockBar({
     );
   }
 
-  // State 1: not clocked in anywhere → neutral status pill (no CTA).
-  // Manual Clock In moved into the kebab menu, mirroring the earlier
-  // Clock Out demotion. Same pill shape/position as State 2's orange
-  // pill; only color + icon weight differ so the bottom area's
-  // visual rhythm stays constant across state transitions.
-  // Auto-hides on scroll-down (this is the only state where
-  // shouldAutoHide is true).
+  // State 1: not clocked in anywhere → render nothing.
+  // Auto-clock-in via geofencing is the default happy path
+  // (S29/30/30.5/31a); manual clock-in is discoverable via the
+  // top-right kebab menu's "Clock In" item, so the previous
+  // "Not clocked in to this project. Use ⋯ menu to clock in"
+  // pill is redundant and was covering the photo grid.
+  // ScrollView paddingBottom above is conditional on
+  // `activeTimesheet`, so reclaiming the bar's footprint is
+  // automatic when this branch fires.
   if (!active) {
-    return (
-      <Animated.View style={[containerStyle, animatedBarStyle]}>
-        <View
-          style={[
-            styles.clockStatusPill,
-            {
-              backgroundColor: colors.muted,
-              borderColor: colors.border,
-            },
-          ]}
-          accessibilityRole="text"
-          accessibilityLabel="Not clocked in to this project. Use the more options menu to clock in."
-        >
-          <Feather name="clock" size={14} color={colors.mutedForeground} />
-          <View style={styles.clockNeutralCol}>
-            <Text
-              style={[
-                styles.clockStatusPillTxt,
-                { color: colors.mutedForeground },
-              ]}
-              numberOfLines={1}
-            >
-              Not clocked in to this project
-            </Text>
-            <Text
-              style={[
-                styles.clockNeutralHint,
-                { color: colors.mutedForeground },
-              ]}
-              numberOfLines={1}
-            >
-              Use ⋯ menu to clock in
-            </Text>
-          </View>
-          {loading ? (
-            <ActivityIndicator
-              size="small"
-              color={colors.mutedForeground}
-            />
-          ) : null}
-        </View>
-      </Animated.View>
-    );
+    return null;
   }
 
   // State 2: clocked into THIS project.

@@ -16,6 +16,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "@/components/Button";
+import KebabIcon from "@/components/KebabIcon";
 import { ReportPhotoPickerModal } from "@/components/ReportPhotoPickerModal";
 import { ReportSectionCard } from "@/components/ReportSectionCard";
 import { useToast } from "@/contexts/ToastContext";
@@ -233,11 +234,7 @@ export default function ReportDetailScreen() {
           headerRight: () =>
             report ? (
               <Pressable onPress={openKebab} hitSlop={10}>
-                <Feather
-                  name="more-horizontal"
-                  size={22}
-                  color={colors.foreground}
-                />
+                <KebabIcon size={22} color={colors.foreground} />
               </Pressable>
             ) : null,
         }}
