@@ -59,7 +59,7 @@ export interface PendingExitRecord {
   /** The active timesheet entry id at the time of exit observation. */
   timeEntryId: string;
   projectId: number;
-  /** e.g. "fv-project-42" — used to look up by region from the Enter handler. */
+  /** e.g. "fv-project-v2-42" — used to look up by region from the Enter handler. */
   regionId: string;
   /**
    * ISO timestamp when the server WILL fire the auto-clock-out.

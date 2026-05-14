@@ -113,10 +113,45 @@ function regionIdFor(projectId: number): string {
   return `${REGION_PREFIX}${projectId}`;
 }
 
-/** Inverse of regionIdFor. Returns null on malformed identifiers. */
+// Legacy v1 prefix kept ONLY for read-side back-compat in
+// parseProjectId — see comment there. Registration always emits
+// REGION_PREFIX (v2). TODO(release-after-next): delete this constant
+// and the v1 branch in parseProjectId once all TestFlight users have
+// completed at least one foreground sync on the v2 build (i.e. their
+// OS-side region set has been replaced from v1 → v2). Tracking:
+// any v1-prefixed event after that point would only come from a
+// device that hadn't opened the app since the v1→v2 release, which
+// is the same population we'd already lose to permission revocation
+// or uninstall — acceptable to drop.
+const LEGACY_V1_REGION_PREFIX = "fv-project-";
+
+/**
+ * Inverse of regionIdFor. Returns null on malformed identifiers.
+ *
+ * Accepts both the current v2 prefix AND the legacy v1 prefix for
+ * the duration of the v1→v2 migration. Rationale: between an
+ * existing user installing this build and their first geofence
+ * sync (~30s after next foreground), iOS still has v1-prefixed
+ * regions registered. Without this back-compat, any boundary
+ * crossing in that window would be dropped as "malformed",
+ * pausing automation. v1 events resolve to the same projectId as
+ * v2 events (the numeric suffix is identical), so the downstream
+ * filter chain runs identically.
+ *
+ * Once the next sync replaces OS regions with v2, no v1 events can
+ * fire from this device, and the v1 branch becomes dead code on
+ * that user. The TODO above marks it for removal in the release
+ * after this one.
+ */
 function parseProjectId(regionId: string): number | null {
-  if (!regionId.startsWith(REGION_PREFIX)) return null;
-  const raw = regionId.slice(REGION_PREFIX.length);
+  let raw: string;
+  if (regionId.startsWith(REGION_PREFIX)) {
+    raw = regionId.slice(REGION_PREFIX.length);
+  } else if (regionId.startsWith(LEGACY_V1_REGION_PREFIX)) {
+    raw = regionId.slice(LEGACY_V1_REGION_PREFIX.length);
+  } else {
+    return null;
+  }
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : null;
 }
