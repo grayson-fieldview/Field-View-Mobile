@@ -24,7 +24,6 @@
 "NSLocationAlwaysAndWhenInUseUsageDescription": "Field View uses your location in the background to automatically clock you in and out when you arrive at or leave a project site.",
         "UIBackgroundModes": ["location"],
         "NSPhotoLibraryUsageDescription": "Field View needs access to your photo library so you can attach existing photos to a project.",
-        "NSPhotoLibraryAddUsageDescription": "Field View saves captured photos to your library.",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
@@ -46,17 +45,6 @@
         "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
         "android.permission.ACCESS_MEDIA_LOCATION",
         "android.permission.READ_MEDIA_VIDEO",
-        "android.permission.READ_MEDIA_AUDIO",
-        "android.permission.CAMERA",
-        "android.permission.ACCESS_FINE_LOCATION",
-        "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.READ_MEDIA_IMAGES",
-        "android.permission.WRITE_EXTERNAL_STORAGE",
-        "android.permission.RECORD_AUDIO",
-        "android.permission.READ_EXTERNAL_STORAGE",
-        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
-        "android.permission.ACCESS_MEDIA_LOCATION",
-        "android.permission.READ_MEDIA_VIDEO",
         "android.permission.READ_MEDIA_AUDIO"
       ]
     },
@@ -67,7 +55,7 @@
       [
         "expo-router",
         {
-          "origin": "https://replit.com/"
+          "origin": "https://field-view.com/"
         }
       ],
       "expo-font",
@@ -90,7 +78,6 @@
         "expo-media-library",
         {
           "photosPermission": "Field View saves captured photos to your library.",
-          "savePhotosPermission": "Field View saves captured photos to your library.",
           "isAccessMediaLocationEnabled": true
         }
       ],
