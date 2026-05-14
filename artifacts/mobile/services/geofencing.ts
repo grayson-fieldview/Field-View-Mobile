@@ -71,15 +71,32 @@ export interface RegistrationResult {
 // ---------------------------------------------------------------------------
 
 const TASK_NAME = "fv-geofence-task";
-const REGION_PREFIX = "fv-project-";
-// Apple's recommended minimum for reliable region monitoring. Smaller radii
-// produce unreliable enter/exit events due to GPS accuracy floor. Downstream
-// proximity filter (PROXIMITY_THRESHOLD_M=200m) still gates actual clock-in.
-const RADIUS_METERS = 100;
+// Bumped from "fv-project-" → "fv-project-v2-" alongside the
+// RADIUS_METERS bump (100 → 150) below. iOS bakes the radius into a
+// region at registration time, and registerGeofences diffs by full
+// region identifier — so without changing the prefix, existing
+// TestFlight users would see the new constant but keep firing on
+// the old 100m regions until they sign out + back in. The prefix
+// bump makes every new region identifier disjoint from the cached
+// v1 set, which forces Location.startGeofencingAsync to replace the
+// full OS-side registration with new 150m regions on next sync.
+const REGION_PREFIX = "fv-project-v2-";
+// Comfortably above Apple's 100m reliability floor for region
+// monitoring; tighter radii produce flaky enter/exit events at the
+// GPS accuracy floor. Downstream proximity filter
+// (PROXIMITY_THRESHOLD_M=200m) still gates actual clock-in, so this
+// value mainly controls how early the OS dispatches us.
+const RADIUS_METERS = 150;
 const MAX_REGIONS = 20;
-// Bumped suffix invalidates the persisted snapshot if we ever change the
-// serialized shape (e.g. add fields to GeofenceEligibleProject).
-const REGISTERED_CACHE_STORAGE_KEY = "fv.geofence.registered-cache.v1";
+// Bumped suffix invalidates the persisted snapshot when we change
+// either the serialized shape OR the meaning of the data inside —
+// the v1→v2 bump here pairs with the REGION_PREFIX bump above so
+// that on first launch after update, the old v1-prefixed cache is
+// discarded rather than rehydrated alongside the new v2 desired
+// set. Strictly belt-and-braces (the prefix bump alone forces a
+// full re-registration), but keeps storage state internally
+// consistent.
+const REGISTERED_CACHE_STORAGE_KEY = "fv.geofence.registered-cache.v2";
 // Hard ceiling on the rehydration await inside the task body. AsyncStorage
 // reads on iOS are typically <50ms; 3s is generous enough to absorb a cold
 // disk + worst-case Keychain contention without leaving the OS-dispatched
