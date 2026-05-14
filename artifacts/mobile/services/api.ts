@@ -56,15 +56,50 @@ function ingestSerializedJar(raw: string): void {
   }
 }
 
+/**
+ * Diagnostic snapshot of the in-memory cookie jar. Returns names and
+ * truncated values (first 12 chars). Safe to log — never reveals the
+ * full session signature. Used by AuthContext.bootstrap() to trace
+ * the cold-start auth flow.
+ */
+export function debugCookieSnapshot(): {
+  size: number;
+  names: string[];
+  preview: string;
+} {
+  const names: string[] = [];
+  const parts: string[] = [];
+  for (const [name, value] of cookieJar) {
+    names.push(name);
+    parts.push(`${name}=${value.slice(0, 12)}…(len=${value.length})`);
+  }
+  return { size: cookieJar.size, names, preview: parts.join("; ") };
+}
+
 /** Load the persisted cookie jar into memory (call once on app start). */
 export async function loadSession(): Promise<string | null> {
-  if (loaded) return cookieJar.size ? serializeCookieJar() : null;
+  console.log("[boot] loadSession starting");
+  if (loaded) {
+    console.log(
+      "[boot] loadSession already-loaded, jar size =",
+      cookieJar.size,
+    );
+    return cookieJar.size ? serializeCookieJar() : null;
+  }
   loaded = true;
   const raw = await secureStorage.getItem(COOKIE_STORAGE_KEY);
+  if (raw == null) {
+    console.log("[boot] keychain read fv_session_cookies = MISSING");
+  } else {
+    console.log(
+      `[boot] keychain read fv_session_cookies = "${raw.slice(0, 30)}…" (len=${raw.length})`,
+    );
+  }
   console.log("[cookie-migration] loaded from storage:", raw);
   if (!raw) {
     console.log("[cookie-migration] after dedup: (empty)");
     console.log("[cookie-migration] differs:", false);
+    console.log("[boot] cookieJar size = 0, names = []");
     return null;
   }
 
@@ -75,6 +110,10 @@ export async function loadSession(): Promise<string | null> {
   const cleaned = serializeCookieJar();
   console.log("[cookie-migration] after dedup:", cleaned);
   console.log("[cookie-migration] differs:", raw !== cleaned);
+  const snap = debugCookieSnapshot();
+  console.log(
+    `[boot] cookieJar size = ${snap.size}, names = [${snap.names.join(", ")}]`,
+  );
   if (cleaned !== raw) {
     secureStorage.setItem(COOKIE_STORAGE_KEY, cleaned).catch(() => {});
   }
@@ -109,7 +148,18 @@ function parseAndPersistSetCookie(raw: string | null): void {
     updated = true;
   }
   if (!updated) return;
-  secureStorage.setItem(COOKIE_STORAGE_KEY, serializeCookieJar()).catch(() => {});
+  const serialized = serializeCookieJar();
+  secureStorage
+    .setItem(COOKIE_STORAGE_KEY, serialized)
+    .then(() => {
+      console.log(
+        `[login] keychain write = SUCCESS (len=${serialized.length})`,
+      );
+    })
+    .catch((e) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.log(`[login] keychain write = FAILED: ${msg}`);
+    });
 }
 
 export class ApiError extends Error {
@@ -188,6 +238,27 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
   }
   console.log("[cookie-outgoing]", headers["Cookie"]);
 
+  // Path-aware tagged tracing for the two auth endpoints we're
+  // diagnosing (cold-start instant-logout investigation). These
+  // tags let us grep a single trace out of Metro / Sentry breadcrumb
+  // logs: `[boot]` for cold-start me(), `[login]` for sign-in.
+  const traceTag =
+    path === "/api/auth/user"
+      ? "[boot]"
+      : path === "/api/login"
+        ? "[login]"
+        : null;
+  if (traceTag === "[boot]") {
+    console.log("[boot] me() about to fetch");
+    console.log(
+      `[boot] me() Cookie header being sent = "${(headers["Cookie"] ?? "").slice(0, 60)}…" (len=${(headers["Cookie"] ?? "").length})`,
+    );
+    console.log(
+      "[boot] me() X-FieldView-Client header =",
+      headers["X-FieldView-Client"] ?? "(MISSING)",
+    );
+  }
+
   let res: Response;
   try {
     console.log("[api] →", opts.method ?? "GET", API_BASE_URL + path);
@@ -201,6 +272,22 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
     console.log("[api] ←", res.status, path);
     const setCookieHeader = res.headers.get("set-cookie");
     if (setCookieHeader) console.log("[api] Set-Cookie received:", setCookieHeader);
+    if (traceTag === "[boot]") {
+      console.log("[boot] me() response status =", res.status);
+      console.log(
+        "[boot] me() response Set-Cookie present =",
+        setCookieHeader ? "yes" : "no",
+      );
+    }
+    if (traceTag === "[login]") {
+      console.log(
+        `[login] response Set-Cookie raw = ${setCookieHeader ? `"${setCookieHeader.slice(0, 120)}…"` : "(none)"}`,
+      );
+      // Peek the jar AFTER parseAndPersistSetCookie runs below.
+      // We can't snapshot here (parsing happens after this block);
+      // see the snapshot just past the `parseAndPersistSetCookie`
+      // call.
+    }
   } catch (e) {
     throw new ApiError(
       0,
@@ -211,6 +298,12 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
   // Capture any new/rotated session cookies.
   const setCookie = res.headers.get("set-cookie");
   if (setCookie) parseAndPersistSetCookie(setCookie);
+  if (traceTag === "[login]") {
+    const snap = debugCookieSnapshot();
+    console.log(
+      `[login] cookieJar after parse: size=${snap.size}, ${snap.preview || "(empty)"}`,
+    );
+  }
 
   const contentType = res.headers.get("content-type") ?? "";
   const isJson = contentType.includes("application/json");

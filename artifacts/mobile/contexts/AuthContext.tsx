@@ -13,6 +13,7 @@ import {
   ApiError,
   api,
   clearSession,
+  debugCookieSnapshot,
   loadSession,
   normalizeUser,
   type BackendUser,
@@ -111,13 +112,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setReady(true);
       return;
     }
+    // Right before me(): confirm the cookie made it from Keychain
+    // → cookieJar so we can pinpoint failures between persist and
+    // attach. Logged from here (not api.ts) so the trace ordering
+    // shows clearly: keychain read → jar inspect → request.
+    const preMeSnap = debugCookieSnapshot();
+    console.log(
+      `[boot] cookieJar right before me(): size=${preMeSnap.size}, ${preMeSnap.preview || "(empty)"}`,
+    );
     let me: BackendUser | null = null;
     let isNetworkOrCsrfFailure = false;
     try {
       me = await api.me();
+      console.log(
+        "[boot] me() returned user =",
+        me && typeof me === "object" && "id" in me ? String(me.id) : "null",
+      );
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
         // Explicit unauthenticated response — stay on null user.
+        console.log("[boot] me() threw error status=401 message=", e.message);
         me = null;
       } else {
         // Network blip / 5xx / CSRF block at launch. Mirror the
@@ -126,12 +140,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // null and let the AppState foreground listener re-attempt
         // (services will retry once connectivity returns).
         isNetworkOrCsrfFailure = true;
+        const status = e instanceof ApiError ? e.status : "n/a";
         const msg = e instanceof Error ? e.message : String(e);
-        console.warn("[auth] bootstrap api.me failed (non-401):", msg);
+        console.warn(
+          `[boot] me() threw error status=${status} message=${msg}`,
+        );
       }
     }
     if (!isNetworkOrCsrfFailure) {
-      setUser(toAuthUser(normalizeUser(me)));
+      const next = toAuthUser(normalizeUser(me));
+      console.log(
+        "[boot] bootstrap outcome: setUser(",
+        next ? next.id : "null",
+        ")",
+      );
+      setUser(next);
+    } else {
+      console.log("[boot] bootstrap outcome: skipped setUser (preserve state)");
     }
     setReady(true);
   }, []);
