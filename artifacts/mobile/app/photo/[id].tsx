@@ -5,8 +5,6 @@ import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
-  Dimensions,
-  FlatList,
   Platform,
   Pressable,
   ScrollView,
@@ -14,6 +12,7 @@ import {
   Text,
   View,
 } from "react-native";
+import Gallery from "react-native-awesome-gallery";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Path } from "react-native-svg";
 
@@ -43,7 +42,20 @@ export default function PhotoViewerScreen() {
     return i < 0 ? 0 : i;
   }, [projectPhotos, id]);
 
+  // currentIndex is the single source of truth for "which photo am I on?"
+  // across both render branches. Gallery's onIndexChange writes it; the
+  // edit branch reads it to render the active photo. When the user
+  // toggles edit mode, the gallery unmounts and remounts with
+  // initialIndex={currentIndex}, so position is preserved automatically.
   const [currentIndex, setCurrentIndex] = useState(startIndex);
+  // Re-seat currentIndex if the photo set changes underneath us (e.g.
+  // a sibling delete shifts indices). Clamp to the new bounds.
+  useEffect(() => {
+    if (projectPhotos.length === 0) return;
+    if (currentIndex >= projectPhotos.length) {
+      setCurrentIndex(projectPhotos.length - 1);
+    }
+  }, [projectPhotos.length, currentIndex]);
   const currentPhoto = projectPhotos[currentIndex];
 
   const [editing, setEditing] = useState(false);
@@ -71,9 +83,9 @@ export default function PhotoViewerScreen() {
   const currentStroke = useRef<AnnotationStroke | null>(null);
   const [, force] = useState(0);
 
-  const winWidth = Dimensions.get("window").width;
-  const listRef = useRef<FlatList<Photo>>(null);
-  // Captured drawing-canvas size, used so thumbnails can scale strokes correctly.
+  // Captured drawing-canvas size, used so freshly-drawn strokes record
+  // the canvas dimensions they were laid out against (for future
+  // re-render at different sizes, mirroring the web app's behavior).
   const canvasSize = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
 
   if (!startPhoto || !currentPhoto) {
@@ -111,25 +123,25 @@ export default function PhotoViewerScreen() {
       force((n) => n + 1);
       return;
     }
-    const id = currentPhoto.id;
-    const next = [...(strokesById[id] ?? []), s];
-    setStrokesById((prev) => ({ ...prev, [id]: next }));
-    await updatePhoto(id, { annotations: next });
+    const pid = currentPhoto.id;
+    const next = [...(strokesById[pid] ?? []), s];
+    setStrokesById((prev) => ({ ...prev, [pid]: next }));
+    await updatePhoto(pid, { annotations: next });
   };
 
   const undo = async () => {
-    const id = currentPhoto.id;
-    const list = strokesById[id] ?? [];
+    const pid = currentPhoto.id;
+    const list = strokesById[pid] ?? [];
     if (list.length === 0) return;
     const next = list.slice(0, -1);
-    setStrokesById((prev) => ({ ...prev, [id]: next }));
-    await updatePhoto(id, { annotations: next });
+    setStrokesById((prev) => ({ ...prev, [pid]: next }));
+    await updatePhoto(pid, { annotations: next });
   };
 
   const clearAll = async () => {
-    const id = currentPhoto.id;
-    setStrokesById((prev) => ({ ...prev, [id]: [] }));
-    await updatePhoto(id, { annotations: [] });
+    const pid = currentPhoto.id;
+    setStrokesById((prev) => ({ ...prev, [pid]: [] }));
+    await updatePhoto(pid, { annotations: [] });
   };
 
   const onDelete = () => {
@@ -172,6 +184,9 @@ export default function PhotoViewerScreen() {
     }
   };
 
+  // Edit-mode-only: combine committed strokes with the live in-progress
+  // stroke so the user sees their finger trail. The gallery (read-only)
+  // branch never sees `live` because edit mode unmounts the gallery.
   const live = currentStroke.current;
   const currentStrokeList = strokesById[currentPhoto.id] ?? [];
   const allStrokes = live
@@ -182,7 +197,7 @@ export default function PhotoViewerScreen() {
     <View style={styles.bg}>
       <Stack.Screen options={{ headerShown: false }} />
 
-      {/* Top bar */}
+      {/* Top bar — persists across both branches. */}
       <View style={[styles.topBar, { paddingTop: insets.top + 6 }]}>
         <Pressable
           onPress={() => router.back()}
@@ -198,84 +213,123 @@ export default function PhotoViewerScreen() {
         </Text>
       </View>
 
-      {/* Pager: one full-width page per photo */}
-      <FlatList
-        ref={listRef}
-        data={projectPhotos}
-        keyExtractor={(p) => p.id}
-        horizontal
-        pagingEnabled
-        showsHorizontalScrollIndicator={false}
-        scrollEnabled={!editing}
-        initialScrollIndex={startIndex}
-        getItemLayout={(_, i) => ({
-          length: winWidth,
-          offset: winWidth * i,
-          index: i,
-        })}
-        onMomentumScrollEnd={(e) => {
-          const i = Math.round(e.nativeEvent.contentOffset.x / winWidth);
-          if (i !== currentIndex) {
-            // Cancel any in-progress stroke when swiping away.
-            currentStroke.current = null;
-            setCurrentIndex(i);
+      {/* Photo display — branched by edit mode.
+          Read mode: react-native-awesome-gallery provides pinch-to-zoom,
+          pan, swipe-to-dismiss, and horizontal pager between siblings.
+          Edit mode: a single bespoke canvas with the existing raw
+          responder handlers; no zoom, no pager. Render branches are
+          mutually exclusive — the gallery fully unmounts on entering
+          edit mode (taking its gestures with it) and remounts at
+          currentIndex on exit. */}
+      {editing ? (
+        <View
+          style={StyleSheet.absoluteFill}
+          onLayout={(e) => {
+            canvasSize.current = {
+              w: e.nativeEvent.layout.width,
+              h: e.nativeEvent.layout.height,
+            };
+          }}
+          onStartShouldSetResponder={() => true}
+          onMoveShouldSetResponder={() => true}
+          onResponderGrant={(e) =>
+            startStroke(e.nativeEvent.locationX, e.nativeEvent.locationY)
           }
-        }}
-        renderItem={({ item, index }) => {
-          const isCurrent = index === currentIndex;
-          const itemStrokes = strokesById[item.id] ?? [];
-          const drawn = isCurrent ? allStrokes : itemStrokes;
-          return (
-            <View
-              style={{ width: winWidth, height: "100%" }}
-              onLayout={(e) => {
-                if (isCurrent) {
-                  canvasSize.current = {
-                    w: e.nativeEvent.layout.width,
-                    h: e.nativeEvent.layout.height,
-                  };
-                }
-              }}
-              onStartShouldSetResponder={() => editing && isCurrent}
-              onMoveShouldSetResponder={() => editing && isCurrent}
-              onResponderGrant={(e) =>
-                startStroke(e.nativeEvent.locationX, e.nativeEvent.locationY)
-              }
-              onResponderMove={(e) =>
-                extendStroke(e.nativeEvent.locationX, e.nativeEvent.locationY)
-              }
-              onResponderRelease={endStroke}
-              onResponderTerminate={endStroke}
-            >
-              <Image
-                source={{ uri: item.uri }}
-                style={StyleSheet.absoluteFill}
-                contentFit="contain"
+          onResponderMove={(e) =>
+            extendStroke(e.nativeEvent.locationX, e.nativeEvent.locationY)
+          }
+          onResponderRelease={endStroke}
+          onResponderTerminate={endStroke}
+        >
+          <Image
+            source={{ uri: currentPhoto.uri }}
+            style={StyleSheet.absoluteFill}
+            contentFit="contain"
+          />
+          <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
+            {allStrokes.filter(isRenderablePencilStroke).map((s, i) => (
+              // Filter guards against text/arrow/etc. strokes that the
+              // web app may write into a photo's annotations array
+              // (mobile renderer is pencil-only). Locally-created
+              // strokes always pass — they have no `type` field and
+              // always carry a non-empty points array.
+              <Path
+                key={i}
+                d={pointsToPath(s.points)}
+                stroke={s.color}
+                strokeWidth={s.size}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                fill="none"
               />
-              <Svg style={StyleSheet.absoluteFill}>
-                {drawn.filter(isRenderablePencilStroke).map((s, i) => (
-                  // Filter guards against text/arrow/etc. strokes that
-                  // the web app may write into a photo's annotations
-                  // array (mobile renderer is pencil-only). Locally-
-                  // created strokes always pass — they have no `type`
-                  // field and always carry a non-empty points array.
-                  <Path
-                    key={i}
-                    d={pointsToPath(s.points)}
-                    stroke={s.color}
-                    strokeWidth={s.size}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    fill="none"
-                  />
-                ))}
-              </Svg>
-            </View>
-          );
-        }}
-      />
+            ))}
+          </Svg>
+        </View>
+      ) : (
+        <Gallery
+          data={projectPhotos}
+          keyExtractor={(p: Photo) => p.id}
+          initialIndex={currentIndex}
+          onIndexChange={(i: number) => setCurrentIndex(i)}
+          onSwipeToClose={() => router.back()}
+          renderItem={({
+            item,
+            setImageDimensions,
+          }: {
+            item: Photo;
+            index: number;
+            setImageDimensions: (d: { width: number; height: number }) => void;
+          }) => {
+            // Render BOTH committed-but-unsaved strokes from the local
+            // edit buffer (strokesById) AND the photo's persisted
+            // annotations as a fallback, so swiping to a sibling that
+            // wasn't seeded yet still shows its saved annotations.
+            const saved = (
+              strokesById[item.id] ?? item.annotations ?? []
+            ).filter(isRenderablePencilStroke);
+            return (
+              <View style={StyleSheet.absoluteFill}>
+                <Image
+                  source={{ uri: item.uri }}
+                  style={StyleSheet.absoluteFill}
+                  contentFit="contain"
+                  onLoad={(e) => {
+                    // REQUIRED by react-native-awesome-gallery — without
+                    // this its zoom math treats the image as 0×0 and
+                    // pinch breaks. expo-image's onLoad gives us the
+                    // intrinsic pixel size of the source.
+                    const w = e.source?.width;
+                    const h = e.source?.height;
+                    if (w && h) setImageDimensions({ width: w, height: h });
+                  }}
+                />
+                {saved.length > 0 ? (
+                  // The gallery wraps renderItem in an Animated.View whose
+                  // transform is [translateX, translateY, scale]. Both
+                  // the Image AND this Svg are inside that wrapper, so
+                  // pinch/pan scales them together — annotations stay
+                  // pinned to their photo pixels at every zoom level.
+                  <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
+                    {saved.map((s, i) => (
+                      <Path
+                        key={i}
+                        d={pointsToPath(s.points)}
+                        stroke={s.color}
+                        strokeWidth={s.size}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        fill="none"
+                      />
+                    ))}
+                  </Svg>
+                ) : null}
+              </View>
+            );
+          }}
+        />
+      )}
 
-      {/* Tools panel (top-left) */}
+      {/* Tools panel (top-left) — persists across both branches. */}
       <View style={[styles.toolsPanel, { top: insets.top + 56 }]}>
         <View style={styles.toolRow}>
           <ToolButton
@@ -367,7 +421,7 @@ export default function PhotoViewerScreen() {
         ) : null}
       </View>
 
-      {/* Caption / metadata */}
+      {/* Caption / metadata — only when not editing (preserved behavior). */}
       {!editing ? (
         <ScrollView
           style={[

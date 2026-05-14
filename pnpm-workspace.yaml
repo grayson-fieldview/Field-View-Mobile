@@ -74,6 +74,18 @@ onlyBuiltDependencies:
   - msw
   - unrs-resolver
 
+peerDependencyRules:
+  # react-native-awesome-gallery 0.4.3 declares a peer of
+  # react-native-reanimated ^3.2.0 because it has not been republished
+  # since RN Reanimated 4 shipped. The library uses only worklet APIs
+  # (useSharedValue, useAnimatedStyle, withTiming, withDecay,
+  # cancelAnimation) that are stable across the v3 → v4 transition,
+  # so the peer-range warning is a soft-mismatch with no runtime
+  # incompatibility. This rule silences that one warning and ONLY
+  # that one — scoped via the parent>child key form.
+  allowedVersions:
+    "react-native-awesome-gallery>react-native-reanimated": "4"
+
 overrides:
   # replit uses linux-x64 only, we can exclude all other platforms
   "esbuild>@esbuild/darwin-arm64": "-"
