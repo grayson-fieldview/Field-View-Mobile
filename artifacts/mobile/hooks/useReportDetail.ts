@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { useData } from "@/contexts/DataContext";
 import {
   ApiError,
   api,
@@ -77,6 +78,17 @@ export function useReportDetail(
   reportRef.current = report;
   const sectionsRef = useRef(sections);
   sectionsRef.current = sections;
+
+  // The local project-photo cache feeds the picker, so by the time
+  // attachPhotos runs we already hold every selected photo's URL in
+  // memory. We snapshot it via a ref to hydrate URL fields onto rows
+  // returned by POST /api/sections/:id/photos — that endpoint omits
+  // the convenience `url` / `media.url` fields that GET /api/reports/:id
+  // inlines, which would otherwise leave freshly-attached thumbnails
+  // and the caption modal's hero image blank until a manual refresh.
+  const { photos: localPhotos } = useData();
+  const localPhotosRef = useRef(localPhotos);
+  localPhotosRef.current = localPhotos;
 
   // Per-entity monotonic versions. Each call bumps its counter; if a
   // newer call has started while we were in flight, our response
@@ -217,6 +229,35 @@ export function useReportDetail(
     async (sectionId: string | number, mediaIds: number[]) => {
       if (mediaIds.length === 0) return [];
       const created = await api.attachPhotosToSection(sectionId, mediaIds);
+
+      // Hydrate `url` from the local project-photo cache by mediaId.
+      // POST /api/sections/:id/photos does NOT inline url/media.url;
+      // GET /api/reports/:id does. Without this, the section card
+      // renders a blank thumbnail (and the caption modal a blank
+      // hero image) until the next full refresh — which only happens
+      // on cold start. See `photoUrl` in ReportSectionCard.tsx and
+      // the matching fallback in PhotoCaptionModal.
+      // Mirror ReportPhotoPickerModal's mediaId resolution exactly so
+      // legacy rows that lack `mediaId` (and were attached via the
+      // Number(id) fallback at ReportPhotoPickerModal.tsx:79-82) still
+      // hydrate. Without this fallback, attachPhotos would miss those
+      // rows and reproduce the blank-thumbnail bug for legacy data.
+      const urlByMediaId = new Map<number, string>();
+      for (const lp of localPhotosRef.current) {
+        const resolvedId =
+          typeof lp.mediaId === "number" && Number.isFinite(lp.mediaId)
+            ? lp.mediaId
+            : Number(lp.id);
+        if (!Number.isFinite(resolvedId)) continue;
+        const u = lp.remoteUrl ?? lp.uri;
+        if (u) urlByMediaId.set(resolvedId, u);
+      }
+      const hydrated: BackendReportSectionPhoto[] = created.map((p) => {
+        if (p.url || p.media?.url) return p;
+        const fallback = urlByMediaId.get(p.mediaId);
+        return fallback ? { ...p, url: fallback } : p;
+      });
+
       const key = String(sectionId);
       setSections((curr) =>
         curr.map((s) => {
@@ -224,7 +265,7 @@ export function useReportDetail(
           // Idempotent merge by junction id — a refresh racing with
           // this attach must not introduce duplicates.
           const existingIds = new Set(s.photos.map((p) => String(p.id)));
-          const newOnes = created.filter(
+          const newOnes = hydrated.filter(
             (p) => !existingIds.has(String(p.id)),
           );
           return {
@@ -235,7 +276,7 @@ export function useReportDetail(
           };
         }),
       );
-      return created;
+      return hydrated;
     },
     [],
   );
