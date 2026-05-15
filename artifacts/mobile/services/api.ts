@@ -1040,6 +1040,82 @@ export const api = {
       allowEmptyBody: true,
     }),
 
+  // ----- Geofence enter dwell-time (S3x-mobile) -----
+
+  /**
+   * Notify the server that the OS observed a geofence Enter for a
+   * region the user is *not* yet clocked into. The server creates
+   * a pending enter row and schedules an auto-clock-in N seconds
+   * from now (server-side AUTO_CLOCK_IN_DWELL_MS, currently 60s
+   * but mobile never reads or hardcodes the value — `firesAt` in
+   * the response is the source of truth).
+   *
+   * Idempotency: server has a partial unique index on
+   * pending_geofence_enters WHERE status='pending', so a duplicate
+   * POST for the same (userId, projectId) returns the existing
+   * row's id rather than creating a second one (response 200 with
+   * status="pending"). Safe to retry.
+   *
+   * Already-clocked-in short-circuit: server returns
+   * { status: "skipped", reason: "already_clocked_in" } when the
+   * user already has an active session. Mobile must NOT persist a
+   * local row in that case — there's nothing to cancel and nothing
+   * to discover post-facto.
+   *
+   * `detectedAt` is mobile's observation time, NOT the firesAt the
+   * server returns. Server uses its own clock for firesAt to avoid
+   * clock-skew issues between device and database.
+   *
+   * `regionId` is optional per the wire contract but mobile always
+   * sends it (we always know it from the OS event) — helps server-
+   * side observability and matches how the rest of geofencing.ts
+   * threads regionId through every step.
+   */
+  geofenceEnterDetected: (params: {
+    projectId: number;
+    regionId?: string;
+    detectedAt: string;
+  }) =>
+    apiFetch<
+      | {
+          /** Server-issued pending enter row UUID. Becomes pendingEnterId locally. */
+          id: string;
+          /** ISO timestamp when the server cron will fire the auto-clock-in. */
+          firesAt: string;
+          status: "pending";
+        }
+      | {
+          status: "skipped";
+          reason: string;
+        }
+    >("/api/geofence/enter-detected", {
+      method: "POST",
+      json: {
+        projectId: params.projectId,
+        regionId: params.regionId,
+        detectedAt: params.detectedAt,
+      },
+    }),
+
+  /**
+   * Cancel a pending enter row before the server cron fires it. Used
+   * when the user steps off the site within the dwell window
+   * (i.e. the OS fires Exit for a region we have a pending enter for).
+   *
+   * Mobile only uses the pendingEnterId path. Server returns a small
+   * JSON ack `{ id, status: "cancelled" }`; mobile does not consume
+   * the response body — the only signal that matters is "did it
+   * throw". Mirror of geofenceExitCancelled.
+   */
+  geofenceEnterCancelled: (pendingEnterId: string) =>
+    apiFetch<{ id: string; status: "cancelled" }>(
+      "/api/geofence/enter-cancelled",
+      {
+        method: "POST",
+        json: { pendingEnterId },
+      },
+    ),
+
   // ----- Account / membership -----
 
   /**

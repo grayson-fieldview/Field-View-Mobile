@@ -63,16 +63,30 @@ export interface ClockOutReceiptData {
   clockOutAt: string;
 }
 
+/**
+ * Normalized clock-in receipt payload. Two wire shapes are accepted
+ * by `parseClockInReceiptData`:
+ *
+ *   1. **Local (legacy)** — produced by `fireClockInReceipt` for the
+ *      DEV test-button path:
+ *        { type, projectId, projectName, entryId, clockInTime }
+ *
+ *   2. **Server-pushed** — produced by the dwell-time cron when it
+ *      fires an auto-clock-in (S3x-web):
+ *        { type, projectId, timeEntryId, clockInAt }
+ *
+ * The parser normalizes both into this shape: `entryId` is always a
+ * string (cast from `timeEntryId: number` for server payloads),
+ * `clockInTime` is always an ISO string (aliased from `clockInAt` for
+ * server payloads), and `projectName` is `string | undefined` —
+ * populated only by the local shape since the server doesn't carry
+ * it. Consumers must NOT rely on `projectName` for display; look it
+ * up from DataContext by `projectId` if a name is needed.
+ */
 export interface ClockInReceiptData {
   type: "clock_in_receipt";
   projectId: number;
-  /**
-   * Snapshot of the project name at clock-in time. Carried in the
-   * payload so the deep-link tap handler can render a sensible
-   * fallback if the project was archived/deleted between the
-   * receipt firing and the user tapping the notification.
-   */
-  projectName: string;
+  projectName: string | undefined;
   entryId: string;
   clockInTime: string;
 }
@@ -230,21 +244,38 @@ export function parseClockInReceiptData(
   if (!raw || typeof raw !== "object") return null;
   const d = raw as Record<string, unknown>;
   if (d.type !== "clock_in_receipt") return null;
-  if (
-    typeof d.projectId !== "number" ||
-    typeof d.projectName !== "string" ||
-    typeof d.entryId !== "string" ||
-    typeof d.clockInTime !== "string"
-  ) {
-    return null;
+  if (typeof d.projectId !== "number") return null;
+
+  // Discriminate by field presence: server-pushed payloads carry
+  // `timeEntryId: number` + `clockInAt: string`, while the legacy
+  // local-fired payloads (fireClockInReceipt — DEV test path) carry
+  // `entryId: string` + `clockInTime: string` + `projectName`. We
+  // accept either and normalize to a single output type so the
+  // deep-link handler in app/_layout.tsx and the foreground push
+  // handler don't need to branch on wire shape.
+  if (typeof d.timeEntryId === "number" && typeof d.clockInAt === "string") {
+    // Server-pushed shape. projectName is not on the wire — caller
+    // looks it up from DataContext by projectId if needed.
+    return {
+      type: "clock_in_receipt",
+      projectId: d.projectId,
+      projectName: undefined,
+      entryId: String(d.timeEntryId),
+      clockInTime: d.clockInAt,
+    };
   }
-  return {
-    type: "clock_in_receipt",
-    projectId: d.projectId,
-    projectName: d.projectName,
-    entryId: d.entryId,
-    clockInTime: d.clockInTime,
-  };
+  if (typeof d.entryId === "string" && typeof d.clockInTime === "string") {
+    // Local DEV-fire shape.
+    return {
+      type: "clock_in_receipt",
+      projectId: d.projectId,
+      projectName:
+        typeof d.projectName === "string" ? d.projectName : undefined,
+      entryId: d.entryId,
+      clockInTime: d.clockInTime,
+    };
+  }
+  return null;
 }
 
 /**

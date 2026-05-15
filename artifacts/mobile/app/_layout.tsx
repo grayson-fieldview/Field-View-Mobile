@@ -170,6 +170,34 @@ function syntheticEntryFromPush(payload: {
   } as unknown as BackendTimesheetEntry;
 }
 
+/**
+ * Sibling of `syntheticEntryFromPush` for the dwell-time auto-clock-
+ * IN path (S3x-mobile). Builds a minimal BackendTimesheetEntry from
+ * a clock_in_receipt push payload. ClockReceiptBanner kind="in"
+ * reads only `entry.id`, `entry.projectId`, and the sibling
+ * `firedAt` field — clockOut is null by definition (the entry is
+ * still open at this point, server-side).
+ *
+ * `entryId` is wire-typed as `string` after parser normalization
+ * (server sends `timeEntryId: number`, parser casts via String()).
+ * BackendTimesheetEntry's `id` field is typed `number | string`, so
+ * the string is accepted directly without coercion.
+ */
+function syntheticEntryFromPushIn(payload: {
+  entryId: string;
+  projectId: number;
+  clockInTime: string;
+}): BackendTimesheetEntry {
+  return {
+    id: payload.entryId,
+    projectId: payload.projectId,
+    clockIn: payload.clockInTime,
+    clockOut: null,
+    source: "auto_geofence",
+    notes: null,
+  } as unknown as BackendTimesheetEntry;
+}
+
 function NotificationDeepLinkHandler() {
   const router = useRouter();
   const segments = useSegments();
@@ -275,25 +303,48 @@ function NotificationDeepLinkHandler() {
  * S3x receipt kinds reusing the same channel).
  */
 function ForegroundPushHandler() {
-  const { setFiredExit } = useTimesheet();
+  const { setFiredExit, setFiredEnter } = useTimesheet();
   useEffect(() => {
     const unsub = subscribeToForegroundNotifications((data) => {
+      // Try clock_out_receipt first, then clock_in_receipt. Each
+      // parser is its own type guard and returns null on shape
+      // mismatch, so the order is purely a small perf detail (most
+      // foreground pushes today are still exit receipts; enters are
+      // newer). If neither matches, fall through silently — forward-
+      // compat for future receipt types reusing the same channel.
       const out = parseClockOutReceiptData(data);
-      if (!out) return;
-      console.log(
-        `[push] foreground clock_out_receipt: project ${out.projectId}, entry ${out.timeEntryId}`,
-      );
-      setFiredExit({
-        entry: syntheticEntryFromPush({
-          timeEntryId: out.timeEntryId,
-          projectId: out.projectId,
-          clockOutAt: out.clockOutAt,
-        }),
-        firedAt: out.clockOutAt,
-      });
+      if (out) {
+        console.log(
+          `[push] foreground clock_out_receipt: project ${out.projectId}, entry ${out.timeEntryId}`,
+        );
+        setFiredExit({
+          entry: syntheticEntryFromPush({
+            timeEntryId: out.timeEntryId,
+            projectId: out.projectId,
+            clockOutAt: out.clockOutAt,
+          }),
+          firedAt: out.clockOutAt,
+        });
+        return;
+      }
+      const inReceipt = parseClockInReceiptData(data);
+      if (inReceipt) {
+        console.log(
+          `[push] foreground clock_in_receipt: project ${inReceipt.projectId}, entry ${inReceipt.entryId}`,
+        );
+        setFiredEnter({
+          entry: syntheticEntryFromPushIn({
+            entryId: inReceipt.entryId,
+            projectId: inReceipt.projectId,
+            clockInTime: inReceipt.clockInTime,
+          }),
+          firedAt: inReceipt.clockInTime,
+        });
+        return;
+      }
     });
     return unsub;
-  }, [setFiredExit]);
+  }, [setFiredExit, setFiredEnter]);
   return null;
 }
 

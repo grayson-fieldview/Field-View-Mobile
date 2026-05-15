@@ -3,7 +3,12 @@ import * as Location from "expo-location";
 import { AppState, Platform } from "react-native";
 
 import { api, ApiError } from "./api";
-import { fireClockInReceipt } from "./notifications";
+import {
+  findPendingEntersForRegion,
+  removePendingEnterByCompoundKey,
+  removePendingEnterById,
+  upsertPendingEnter,
+} from "./pendingEnters";
 import {
   findPendingExitsForRegion,
   removePendingExitByCompoundKey,
@@ -608,7 +613,21 @@ async function handleGeofenceEnter(
     return;
   }
 
-  // ----- All filters passed: silent-auto clock-in + receipt -----
+  // ----- All filters passed: POST enter-detected (deferred clock-in) -----
+  //
+  // S3x change: synchronous silent-auto clock-in is replaced with a
+  // server-side dwell-time scheduler. We POST enter-detected and the
+  // server schedules the auto-clock-in N seconds later (N is server
+  // owned — currently 60s; mobile reads firesAt from the response
+  // and never hardcodes a duration). Re-leaving the region inside
+  // the dwell window cancels the pending row server-side via the
+  // cancel-on-leave hook in handleGeofenceExit (Filter B0.5).
+  //
+  // The receipt banner is no longer fired locally here — the server
+  // pushes a clock_in_receipt to the user's Expo token when the
+  // dwell window elapses. Foreground push handler in app/_layout.tsx
+  // and the post-facto discovery in TimesheetContext both surface
+  // the kind="in" banner.
   if (bypassFilters) {
     console.log(
       `[geofence] enter accepted (BYPASS): ${project.name} — proximity/GPS skipped`,
@@ -620,58 +639,172 @@ async function handleGeofenceEnter(
   }
 
   // Stamp the per-region debounce BEFORE the API call, not after.
-  //
-  // Trade-off (S31b decision):
-  //   - Stamping FIRST means a failed clockIn (network drop, 5xx,
-  //     etc.) leaves the debounce armed → no retry until the 5-min
-  //     window expires OR the user manually clocks in. The cost is
-  //     a "missed auto clock-in on first try" if the backend is
-  //     down at the exact moment of the boundary crossing.
-  //   - Stamping AFTER success means a failed clockIn allows the
-  //     next iOS retrigger (GPS jitter at the boundary fires
-  //     enter/exit/enter constantly) to immediately retry → during
-  //     a backend outage we hammer /api/timesheets/clock-in with a
-  //     POST every few seconds per region per user. That's a retry
-  //     storm we cannot afford.
-  //
-  // We accept the missed-on-failure cost in exchange for retry-storm
-  // protection. If field reports show "first auto clock-in of the
-  // day frequently misses," revisit with a bounded retry inside this
-  // function (e.g. 1 retry after 30s, then give up) rather than by
-  // unstamping the debounce.
+  // Same trade-off as the original synchronous path (S31b) AND the
+  // exit-detected path (S32a):
+  //   - Stamping FIRST: failed POST leaves debounce armed → no retry
+  //     until the 5-min window expires. Cost is "missed auto clock-in
+  //     on first try" during a backend outage.
+  //   - Stamping AFTER success: GPS jitter at the boundary triggers
+  //     a retry storm during outages.
+  // We accept the missed-on-failure cost. The unsent-retry path
+  // below covers the most common "transient drop" case anyway:
+  // foreground refresh in TimesheetContext re-attempts the POST with
+  // the original detectedAt, server idempotency fills in the same
+  // pending row.
   recordClockInForRegion(projectId);
 
-  let entry: Awaited<ReturnType<typeof api.clockIn>>;
+  const detectedAt = new Date().toISOString();
+
   try {
-    entry = await api.clockIn(projectId, undefined, "auto_geofence");
-  } catch (err) {
-    if (err instanceof ApiError && err.status === 401) {
-      console.log("[geofence] auth failed: session expired");
+    const resp = await api.geofenceEnterDetected({
+      projectId,
+      regionId,
+      detectedAt,
+    });
+    if ("status" in resp && resp.status === "skipped") {
+      // Server says we're already clocked in. Don't persist a local
+      // row — there's nothing to cancel and nothing to discover.
+      // Debounce is already armed (above), which is the right
+      // behavior: prevents a retry storm if GPS jitter keeps firing
+      // Enter for the same region while the user remains clocked in
+      // (mirror of the synchronous path's "already clocked in" branch
+      // in the pre-S3x code).
+      console.log(
+        `[geofence] enter skipped by server (${resp.reason}): ${project.name} — debounce armed`,
+      );
       return;
     }
+    // Type-narrow: status === "pending" branch.
+    await upsertPendingEnter({
+      pendingEnterId: resp.id,
+      projectId,
+      regionId,
+      firesAt: resp.firesAt,
+      detectedAt,
+    });
+    console.log(
+      `[geofence] enter persisted: pendingEnterId=${resp.id} firesAt=${resp.firesAt}`,
+    );
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) {
+      console.log("[geofence] enter: auth failed (session expired); deferring");
+      return;
+    }
+    // Persist with unsent=true so the foreground retry in
+    // TimesheetContext can re-attempt the POST. firesAt is a best-
+    // effort 60s-from-now estimate (matching the current server
+    // dwell) — used only for the dead-record cleanup threshold in
+    // pendingEnters.ts; the real firesAt is never assigned because
+    // the server never accepted this row. If the user leaves before
+    // retry succeeds, the cancel-on-leave hook drops the local
+    // record without any server call.
     const msg = err instanceof Error ? err.message : String(err);
-    console.log(`[geofence] silent-auto failed: ${msg}`);
+    console.log(
+      `[geofence] enter POST failed; persisting unsent for retry: ${msg}`,
+    );
+    Sentry.captureException(err, {
+      extra: {
+        phase: "enter-detected",
+        projectId,
+        regionId,
+      },
+    });
+    await upsertPendingEnter({
+      pendingEnterId: null,
+      projectId,
+      regionId,
+      firesAt: new Date(Date.now() + 60_000).toISOString(),
+      detectedAt,
+      unsent: true,
+    });
+  }
+}
+
+/**
+ * Cancel any pending-enter rows for a region the user just left
+ * before the dwell window elapsed. Best-effort: server cancel POST
+ * failures drop the local record anyway and let the server fire
+ * (post-facto discovery in TimesheetContext will surface the
+ * kind="in" receipt with Undo).
+ *
+ * Symmetric to cancelPendingExitsOnReEnter. Server's partial unique
+ * index on pending_geofence_enters (WHERE status='pending')
+ * guarantees ≤ 1 record per (userId, projectId), so > 1 here = local
+ * persistence corruption. Logged to Sentry for investigation but we
+ * still process all of them.
+ */
+async function cancelPendingEntersOnLeave(
+  regionId: string,
+  projectName: string,
+): Promise<void> {
+  let pending;
+  try {
+    pending = await findPendingEntersForRegion(regionId);
+  } catch (err) {
+    console.log("[geofence] cancel-pending-enter: lookup failed:", err);
     return;
   }
+  if (pending.length === 0) return;
 
-  console.log(
-    `[geofence] silent-auto clock-in: ${project.name} (entry ${entry.id})`,
-  );
+  if (pending.length > 1) {
+    Sentry.captureException(
+      new Error(
+        `[geofence] multiple pending enters for region ${regionId} (expected ≤ 1)`,
+      ),
+      {
+        extra: {
+          regionId,
+          count: pending.length,
+          ids: pending.map((p) => p.pendingEnterId),
+        },
+      },
+    );
+  }
 
-  // Receipt notification fires AFTER api.clockIn resolves successfully.
-  // If we ever swap the ordering ("show notification first, request
-  // later"), we'd be telling the user "you're clocked in" when no DB
-  // row exists yet — a worse UX than a missed receipt.
-  await fireClockInReceipt(
-    project.name,
-    projectId,
-    // BackendTimesheetEntry types entry.id as `string | number` because
-    // the wire payload has historically tolerated both. The receipt
-    // payload is wire-typed as string and the deep-link handler treats
-    // it as opaque, so coerce here at the boundary.
-    String(entry.id),
-    new Date(entry.clockIn),
-  );
+  // SAFE: B0.5 (this hook) running inside handleGeofenceExit is
+  // idempotent — duplicate Exit events for the same region from iOS
+  // jitter find no rows on the second pass and early-return at the
+  // length-zero check above. Server cancel endpoint is itself
+  // idempotent. Worst case under concurrent dispatch: one redundant
+  // server roundtrip.
+  for (const record of pending) {
+    if (record.pendingEnterId !== null) {
+      try {
+        await api.geofenceEnterCancelled(record.pendingEnterId);
+        await removePendingEnterById(record.pendingEnterId);
+        console.log(
+          `[geofence] leave cancelled pending enter ${record.pendingEnterId} for ${projectName}`,
+        );
+      } catch (err) {
+        // Failure mode: drop the local record anyway. If the server
+        // still fires, post-facto discovery surfaces the kind="in"
+        // receipt and the user can Undo. No retry queue for cancel
+        // — keeps the state machine simple. Mirror of the exit-
+        // cancel failure path.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.log(
+          `[geofence] leave cancel POST failed (${msg}); dropping local record anyway`,
+        );
+        Sentry.captureException(err, {
+          extra: {
+            phase: "enter-cancelled",
+            regionId,
+            pendingEnterId: record.pendingEnterId,
+          },
+        });
+        await removePendingEnterById(record.pendingEnterId);
+      }
+    } else {
+      // Unsent retry state: no server-side row exists, nothing to
+      // cancel. Just drop the local record so the next foreground
+      // doesn't try to retry-POST enter-detected for an enter the
+      // user has now reversed.
+      await removePendingEnterByCompoundKey(record.projectId, record.regionId);
+      console.log(
+        `[geofence] leave dropped unsent pending enter (no server row to cancel) for ${projectName}`,
+      );
+    }
+  }
 }
 
 /**
@@ -799,6 +932,19 @@ async function handleGeofenceExit(
     console.log("[geofence] auto-tracking disabled, skipping exit");
     return;
   }
+
+  // ----- Filter B0.5: cancel pending-enter on leave (S3x-mobile) -----
+  //
+  // Mirror of Filter 0 in handleGeofenceEnter (cancelPendingExits-
+  // OnReEnter). When the user steps onto a site and back off within
+  // the dwell window, we want to revoke the server-side pending
+  // enter row before the cron fires. Runs unconditionally and BEFORE
+  // the rest of the exit chain — pending enters and pending exits
+  // are independent server rows for independent state machines, so
+  // the exit chain's filters (active session, source check, etc.)
+  // don't apply to enters. After this hook, the regular B5..B1 chain
+  // runs as before for the auto-clock-out debounce path.
+  await cancelPendingEntersOnLeave(regionId, project.name);
 
   // ----- Filter B5 (early): already-pending short-circuit -----
   let existing: Awaited<ReturnType<typeof findPendingExitsForRegion>> = [];

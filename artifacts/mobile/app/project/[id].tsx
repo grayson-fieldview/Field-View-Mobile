@@ -67,6 +67,8 @@ export default function ProjectDetailScreen() {
     refresh: refreshTimesheet,
     firedExit,
     dismissFiredExit,
+    firedEnter,
+    dismissFiredEnter,
     clockIn: timesheetClockIn,
     clockOut: timesheetClockOut,
     loading: timesheetLoading,
@@ -333,12 +335,108 @@ export default function ProjectDetailScreen() {
     }
   }, [firedExit, refreshTimesheet, dismissFiredExit, showToast]);
 
+  // ----- Auto clock-in receipt banner (S3x-mobile, fired-path) -----
+  // Sibling of the kind="out" firedExit banner for the dwell-time
+  // auto-clock-IN path. Source is TimesheetContext.firedEnter, set
+  // from EITHER the foreground push handler in app/_layout.tsx
+  // (clock_in_receipt arrived while the app was foregrounded) OR
+  // post-fact discovery in TimesheetContext (foreground refresh
+  // observed a fresh auto_geofence session matching a local
+  // pending-enter row).
+  //
+  // The OTHER kind="in" banner above (driven by `recentClockIn`
+  // URL param) covers the deep-link tap path — user backgrounded,
+  // notification fired, user tapped. Both are kind="in" and could
+  // in theory be set for the SAME entry (push arrived foreground,
+  // user backgrounded, tapped same notification). Gate below
+  // suppresses the firedEnter banner when recentClockIn already
+  // covers the same entry, so the user never sees two stacked
+  // copies of the same receipt.
+  //
+  // Dismissal vectors mirror firedExit (kind="out"):
+  //   - Explicit X tap                  — clears context unconditionally
+  //   - 30s auto-timer                  — gated on no error
+  //   - First user-initiated scroll     — gated on no error
+  //   - Successful undo                 — programmatic, also clears + refreshes
+  const [enterReceiptError, setEnterReceiptError] = useState<string | null>(
+    null,
+  );
+  const [enterUndoing, setEnterUndoing] = useState(false);
+
+  const firedEnterEntryId = firedEnter ? String(firedEnter.entry.id) : null;
+  useEffect(() => {
+    setEnterReceiptError(null);
+  }, [firedEnterEntryId]);
+
+  const enterShowReceipt =
+    firedEnter !== null &&
+    String(firedEnter.entry.projectId) === String(id) &&
+    // Suppress when the recentClockIn deep-link banner is already
+    // showing the same entry — avoid double-banner for one fire.
+    firedEnterEntryId !== recentClockIn;
+
+  useEffect(() => {
+    if (!enterShowReceipt || enterReceiptError) return;
+    const t = setTimeout(() => dismissFiredEnter(), 30_000);
+    return () => clearTimeout(t);
+  }, [
+    enterShowReceipt,
+    enterReceiptError,
+    firedEnterEntryId,
+    dismissFiredEnter,
+  ]);
+
+  const dismissEnterReceipt = useCallback(() => {
+    setEnterReceiptError(null);
+    dismissFiredEnter();
+  }, [dismissFiredEnter]);
+
+  const handleUndoEnterReceipt = useCallback(async () => {
+    if (!firedEnter) return;
+    setEnterUndoing(true);
+    setEnterReceiptError(null);
+    try {
+      // Same /auto-undo endpoint as the deep-link kind="in" handler
+      // and the firedExit kind="out" handler — server routes
+      // internally based on entry state. For an open auto-clock-in
+      // entry, the server deletes the time entry row.
+      await api.autoUndoTimeEntry(firedEnter.entry.id);
+      // Refresh to clear the now-deleted active session. Refresh
+      // observes prev=entry → next=null transition, which the
+      // post-fact exit-discovery branch handles cleanly (no
+      // pending-exit match, so no spurious kind="out" banner).
+      await refreshTimesheet();
+      dismissFiredEnter();
+      showToast("Clock-in undone");
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "Network error";
+      console.log(`[receipt] auto-clock-in undo failed: ${msg}`);
+      setEnterReceiptError(msg);
+    } finally {
+      setEnterUndoing(false);
+    }
+  }, [firedEnter, refreshTimesheet, dismissFiredEnter, showToast]);
+
   const dismissReceiptOnInteraction = useCallback(() => {
     // Each kind dismisses independently with its own error gate so
     // a sticky error on one doesn't suppress dismissal of the other.
     if (!receiptError) setReceiptVisible(false);
     if (!outReceiptError && firedExit) dismissFiredExit();
-  }, [receiptError, outReceiptError, firedExit, dismissFiredExit]);
+    if (!enterReceiptError && firedEnter) dismissFiredEnter();
+  }, [
+    receiptError,
+    outReceiptError,
+    enterReceiptError,
+    firedExit,
+    firedEnter,
+    dismissFiredExit,
+    dismissFiredEnter,
+  ]);
 
   const dismissReceipt = useCallback(() => {
     setReceiptVisible(false);
@@ -654,6 +752,32 @@ export default function ProjectDetailScreen() {
                 void handleUndoOutReceipt();
               }}
               onDismiss={dismissOutReceipt}
+            />
+          </View>
+        ) : null}
+        {/* Auto-clock-in receipt (S3x-mobile, fired-path). Only
+            renders when the deep-link kind="in" banner above ISN'T
+            already covering the same entry (gated in
+            enterShowReceipt). Same insets.top compensation as
+            kind="out" — top padding only when no banner is rendered
+            above us. */}
+        {enterShowReceipt && firedEnter ? (
+          <View
+            style={{
+              paddingTop: showReceipt || outShowReceipt ? 0 : insets.top,
+            }}
+          >
+            <ClockReceiptBanner
+              kind="in"
+              visible={enterShowReceipt}
+              time={new Date(firedEnter.firedAt)}
+              projectName={project.name}
+              error={enterReceiptError}
+              undoing={enterUndoing}
+              onUndo={() => {
+                void handleUndoEnterReceipt();
+              }}
+              onDismiss={dismissEnterReceipt}
             />
           </View>
         ) : null}

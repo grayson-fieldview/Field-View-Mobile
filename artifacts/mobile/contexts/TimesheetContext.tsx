@@ -15,6 +15,13 @@ import { useToast } from "@/contexts/ToastContext";
 import { ApiError, api } from "@/services/api";
 import type { BackendTimesheetEntry } from "@/services/api";
 import {
+  listPendingEnters,
+  listUnsentPendingEnters,
+  removePendingEnterById,
+  removePendingEntersByProjectId,
+  upsertPendingEnter,
+} from "@/services/pendingEnters";
+import {
   listPendingExits,
   listUnsentPendingExits,
   removePendingExitByTimeEntryId,
@@ -68,6 +75,32 @@ export interface FiredExit {
   firedAt: string;
 }
 
+/**
+ * Mirror of FiredExit for the dwell-time auto-clock-IN path
+ * (S3x-mobile). Surfaced when:
+ *   - foreground refresh observes a transition from no active
+ *     session → an `auto_geofence` session AND the new session's
+ *     projectId matches a local pending-enter row (post-facto
+ *     discovery), OR
+ *   - the foreground push handler in app/_layout.tsx receives a
+ *     server-pushed clock_in_receipt while the app is foregrounded.
+ *
+ * `entry` is the FRESHLY-FETCHED active entry (from
+ * api.activeTimesheet) on the discovery path; on the foreground-push
+ * path, a synthetic minimal BackendTimesheetEntry built from the
+ * push payload (timeEntryId/projectId/clockInAt). Consumers
+ * (ClockReceiptBanner kind="in") read only id + projectId + the
+ * sibling `firedAt` field.
+ *
+ * `firedAt` is the matched pendingEnter.firesAt on the discovery
+ * path (~60s after detectedAt), or the push payload's clockInAt on
+ * the foreground-push path (server's actual clock-in time).
+ */
+export interface FiredEnter {
+  entry: BackendTimesheetEntry;
+  firedAt: string;
+}
+
 export interface TimesheetState {
   active: BackendTimesheetEntry | null;
   ready: boolean;
@@ -100,6 +133,18 @@ export interface TimesheetState {
    * with `dismissFiredExit` should use that instead.
    */
   setFiredExit: (next: FiredExit | null) => void;
+  /**
+   * Mirror of `firedExit` for the dwell-time auto-clock-IN path.
+   * Non-null when the foreground refresh discovered (or the
+   * foreground push handler received) a server-fired auto-clock-in.
+   * Cleared by `dismissFiredEnter`. Same at-most-one semantics as
+   * firedExit — fires are rare (one per dwell window) and the
+   * relevance window closes within minutes.
+   */
+  firedEnter: FiredEnter | null;
+  dismissFiredEnter: () => void;
+  /** Symmetric to `setFiredExit` for the foreground push handler. */
+  setFiredEnter: (next: FiredEnter | null) => void;
 }
 
 const TimesheetContext = createContext<TimesheetState | undefined>(undefined);
@@ -111,6 +156,7 @@ export function TimesheetProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [loading, setLoading] = useState(false);
   const [firedExit, setFiredExit] = useState<FiredExit | null>(null);
+  const [firedEnter, setFiredEnter] = useState<FiredEnter | null>(null);
 
   // Single in-flight guard shared by refresh AND mutations so a
   // background foreground-refresh can't race with (and clobber) an
@@ -202,6 +248,62 @@ export function TimesheetProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  /**
+   * Foreground retry of any unsent enter-detected POSTs. Mirror of
+   * retryUnsentExits. Same fire-and-forget discipline, same lack of
+   * retry budget / backoff (foreground transitions are user-rate-
+   * limited), same lack of per-attempt Sentry capture.
+   *
+   * Skipped-response handling: if the server responds with
+   * { status: "skipped", reason: "already_clocked_in" } during retry,
+   * the user clocked in by some other path (manual, or another
+   * device) between the original detection and this retry. Drop the
+   * unsent record — there's nothing to track.
+   */
+  const retryUnsentEnters = useCallback(async () => {
+    let unsent;
+    try {
+      unsent = await listUnsentPendingEnters();
+    } catch (err) {
+      console.log("[Timesheet] unsent-enter list failed:", err);
+      return;
+    }
+    if (unsent.length === 0) return;
+    console.log(`[Timesheet] retrying ${unsent.length} unsent enter(s)`);
+    for (const record of unsent) {
+      try {
+        const resp = await api.geofenceEnterDetected({
+          projectId: record.projectId,
+          regionId: record.regionId,
+          detectedAt: record.detectedAt,
+        });
+        if ("status" in resp && resp.status === "skipped") {
+          await removePendingEntersByProjectId(record.projectId);
+          console.log(
+            `[Timesheet] unsent enter retry skipped by server (${resp.reason}); dropped record for project ${record.projectId}`,
+          );
+          continue;
+        }
+        await upsertPendingEnter({
+          pendingEnterId: resp.id,
+          projectId: record.projectId,
+          regionId: record.regionId,
+          firesAt: resp.firesAt,
+          detectedAt: record.detectedAt,
+          // explicit omit of `unsent` — record is now sent
+        });
+        console.log(
+          `[Timesheet] unsent enter retry ok: projectId=${record.projectId} pendingEnterId=${resp.id}`,
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.log(
+          `[Timesheet] unsent enter retry failed for project ${record.projectId}: ${msg}`,
+        );
+      }
+    }
+  }, []);
+
   const refresh = useCallback(async () => {
     if (inFlightRef.current) return;
     inFlightRef.current = true;
@@ -216,7 +318,7 @@ export function TimesheetProvider({ children }: { children: React.ReactNode }) {
       const prevId = prevActive?.id != null ? String(prevActive.id) : null;
       const nextId = nextActive?.id != null ? String(nextActive.id) : null;
 
-      // ----- Post-fact discovery -----
+      // ----- Post-fact discovery: exit -----
       //
       // Run when the prior session ended — either no current
       // session (next is null) OR a DIFFERENT session is now
@@ -254,6 +356,61 @@ export function TimesheetProvider({ children }: { children: React.ReactNode }) {
           console.log("[Timesheet] post-fact discovery failed:", err);
           Sentry.captureException(err, {
             extra: { phase: "post-fact-discovery", prevEntryId: prevId },
+          });
+        }
+      }
+
+      // ----- Post-fact discovery: enter -----
+      //
+      // Symmetric to the exit discovery above. Run when a NEW
+      // session is now current that wasn't before (prev was null
+      // OR a different id) AND the new session was created with
+      // source="auto_geofence". Surface the kind="in" receipt
+      // ONLY if the new session's projectId matches a local
+      // pending-enter row — that gates against the (rare but
+      // principled) case of a session that happens to be tagged
+      // auto_geofence but didn't originate from this device's
+      // dwell-time POST. Always remove any matching pending-enter
+      // rows for the project (the server has now fired; the row
+      // would only contribute noise on the next leave event).
+      const enterDiscovered =
+        nextActive !== null &&
+        nextId !== prevId &&
+        nextActive.source === "auto_geofence";
+      if (enterDiscovered) {
+        try {
+          const nextProjectId =
+            typeof nextActive.projectId === "number"
+              ? nextActive.projectId
+              : Number(nextActive.projectId);
+          const pendingEnters = await listPendingEnters();
+          const match = pendingEnters.find(
+            (p) => p.projectId === nextProjectId,
+          );
+          if (match) {
+            console.log(
+              `[Timesheet] post-fact discovery: server fired auto-clock-in for project ${nextProjectId} (entry ${nextId}, firedAt ${match.firesAt})`,
+            );
+            setFiredEnter({ entry: nextActive, firedAt: match.firesAt });
+            // Remove by id rather than by projectId because there
+            // could in principle be a stale row for the same project
+            // from a much earlier dwell that never resolved — leave
+            // those for the dead-record cleanup. Realistically there
+            // is exactly 0 or 1 row per project, so this distinction
+            // is academic.
+            if (match.pendingEnterId !== null) {
+              await removePendingEnterById(match.pendingEnterId);
+            } else {
+              await removePendingEntersByProjectId(nextProjectId);
+            }
+          }
+        } catch (err) {
+          console.log("[Timesheet] post-fact enter discovery failed:", err);
+          Sentry.captureException(err, {
+            extra: {
+              phase: "post-fact-enter-discovery",
+              nextEntryId: nextId,
+            },
           });
         }
       }
@@ -299,10 +456,15 @@ export function TimesheetProvider({ children }: { children: React.ReactNode }) {
     // UI. Safe to call when no unsent records exist (cheap
     // AsyncStorage read returns []).
     void retryUnsentExits();
-  }, [retryUnsentExits]);
+    void retryUnsentEnters();
+  }, [retryUnsentExits, retryUnsentEnters]);
 
   const dismissFiredExit = useCallback(() => {
     setFiredExit(null);
+  }, []);
+
+  const dismissFiredEnter = useCallback(() => {
+    setFiredEnter(null);
   }, []);
 
   // Initial fetch once the user is signed in. On the first run
@@ -315,6 +477,7 @@ export function TimesheetProvider({ children }: { children: React.ReactNode }) {
     if (!user) {
       setActive(null);
       setFiredExit(null);
+      setFiredEnter(null);
       setReady(true);
       // Best-effort clear so user-A's pending-fire can't bleed
       // into user-B's session on the same device.
@@ -423,6 +586,9 @@ export function TimesheetProvider({ children }: { children: React.ReactNode }) {
       firedExit,
       dismissFiredExit,
       setFiredExit,
+      firedEnter,
+      dismissFiredEnter,
+      setFiredEnter,
     }),
     [
       active,
@@ -434,6 +600,9 @@ export function TimesheetProvider({ children }: { children: React.ReactNode }) {
       firedExit,
       dismissFiredExit,
       setFiredExit,
+      firedEnter,
+      dismissFiredEnter,
+      setFiredEnter,
     ],
   );
 
