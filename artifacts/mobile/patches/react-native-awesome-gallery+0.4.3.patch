@@ -1,0 +1,24 @@
+--- a/node_modules/react-native-awesome-gallery/src/index.tsx
++++ b/node_modules/react-native-awesome-gallery/src/index.tsx
+@@ -196,10 +196,7 @@
+     const originalLayout = useVector(width, 0);
+     const layout = useVector(width, 0);
+ 
+-    const isActive = useDerivedValue(() => currentIndex.value === index, [
+-      currentIndex,
+-      index,
+-    ]);
++    const isActive = useDerivedValue(() => currentIndex.value === index);
+ 
+     useAnimatedReaction(
+       () => {
+@@ -994,8 +991,7 @@
+ 
+   useAnimatedReaction(
+     () => currentIndex.value,
+-    (newIndex) => runOnJS(changeIndex)(newIndex),
+-    [currentIndex, changeIndex]
++    (newIndex) => runOnJS(changeIndex)(newIndex)
+   );
+ 
+   useEffect(() => {
