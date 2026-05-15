@@ -14,6 +14,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/contexts/ToastContext";
 import { ApiError, api } from "@/services/api";
 import type { BackendTimesheetEntry } from "@/services/api";
+import { startHeartbeat, stopHeartbeat } from "@/services/heartbeat";
 import {
   listPendingEnters,
   listUnsentPendingEnters,
@@ -188,6 +189,49 @@ export function TimesheetProvider({ children }: { children: React.ReactNode }) {
   const activeRef = useRef<BackendTimesheetEntry | null>(null);
   useEffect(() => {
     activeRef.current = active;
+  }, [active]);
+
+  // Heartbeat lifecycle (BUILD 12, server-side exit-detection
+  // backup). Starts the background-location task when a session
+  // opens, stops it when the session closes. Single source of truth
+  // for transitions: every clock-in / clock-out / cancellation /
+  // post-fact-discovery path converges on `setActive(...)` here, so
+  // a deps:[active] effect catches every transition automatically.
+  //
+  // Defensive on id change WITHOUT going through null:
+  // clock-out → clock-in normally settles `active` to null between
+  // them (separate setActive calls), but if the discovery path or
+  // a future code path ever moved A → B in a single update, we'd
+  // leak a heartbeat task tagged to the wrong session. The
+  // stop-then-start sequence below ensures the task is restarted
+  // cleanly on any non-equal id transition.
+  //
+  // start/stop are idempotent and themselves no-op on web /
+  // missing native module, so this effect is safe to call
+  // unconditionally.
+  const heartbeatPrevIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const nextId = active?.id != null ? String(active.id) : null;
+    const prevId = heartbeatPrevIdRef.current;
+    if (nextId === prevId) return;
+    heartbeatPrevIdRef.current = nextId;
+
+    if (prevId !== null && nextId === null) {
+      // Session ended.
+      void stopHeartbeat();
+    } else if (prevId === null && nextId !== null) {
+      // Session opened.
+      void startHeartbeat();
+    } else {
+      // Session changed id without going through null. Defensive
+      // restart so the running task isn't tagged to a stale
+      // session from the server's perspective. (Not expected in
+      // current code paths but cheap to guard against.)
+      void (async () => {
+        await stopHeartbeat();
+        await startHeartbeat();
+      })();
+    }
   }, [active]);
 
   /**

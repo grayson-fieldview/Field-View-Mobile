@@ -1153,6 +1153,22 @@ export const api = {
     }),
 
   /**
+   * Heartbeat — server-side exit-detection backup (BUILD 12).
+   * Posted by services/heartbeat.ts on background-location updates
+   * while a timesheet is active. Server compares lat/lng against
+   * the active project and decides whether to fire an auto-clock-
+   * out. Mobile is a dumb relay: no decision logic, no queueing on
+   * failure (next location update retries naturally).
+   * Server returns 204 on success.
+   */
+  postHeartbeat: (payload: { lat: number; lng: number; timestamp: string }) =>
+    apiFetch<void>("/api/heartbeat", {
+      method: "POST",
+      json: payload,
+      allowEmptyBody: true,
+    }),
+
+  /**
    * Update one or more user preferences. Currently only autoTrackingEnabled
    * (S33 master switch for OS-driven clock in/out). Server returns the
    * full updated BackendUser so callers can replace their local copy in
