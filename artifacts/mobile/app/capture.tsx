@@ -21,6 +21,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Sentry from "@sentry/react-native";
 
 import { Button } from "@/components/Button";
+import { LetterboxOverlay } from "@/components/LetterboxOverlay";
 import { useAuth } from "@/contexts/AuthContext";
 import { useData } from "@/contexts/DataContext";
 import { useColors } from "@/hooks/useColors";
@@ -570,6 +571,14 @@ export default function CaptureScreen() {
         mode={mode}
         onCameraReady={() => setCameraReady(true)}
       />
+
+      {/* Letterbox overlay (B11): masks preview to match the user's
+       * saved-photo aspect ratio. Pointer-events disabled so all
+       * camera chrome below stays interactive. Hidden in video mode
+       * because video capture isn't ratio-cropped. */}
+      {mode === "photo" ? (
+        <LetterboxOverlay ratio={captureAspectRatio} />
+      ) : null}
 
       {/* TOP BAR: close + project + flash/flip */}
       <View style={[styles.topBar, { paddingTop: insets.top + 10 }]}>

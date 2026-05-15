@@ -576,14 +576,18 @@ function AspectRatioSelector({
   const displayValue = pending ?? value;
   const disabled = pending !== null;
 
+  // Display labels are PORTRAIT-shaped (B11) because field users
+  // hold their phones portrait. Wire-format values stay landscape
+  // ("4:3"/"1:1"/"16:9") for cross-platform parity with the web
+  // app's enum — only the on-screen text differs.
   const labelFor = (r: PhotoAspectRatio): string => {
     switch (r) {
       case "4:3":
-        return "4:3";
+        return "3:4";
       case "1:1":
         return "1:1";
       case "16:9":
-        return "16:9";
+        return "9:16";
     }
   };
   const subLabelFor = (r: PhotoAspectRatio): string => {
@@ -593,7 +597,7 @@ function AspectRatioSelector({
       case "1:1":
         return "Square";
       case "16:9":
-        return "Widescreen";
+        return "Tall";
     }
   };
 

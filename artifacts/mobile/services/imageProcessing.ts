@@ -48,6 +48,16 @@ export function isPhotoAspectRatio(value: unknown): value is PhotoAspectRatio {
 /**
  * Center-crop a captured photo to the requested aspect ratio.
  *
+ * Orientation-aware (B11): the `ratio` setting is interpreted as a
+ * LANDSCAPE shape (e.g. "16:9" = 16 wide × 9 tall) when the source
+ * is landscape, and as the corresponding PORTRAIT shape (9 wide ×
+ * 16 tall) when the source is portrait. This matches how field
+ * users actually hold their phones: a contractor capturing a tall
+ * doorway in portrait expects the saved photo to be tall too, not
+ * letterboxed into landscape that loses the top and bottom of
+ * what they framed. Square ("1:1") is orientation-symmetric and
+ * unaffected.
+ *
  * Always preserves the LONGER of the two dimensions that match the
  * target — i.e. for a 4032×3024 source cropped to 1:1 we keep the
  * full 3024px short edge and crop the long edge to 3024px (no
@@ -72,7 +82,12 @@ export async function cropToAspectRatio(
   source: { uri: string; width: number; height: number },
   ratio: PhotoAspectRatio,
 ): Promise<{ uri: string; width: number; height: number }> {
-  const target = RATIO_VALUES[ratio];
+  // Portrait sources flip the target ratio (B11). The DB enum stays
+  // landscape-shaped ("4:3", "16:9") for cross-platform parity with
+  // the web app, but on a portrait-held phone the user's intent is
+  // the corresponding portrait shape (3:4, 9:16). 1:1 is symmetric.
+  const baseTarget = RATIO_VALUES[ratio];
+  const target = source.height > source.width ? 1 / baseTarget : baseTarget;
   const current = source.width / source.height;
   if (Math.abs(current - target) / target < RATIO_TOLERANCE) {
     return source;
