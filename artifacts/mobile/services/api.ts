@@ -1164,6 +1164,36 @@ export const api = {
       json: input,
     }),
 
+  // ----- Account-level settings (admin-managed, all users read) -----
+
+  /**
+   * Account-wide settings shared by every user on the team. Currently
+   * carries only `defaultPhotoAspectRatio` (S3y, 2026-05) — the
+   * aspect ratio every member's camera captures at. Read by every
+   * user on bootstrap; modified only by admins via PATCH below.
+   *
+   * Response shape mirrors the web client. Mobile narrows the
+   * `defaultPhotoAspectRatio` string to the local PhotoAspectRatio
+   * union (services/imageProcessing.ts) before persisting — an
+   * unexpected server value falls back to "4:3" silently rather than
+   * propagating an unknown ratio to the cropper.
+   */
+  getAccountSettings: () =>
+    apiFetch<{ defaultPhotoAspectRatio: string }>("/api/account/settings"),
+
+  /**
+   * Update one or more account-level settings. Admin-only — server
+   * returns 403 for non-admin callers. Server returns the full
+   * updated settings object so the caller can replace its local copy
+   * in one shot. Mirror of `updatePreferences` for the per-user
+   * endpoint.
+   */
+  updateAccountSettings: (input: { defaultPhotoAspectRatio?: string }) =>
+    apiFetch<{ defaultPhotoAspectRatio: string }>("/api/account/settings", {
+      method: "PATCH",
+      json: input,
+    }),
+
   /**
    * Soft-delete the entire account (owner only). Requires the literal
    * string "DELETE" plus the owner's password. Backend returns 401 for

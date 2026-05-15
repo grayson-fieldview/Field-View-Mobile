@@ -18,9 +18,16 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import * as Sentry from "@sentry/react-native";
+
 import { Button } from "@/components/Button";
+import { useAuth } from "@/contexts/AuthContext";
 import { useData } from "@/contexts/DataContext";
 import { useColors } from "@/hooks/useColors";
+import {
+  cropToAspectRatio,
+  DEFAULT_PHOTO_ASPECT_RATIO,
+} from "@/services/imageProcessing";
 import type { Photo } from "@/services/types";
 
 const HOLD_TO_BURST_MS = 350;
@@ -117,7 +124,18 @@ export default function CaptureScreen() {
     checklistItemId?: string;
   }>();
   const { projects, addPhoto, addPhotosBatch } = useData();
+  const { accountSettings } = useAuth();
   const project = projects.find((p) => p.id === projectId);
+
+  // Account-wide default capture aspect ratio (S3y, admin-managed
+  // via /api/account/settings). Falls back to "4:3" while the
+  // settings fetch is in flight or has failed — better to ship a
+  // photo at the wrong ratio than to block the camera. Read on every
+  // render rather than memoized so admins flipping the setting from
+  // another device see new captures honor the change immediately on
+  // next foreground refresh.
+  const captureAspectRatio =
+    accountSettings?.defaultPhotoAspectRatio ?? DEFAULT_PHOTO_ASPECT_RATIO;
 
   const [permission, requestPermission] = useCameraPermissions();
   const [locationGranted, setLocationGranted] = useState<boolean | null>(null);
@@ -244,6 +262,23 @@ export default function CaptureScreen() {
   }
 
   // Take a single photo.
+  //
+  // After the native capture resolves, center-crop to the account-
+  // configured aspect ratio (S3y). Crop runs synchronously inside
+  // captureOnce so the returned uri is the cropped one — every
+  // downstream consumer (singleShot → addPhoto, startBurst → buffer
+  // → addPhotosBatch) gets the cropped file without per-callsite
+  // changes. cropToAspectRatio is a no-op when the native ratio
+  // already matches the target (±1%), so most 4:3-configured
+  // accounts pay zero extra cost.
+  //
+  // Crop failure is non-fatal: log to Sentry and fall back to the
+  // raw uncropped uri. Per the design ("Don't break capture"), it's
+  // strictly better to ship an off-ratio photo than no photo at all.
+  // The CameraView preview itself stays at native sensor ratio on
+  // iOS — there's no public API to constrain the preview to match —
+  // so 1:1/16:9 users see a wider preview than what's saved. Web
+  // parity helper text in the admin UI calls this out.
   const captureOnce = async () => {
     if (!cameraRef.current || !cameraReady) return null;
     try {
@@ -252,8 +287,38 @@ export default function CaptureScreen() {
         exif: false,
       });
       if (!photo?.uri) return null;
+
+      let finalUri = photo.uri;
+      if (
+        typeof photo.width === "number" &&
+        typeof photo.height === "number" &&
+        photo.width > 0 &&
+        photo.height > 0
+      ) {
+        try {
+          const cropped = await cropToAspectRatio(
+            { uri: photo.uri, width: photo.width, height: photo.height },
+            captureAspectRatio,
+          );
+          finalUri = cropped.uri;
+        } catch (cropErr) {
+          const msg =
+            cropErr instanceof Error ? cropErr.message : String(cropErr);
+          console.log(`[capture] crop failed (using raw): ${msg}`);
+          Sentry.captureException(cropErr, {
+            extra: {
+              phase: "captureOnce.crop",
+              ratio: captureAspectRatio,
+              srcWidth: photo.width,
+              srcHeight: photo.height,
+            },
+          });
+          // finalUri already = photo.uri (raw fallback).
+        }
+      }
+
       return {
-        uri: photo.uri,
+        uri: finalUri,
         takenAt: new Date().toISOString(),
         latitude: locationCoord?.latitude,
         longitude: locationCoord?.longitude,

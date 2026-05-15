@@ -67,6 +67,7 @@
     "@sentry/react-native": "~7.2.0",
     "expo-device": "^55.0.16",
     "expo-file-system": "~19.0.22",
+    "expo-image-manipulator": "~14.0.8",
     "expo-notifications": "~0.32.17",
     "expo-secure-store": "^55.0.13",
     "expo-sharing": "~14.0.8",

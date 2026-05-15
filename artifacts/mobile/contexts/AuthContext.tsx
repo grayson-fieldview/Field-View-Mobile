@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/react-native";
 import React, {
   createContext,
   useCallback,
@@ -19,6 +20,11 @@ import {
   type BackendUser,
   type UserRole,
 } from "@/services/api";
+import {
+  DEFAULT_PHOTO_ASPECT_RATIO,
+  isPhotoAspectRatio,
+  type PhotoAspectRatio,
+} from "@/services/imageProcessing";
 import { autoTrackingPref } from "@/services/preferences";
 import {
   registerForPushNotificationsAsync,
@@ -26,6 +32,18 @@ import {
   subscribeToPushTokenRotation,
   unregisterPushTokenWithServer,
 } from "@/services/pushNotifications";
+
+/**
+ * Account-level settings shared by every user on the team. Mirrors
+ * the wire shape of `GET /api/account/settings` after narrowing the
+ * server's `defaultPhotoAspectRatio: string` to the local
+ * PhotoAspectRatio union. Settings are admin-managed (PATCH endpoint
+ * is gated 403); every user reads them so capture.tsx can pick up
+ * the right ratio.
+ */
+export interface AccountSettings {
+  defaultPhotoAspectRatio: PhotoAspectRatio;
+}
 
 export interface AuthUser {
   id: string;
@@ -57,6 +75,23 @@ interface AuthState {
   requestPasswordReset: (email: string) => Promise<void>;
   refreshUser: () => Promise<void>;
   updatePreferences: (input: { autoTrackingEnabled?: boolean }) => Promise<void>;
+  /**
+   * Account-level settings (admin-managed). `null` until first
+   * successful fetch; capture.tsx falls back to
+   * DEFAULT_PHOTO_ASPECT_RATIO ("4:3") in that window so a slow or
+   * failed fetch never blocks the camera.
+   */
+  accountSettings: AccountSettings | null;
+  /**
+   * Optimistic admin-only update. Throws on PATCH failure (callers
+   * surface a toast); on success, server response replaces local
+   * state. Non-admins receive 403 from the server — the UI hides the
+   * setter, but if it's somehow called the rejection rolls back
+   * local state cleanly.
+   */
+  updateAccountSettings: (input: {
+    defaultPhotoAspectRatio?: PhotoAspectRatio;
+  }) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthState | undefined>(undefined);
@@ -86,11 +121,62 @@ function toAuthUser(raw: BackendUser | null): AuthUser | null {
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [ready, setReady] = useState(false);
+  const [accountSettings, setAccountSettings] =
+    useState<AccountSettings | null>(null);
 
   // Mirror of `user` for callbacks that need fresh state without
   // re-binding on every render (AppState listener, optimistic
   // updatePreferences rollback).
   const userRef = useRef<AuthUser | null>(null);
+  // Same mirror for accountSettings so the optimistic-update
+  // rollback in updateAccountSettings() can read fresh state without
+  // capturing it through closure (and re-binding the callback on
+  // every settings change).
+  const accountSettingsRef = useRef<AccountSettings | null>(null);
+  useEffect(() => {
+    accountSettingsRef.current = accountSettings;
+  }, [accountSettings]);
+
+  /**
+   * Fetch + narrow account settings. On any error (including 401:
+   * settings are public to authenticated users so a 401 here means
+   * the session is dead; the existing me()/refreshUser machinery
+   * handles the actual logout) we log to Sentry and leave local
+   * state untouched. Capture defaults to "4:3" while
+   * accountSettings is null.
+   *
+   * Narrowing: server returns `defaultPhotoAspectRatio: string`. If
+   * the value isn't one of "4:3" | "1:1" | "16:9" we treat the row
+   * as malformed and skip the local update — better to keep the
+   * previous known-good value (or null) than persist garbage that
+   * the cropper can't honor.
+   */
+  const fetchAccountSettings = useCallback(async (): Promise<void> => {
+    try {
+      const raw = await api.getAccountSettings();
+      if (!isPhotoAspectRatio(raw.defaultPhotoAspectRatio)) {
+        Sentry.captureException(
+          new Error(
+            `[auth] account settings: unknown defaultPhotoAspectRatio "${raw.defaultPhotoAspectRatio}"`,
+          ),
+        );
+        return;
+      }
+      setAccountSettings({
+        defaultPhotoAspectRatio: raw.defaultPhotoAspectRatio,
+      });
+    } catch (err) {
+      // Default fallback path — capture stays at "4:3". Logged for
+      // observability so we notice if this fails consistently for
+      // some users (which would suggest a real backend regression
+      // rather than a transient network blip).
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[auth] getAccountSettings failed:", msg);
+      Sentry.captureException(err, {
+        extra: { phase: "fetchAccountSettings" },
+      });
+    }
+  }, []);
   useEffect(() => {
     userRef.current = user;
     // Keep the AsyncStorage mirror in lockstep with the in-memory
@@ -155,11 +241,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ")",
       );
       setUser(next);
+      // Fetch account settings only when we have a real user — the
+      // settings endpoint requires auth, and there's nothing to
+      // load for a signed-out cold start. Fire-and-forget so it
+      // doesn't extend the splash window: capture.tsx tolerates a
+      // null settings object via DEFAULT_PHOTO_ASPECT_RATIO.
+      if (next) void fetchAccountSettings();
     } else {
       console.log("[boot] bootstrap outcome: skipped setUser (preserve state)");
     }
     setReady(true);
-  }, []);
+  }, [fetchAccountSettings]);
 
   useEffect(() => {
     bootstrap();
@@ -188,9 +280,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     }
     if (!isNetworkOrCsrfFailure) {
-      setUser(toAuthUser(normalizeUser(me)));
+      const next = toAuthUser(normalizeUser(me));
+      setUser(next);
+      // Refetch account settings alongside the user object — admin
+      // could have flipped defaultPhotoAspectRatio from the web app
+      // or another device while we were backgrounded. Skip when the
+      // refresh resolved to a signed-out user (401 → next === null):
+      // the settings endpoint requires auth, so we'd just generate
+      // a guaranteed 401 + Sentry noise on every foreground after
+      // session expiry. Same fire-and-forget discipline as
+      // bootstrap; failure leaves the existing local copy in place.
+      if (next) void fetchAccountSettings();
     }
-  }, []);
+  }, [fetchAccountSettings]);
 
   // Refresh user on every foreground transition. Mirrors the
   // useGeofenceSync.tsx AppState pattern. Single network call,
@@ -205,6 +307,63 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
     return () => sub.remove();
   }, [refreshUser]);
+
+  /**
+   * Optimistic update for account-level settings. Mirror of
+   * updatePreferences but for the admin-only PATCH endpoint and the
+   * separate accountSettings slice rather than the per-user
+   * AuthUser. UI gates the call on `user?.role === "admin"`; this
+   * helper does NOT re-check role — the server returns 403 if a
+   * non-admin somehow invokes it, the catch below rolls back.
+   */
+  const updateAccountSettings = useCallback(
+    async (input: {
+      defaultPhotoAspectRatio?: PhotoAspectRatio;
+    }): Promise<void> => {
+      const prev = accountSettingsRef.current;
+      // Optimistic merge — if prev is null (first-fetch never
+      // succeeded) seed from the input keys directly. defaultPhoto
+      // AspectRatio is the only field today, so this is safe; if a
+      // future field lands without a corresponding seed we'd want a
+      // proper default registry.
+      const optimistic: AccountSettings = {
+        defaultPhotoAspectRatio:
+          input.defaultPhotoAspectRatio ??
+          prev?.defaultPhotoAspectRatio ??
+          DEFAULT_PHOTO_ASPECT_RATIO,
+      };
+      setAccountSettings(optimistic);
+
+      try {
+        const updated = await api.updateAccountSettings(input);
+        if (!isPhotoAspectRatio(updated.defaultPhotoAspectRatio)) {
+          // Server accepted the PATCH but echoed back something
+          // outside the union. Treat as malformed: roll back to
+          // prev so we don't poison the local cache, but DON'T
+          // throw — the write itself succeeded server-side, so
+          // surfacing an error to the user would be misleading.
+          Sentry.captureException(
+            new Error(
+              `[auth] updateAccountSettings: server echoed unknown ratio "${updated.defaultPhotoAspectRatio}"`,
+            ),
+          );
+          setAccountSettings(prev);
+          return;
+        }
+        setAccountSettings({
+          defaultPhotoAspectRatio: updated.defaultPhotoAspectRatio,
+        });
+      } catch (err) {
+        // Roll back. Re-throw so the caller (settings UI) can
+        // surface a toast — AuthProvider mounts outside Toast
+        // Provider so we cannot useToast() here. Same constraint as
+        // updatePreferences below.
+        setAccountSettings(prev);
+        throw err;
+      }
+    },
+    [],
+  );
 
   const updatePreferences = useCallback(
     async (input: { autoTrackingEnabled?: boolean }): Promise<void> => {
@@ -233,17 +392,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
-  const signIn = useCallback(async (email: string, password: string) => {
-    const emailTrim = email.trim();
-    if (!emailTrim) throw new Error("Please enter your email.");
-    if (!password) throw new Error("Please enter your password.");
-    const loginRes = await api.login(emailTrim, password);
-    // The session cookie is now set. Fetch the canonical user record.
-    let me = normalizeUser(loginRes);
-    if (!me) me = normalizeUser(await api.me().catch(() => null));
-    if (!me) throw new Error("Sign-in succeeded but we couldn't load your account.");
-    setUser(toAuthUser(me));
-  }, []);
+  const signIn = useCallback(
+    async (email: string, password: string) => {
+      const emailTrim = email.trim();
+      if (!emailTrim) throw new Error("Please enter your email.");
+      if (!password) throw new Error("Please enter your password.");
+      const loginRes = await api.login(emailTrim, password);
+      // The session cookie is now set. Fetch the canonical user record.
+      let me = normalizeUser(loginRes);
+      if (!me) me = normalizeUser(await api.me().catch(() => null));
+      if (!me)
+        throw new Error("Sign-in succeeded but we couldn't load your account.");
+      setUser(toAuthUser(me));
+      // Pull account settings on the same login transition so
+      // capture screens opened immediately after signing in see the
+      // admin's configured ratio rather than the "4:3" fallback for
+      // the first few seconds.
+      void fetchAccountSettings();
+    },
+    [fetchAccountSettings],
+  );
 
   const signOut = useCallback(async () => {
     // Unregister push token BEFORE the session is invalidated so the
@@ -253,6 +421,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await api.logout().catch(() => null);
     await clearSession();
     setUser(null);
+    // Drop the cached settings so user-A's account-wide ratio
+    // doesn't bleed into user-B's signed-out splash. Next sign-in
+    // refetches.
+    setAccountSettings(null);
   }, []);
 
   // Push token capture + rotation. Two effects so they have
@@ -319,6 +491,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       requestPasswordReset,
       refreshUser,
       updatePreferences,
+      accountSettings,
+      updateAccountSettings,
     }),
     [
       user,
@@ -328,6 +502,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       requestPasswordReset,
       refreshUser,
       updatePreferences,
+      accountSettings,
+      updateAccountSettings,
     ],
   );
 

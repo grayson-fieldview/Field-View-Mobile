@@ -24,6 +24,11 @@ import { useColors } from "@/hooks/useColors";
 import { useGeofenceSync } from "@/hooks/useGeofenceSync";
 import { ApiError, api } from "@/services/api";
 import {
+  DEFAULT_PHOTO_ASPECT_RATIO,
+  PHOTO_ASPECT_RATIOS,
+  type PhotoAspectRatio,
+} from "@/services/imageProcessing";
+import {
   getRegisteredGeofences,
   triggerSyntheticEnterForTesting,
   triggerSyntheticExitForTesting,
@@ -38,11 +43,28 @@ import { useLocationPermission } from "@/services/permissions";
 export default function ProfileScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
-  const { user, signOut, updatePreferences } = useAuth();
+  const {
+    user,
+    signOut,
+    updatePreferences,
+    accountSettings,
+    updateAccountSettings,
+  } = useAuth();
   const { projects, photos, tasks, clearAll } = useData();
   const { showToast } = useToast();
 
   const isOwner = user?.isOwner ?? false;
+  // Admin gate for the account-level Photo Capture section. Same
+  // pattern used elsewhere (app/project/[id].tsx:88). Matches the
+  // server-side 403 on PATCH /api/account/settings — non-admins
+  // never see the row, and even if they did the server would
+  // reject the write.
+  const isAdmin = user?.role === "admin";
+  // Track which ratio is "in flight" so the segmented selector can
+  // visually disable while the optimistic PATCH round-trips. Cleared
+  // on both success and rollback.
+  const [pendingAspectRatio, setPendingAspectRatio] =
+    useState<PhotoAspectRatio | null>(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
 
@@ -78,6 +100,29 @@ export default function ProfileScreen() {
       console.log("[profile] openSettings failed:", err);
       showToast("Couldn't open Settings.");
     });
+  };
+
+  const handleAspectRatioSelect = async (next: PhotoAspectRatio) => {
+    // Already-current selections are no-ops — avoid a pointless
+    // PATCH round-trip and an unnecessary "pending" flicker.
+    if (
+      (accountSettings?.defaultPhotoAspectRatio ??
+        DEFAULT_PHOTO_ASPECT_RATIO) === next
+    ) {
+      return;
+    }
+    setPendingAspectRatio(next);
+    try {
+      await updateAccountSettings({ defaultPhotoAspectRatio: next });
+    } catch (err) {
+      // AuthContext rolled back local state. Surface the failure
+      // here because AuthProvider mounts outside ToastProvider.
+      const msg =
+        err instanceof Error ? err.message : "Couldn't update setting.";
+      showToast(msg);
+    } finally {
+      setPendingAspectRatio(null);
+    }
   };
 
   const handleAutoTrackingToggle = async (next: boolean) => {
@@ -261,6 +306,28 @@ export default function ProfileScreen() {
           onPress={() => openExternal("https://field-view.com/terms")}
         />
       </View>
+
+      {isAdmin ? (
+        <View style={styles.section}>
+          <Text style={[styles.debugHeader, { color: colors.mutedForeground }]}>
+            Photo Capture
+          </Text>
+          <Text
+            style={[styles.debugCaption, { color: colors.mutedForeground }]}
+          >
+            Existing photos keep their captured ratio. This setting only
+            affects new captures.
+          </Text>
+          <AspectRatioSelector
+            value={
+              accountSettings?.defaultPhotoAspectRatio ??
+              DEFAULT_PHOTO_ASPECT_RATIO
+            }
+            pending={pendingAspectRatio}
+            onSelect={handleAspectRatioSelect}
+          />
+        </View>
+      ) : null}
 
       <View style={styles.section}>
         <Text style={[styles.debugHeader, { color: colors.mutedForeground }]}>
@@ -484,6 +551,129 @@ function GeofenceDebugSectionBody() {
     </View>
   );
 }
+
+/**
+ * Three-option segmented selector for the account-wide
+ * defaultPhotoAspectRatio setting (S3y, admin-only). Pure UI — all
+ * state lives in AuthContext via updateAccountSettings.
+ *
+ * `value` is the currently-applied ratio. `pending`, when non-null,
+ * is the ratio the user just tapped that's mid-PATCH; we render it
+ * as selected (optimistic) but disable the whole row so a fast
+ * second tap can't queue overlapping writes. On rollback the parent
+ * clears `pending` and `value` snaps back.
+ */
+function AspectRatioSelector({
+  value,
+  pending,
+  onSelect,
+}: {
+  value: PhotoAspectRatio;
+  pending: PhotoAspectRatio | null;
+  onSelect: (next: PhotoAspectRatio) => void;
+}) {
+  const colors = useColors();
+  const displayValue = pending ?? value;
+  const disabled = pending !== null;
+
+  const labelFor = (r: PhotoAspectRatio): string => {
+    switch (r) {
+      case "4:3":
+        return "4:3";
+      case "1:1":
+        return "1:1";
+      case "16:9":
+        return "16:9";
+    }
+  };
+  const subLabelFor = (r: PhotoAspectRatio): string => {
+    switch (r) {
+      case "4:3":
+        return "Standard";
+      case "1:1":
+        return "Square";
+      case "16:9":
+        return "Widescreen";
+    }
+  };
+
+  return (
+    <View style={[selectorStyles.row, { borderColor: colors.border }]}>
+      {PHOTO_ASPECT_RATIOS.map((r, idx) => {
+        const active = displayValue === r;
+        const isFirst = idx === 0;
+        const isLast = idx === PHOTO_ASPECT_RATIOS.length - 1;
+        return (
+          <Pressable
+            key={r}
+            onPress={() => onSelect(r)}
+            disabled={disabled}
+            accessibilityRole="button"
+            accessibilityLabel={`${labelFor(r)} ${subLabelFor(r)}`}
+            accessibilityState={{ selected: active, disabled }}
+            style={[
+              selectorStyles.cell,
+              {
+                backgroundColor: active ? colors.primary : colors.card,
+                borderLeftWidth: isFirst ? 0 : StyleSheet.hairlineWidth,
+                borderLeftColor: colors.border,
+                opacity: disabled && !active ? 0.5 : 1,
+                borderTopLeftRadius: isFirst ? 10 : 0,
+                borderBottomLeftRadius: isFirst ? 10 : 0,
+                borderTopRightRadius: isLast ? 10 : 0,
+                borderBottomRightRadius: isLast ? 10 : 0,
+              },
+            ]}
+          >
+            <Text
+              style={[
+                selectorStyles.label,
+                {
+                  color: active
+                    ? colors.primaryForeground
+                    : colors.foreground,
+                },
+              ]}
+            >
+              {labelFor(r)}
+            </Text>
+            <Text
+              style={[
+                selectorStyles.sublabel,
+                {
+                  color: active
+                    ? colors.primaryForeground
+                    : colors.mutedForeground,
+                },
+              ]}
+            >
+              {subLabelFor(r)}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+const selectorStyles = StyleSheet.create({
+  row: {
+    flexDirection: "row",
+    marginTop: 12,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: "hidden",
+  },
+  cell: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    alignItems: "center",
+    gap: 2,
+  },
+  label: { fontSize: 15, fontFamily: "Inter_600SemiBold" },
+  sublabel: { fontSize: 11, fontFamily: "Inter_400Regular" },
+});
 
 function StatBlock({ value, label }: { value: number; label: string }) {
   const colors = useColors();
