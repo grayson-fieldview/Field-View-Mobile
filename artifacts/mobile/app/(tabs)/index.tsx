@@ -2,8 +2,15 @@ import { Feather } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import * as Location from "expo-location";
 import { useFocusEffect, useRouter } from "expo-router";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
+  AppState,
   FlatList,
   Platform,
   Pressable,
@@ -77,29 +84,85 @@ export default function ProjectsScreen() {
     null,
   );
 
+  // Refresh the foreground GPS fix that powers "Nearby" sort + the
+  // distance labels under each project card. Called on:
+  //   - initial mount
+  //   - tab focus (back-nav from project detail, tab switch back)
+  //   - AppState → "active" (foreground after background)
+  // Without these triggers, the fix is taken once at mount and goes
+  // permanently stale until the JS bundle restarts — so distances
+  // and "Nearby" sort order frozen at wherever the user opened the
+  // app, regardless of subsequent movement.
+  //
+  // Uses getForegroundPermissionsAsync() (cheap, no prompt) before
+  // requestForegroundPermissionsAsync() so we don't re-prompt on
+  // every foreground transition. Errors are swallowed: keep the
+  // last good fix on screen rather than blanking the UI.
+  //
+  // Concurrency: mount + focus + AppState→active can fire in quick
+  // succession on cold-launch. `requestIdRef` is a monotonically
+  // increasing counter; only the response from the latest request
+  // is allowed to write state, so an older slow fetch can't
+  // overwrite a newer one (last-writer-wins → newest-writer-wins).
+  // `mountedRef` blocks setState after unmount to silence the React
+  // "update on unmounted component" dev warning.
+  const requestIdRef = useRef(0);
+  const mountedRef = useRef(true);
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (Platform.OS === "web") return;
-      try {
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== "granted") return;
-        const loc = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
-        if (cancelled) return;
-        setUserLoc({
-          lat: loc.coords.latitude,
-          lng: loc.coords.longitude,
-        });
-      } catch {
-        /* ignore */
-      }
-    })();
+    mountedRef.current = true;
     return () => {
-      cancelled = true;
+      mountedRef.current = false;
     };
   }, []);
+
+  const refreshUserLoc = useCallback(async () => {
+    if (Platform.OS === "web") return;
+    const myId = ++requestIdRef.current;
+    try {
+      const existing = await Location.getForegroundPermissionsAsync();
+      let status = existing.status;
+      if (status !== "granted") {
+        const next = await Location.requestForegroundPermissionsAsync();
+        status = next.status;
+      }
+      if (status !== "granted") return;
+      const loc = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      if (!mountedRef.current) return;
+      if (myId !== requestIdRef.current) return;
+      setUserLoc({
+        lat: loc.coords.latitude,
+        lng: loc.coords.longitude,
+      });
+    } catch {
+      /* ignore — keep last good fix */
+    }
+  }, []);
+
+  // Initial fix on mount.
+  useEffect(() => {
+    void refreshUserLoc();
+  }, [refreshUserLoc]);
+
+  // Tab focus → re-fetch (covers back-nav from project detail after
+  // driving, tab switch back to Projects).
+  useFocusEffect(
+    useCallback(() => {
+      void refreshUserLoc();
+    }, [refreshUserLoc]),
+  );
+
+  // AppState → "active" → re-fetch (covers app foregrounded after
+  // backgrounded; the user driving with the app off-screen). Does
+  // NOT touch services/geofencing.ts; the background geofence task
+  // is event-driven and managed independently.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") void refreshUserLoc();
+    });
+    return () => sub.remove();
+  }, [refreshUserLoc]);
 
   const stats = useMemo(() => {
     const byProject = new Map<
