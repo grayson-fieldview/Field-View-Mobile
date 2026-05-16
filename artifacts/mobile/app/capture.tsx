@@ -562,34 +562,24 @@ export default function CaptureScreen() {
 
   return (
     <View style={styles.wrap}>
-      <CameraView
-        ref={cameraRef}
-        style={StyleSheet.absoluteFill}
-        facing={facing}
-        flash={flash}
-        zoom={zoomValue}
-        mode={mode}
-        onCameraReady={() => setCameraReady(true)}
-      />
-
-      {/* Letterbox overlay (B11): masks preview to match the user's
-       * saved-photo aspect ratio. Pointer-events disabled so all
-       * camera chrome below stays interactive. Hidden in video mode
-       * because video capture isn't ratio-cropped. */}
-      {mode === "photo" ? (
-        <LetterboxOverlay ratio={captureAspectRatio} />
-      ) : null}
-
-      {/* TOP BAR: close + project + flash/flip */}
+      {/* TOP BAR: close + project + flash/flip.
+       *
+       * Side clusters are forced to equal width (`topSideCluster`)
+       * so the centered project badge in the middle (`flex:1`) is
+       * truly screen-centered regardless of how many icons live on
+       * each side. Without equal-width sides, a 1-icon left + 2-icon
+       * right cluster would push the badge off-center. */}
       <View style={[styles.topBar, { paddingTop: insets.top + 10 }]}>
-        <Pressable
-          onPress={() => router.back()}
-          hitSlop={12}
-          style={styles.glassBtn}
-          accessibilityLabel="Close camera"
-        >
-          <Feather name="x" size={20} color="#fff" />
-        </Pressable>
+        <View style={styles.topSideCluster}>
+          <Pressable
+            onPress={() => router.back()}
+            hitSlop={12}
+            style={styles.glassBtn}
+            accessibilityLabel="Close camera"
+          >
+            <Feather name="x" size={20} color="#fff" />
+          </Pressable>
+        </View>
 
         <View style={styles.projectBadge}>
           <Text style={styles.projectName} numberOfLines={1}>
@@ -604,7 +594,7 @@ export default function CaptureScreen() {
           </Text>
         </View>
 
-        <View style={styles.topRightCluster}>
+        <View style={[styles.topSideCluster, styles.topSideClusterRight]}>
           <Pressable
             onPress={toggleFlash}
             hitSlop={10}
@@ -632,56 +622,100 @@ export default function CaptureScreen() {
         </View>
       </View>
 
-      {/* Top status pills */}
-      {bursting ? (
-        <View style={styles.burstIndicator}>
-          <View style={styles.recDot} />
-          <Text style={styles.burstText}>BURST · {captureCount}</Text>
-        </View>
-      ) : recording ? (
-        <View style={[styles.burstIndicator, { backgroundColor: "rgba(220,38,38,0.85)" }]}>
-          <View style={styles.recDot} />
-          <Text style={styles.burstText}>REC</Text>
-        </View>
-      ) : statusMsg ? (
-        <View style={styles.sessionPill}>
-          <Feather name="check" size={14} color="#111" />
-          <Text style={styles.sessionPillText}>{statusMsg}</Text>
-        </View>
-      ) : sessionCount > 0 || savedVideos > 0 ? (
-        <View style={styles.sessionPill}>
-          <Feather name="check" size={14} color="#111" />
-          <Text style={styles.sessionPillText}>
-            {sessionCount > 0
-              ? `${sessionCount} photo${sessionCount === 1 ? "" : "s"}`
-              : ""}
-            {sessionCount > 0 && savedVideos > 0 ? " · " : ""}
-            {savedVideos > 0
-              ? `${savedVideos} video${savedVideos === 1 ? "" : "s"}`
-              : ""}
-            {" saved"}
-          </Text>
-        </View>
-      ) : !cameraReady ? (
-        <View style={styles.sessionPill}>
-          <ActivityIndicator size="small" color="#111" />
-          <Text style={styles.sessionPillText}>Starting camera…</Text>
-        </View>
-      ) : null}
+      {/* PREVIEW AREA: flex:1 between the top bar and the bottom
+       * control stack. The CameraView lives inside a 3:4 clipped
+       * frame that shrinks to fit available space (CompanyCam
+       * pattern — width-fit on tall phones, height-fit on short
+       * phones like iPhone SE). Letterbox bars for non-4:3 capture
+       * ratios live INSIDE the clipping frame so they're masked by
+       * the rounded corners. */}
+      <View style={styles.previewArea}>
+        <View style={styles.previewFrame}>
+          <CameraView
+            ref={cameraRef}
+            style={StyleSheet.absoluteFill}
+            facing={facing}
+            flash={flash}
+            zoom={zoomValue}
+            mode={mode}
+            onCameraReady={() => setCameraReady(true)}
+          />
 
-      {errorMsg ? (
-        <View
-          style={[
-            styles.sessionPill,
-            { backgroundColor: "#fee2e2", top: 150 },
-          ]}
-        >
+          {/* Letterbox overlay (B11): masks preview to match the
+           * user's saved-photo aspect ratio. Pointer-events disabled
+           * so all camera chrome stays interactive. Hidden in video
+           * mode because video capture isn't ratio-cropped.
+           *
+           * The overlay's outer top/bottom black bars collapse to
+           * 0px because the parent `previewFrame` is already
+           * exactly 3:4 — only the inner masks (1:1 / 9:16) draw
+           * pixels. The component itself is unchanged. */}
+          {mode === "photo" ? (
+            <LetterboxOverlay ratio={captureAspectRatio} />
+          ) : null}
+        </View>
+
+        {/* Top status pills — anchored to the top of the preview
+         * area (NOT the screen) so they remain correctly placed
+         * regardless of safe-area top inset variation across
+         * devices. Was previously screen-absolute with hardcoded
+         * `top:110`, which broke after the topBar moved into flow.
+         * Sibling of `previewFrame` inside `previewArea`. */}
+        {bursting ? (
+          <View style={styles.previewPillBurst}>
+            <View style={styles.recDot} />
+            <Text style={styles.burstText}>BURST · {captureCount}</Text>
+          </View>
+        ) : recording ? (
+          <View
+            style={[
+              styles.previewPillBurst,
+              { backgroundColor: "rgba(220,38,38,0.85)" },
+            ]}
+          >
+            <View style={styles.recDot} />
+            <Text style={styles.burstText}>REC</Text>
+          </View>
+        ) : statusMsg ? (
+          <View style={styles.previewPillSession}>
+            <Feather name="check" size={14} color="#111" />
+            <Text style={styles.sessionPillText}>{statusMsg}</Text>
+          </View>
+        ) : sessionCount > 0 || savedVideos > 0 ? (
+          <View style={styles.previewPillSession}>
+            <Feather name="check" size={14} color="#111" />
+            <Text style={styles.sessionPillText}>
+              {sessionCount > 0
+                ? `${sessionCount} photo${sessionCount === 1 ? "" : "s"}`
+                : ""}
+              {sessionCount > 0 && savedVideos > 0 ? " · " : ""}
+              {savedVideos > 0
+                ? `${savedVideos} video${savedVideos === 1 ? "" : "s"}`
+                : ""}
+              {" saved"}
+            </Text>
+          </View>
+        ) : !cameraReady ? (
+          <View style={styles.previewPillSession}>
+            <ActivityIndicator size="small" color="#111" />
+            <Text style={styles.sessionPillText}>Starting camera…</Text>
+          </View>
+        ) : null}
+
+        {errorMsg ? (
+          <View
+            style={[
+              styles.previewPillSession,
+              { backgroundColor: "#fee2e2", top: 50 },
+            ]}
+          >
           <Feather name="alert-triangle" size={14} color="#991b1b" />
           <Text style={[styles.sessionPillText, { color: "#991b1b" }]}>
             {errorMsg}
           </Text>
         </View>
-      ) : null}
+        ) : null}
+      </View>
 
       {/* CONTROL STACK: zoom presets, mode tabs, shutter row */}
       <View
@@ -876,10 +910,7 @@ export default function CaptureScreen() {
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: "#000" },
   topBar: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
+    // Now flows in the column above `previewArea` (was absolute).
     paddingHorizontal: 14,
     paddingBottom: 12,
     flexDirection: "row",
@@ -895,9 +926,19 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  topRightCluster: {
+  // Side clusters share a fixed width so the middle `projectBadge`
+  // is true-screen-centered. Width = 2 × glassBtn (38) + gap (8) =
+  // 84, matching the right cluster's natural content width. The
+  // left cluster only contains 1 button but reserves the same
+  // footprint to stay symmetric.
+  topSideCluster: {
+    width: 84,
     flexDirection: "row",
+    alignItems: "center",
     gap: 8,
+  },
+  topSideClusterRight: {
+    justifyContent: "flex-end",
   },
   projectBadge: {
     flex: 1,
@@ -907,6 +948,31 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 100,
     maxWidth: 280,
+    alignSelf: "center",
+  },
+  // Holds the rounded camera preview frame. Flex:1 absorbs all
+  // vertical space between the top bar and the bottom control
+  // stack; the frame inside centers within it. Background black
+  // so the slack above/below the 3:4 frame on tall phones reads
+  // as letterbox bars.
+  previewArea: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  // The clipped 3:4 camera frame. width:'100%' + aspectRatio
+  // makes it as wide as possible; maxHeight:'100%' clamps the
+  // derived height on short phones (iPhone SE), at which point
+  // Yoga shrinks the width back to maintain the 3:4 aspect.
+  // CompanyCam parity: borderRadius: 22 — matches their visual
+  // (more pronounced than 16, less than iOS card-large 28).
+  previewFrame: {
+    width: "100%",
+    aspectRatio: 3 / 4,
+    maxHeight: "100%",
+    borderRadius: 22,
+    overflow: "hidden",
+    backgroundColor: "#000",
   },
   projectName: {
     color: "#fff",
@@ -919,9 +985,11 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 1,
   },
-  burstIndicator: {
+  // Burst / REC indicator pill, anchored to top-center of the
+  // preview area (sibling of `previewFrame` inside `previewArea`).
+  previewPillBurst: {
     position: "absolute",
-    top: 110,
+    top: 10,
     alignSelf: "center",
     flexDirection: "row",
     alignItems: "center",
@@ -943,9 +1011,13 @@ const styles = StyleSheet.create({
     fontSize: 13,
     letterSpacing: 1.2,
   },
-  sessionPill: {
+  // Session/status pill (saved-count, "Starting camera…", error
+  // banner). Anchored to top-center of the preview area. Error
+  // pill overrides `top` to 50 so it can stack below a regular
+  // status pill when both render.
+  previewPillSession: {
     position: "absolute",
-    top: 110,
+    top: 10,
     alignSelf: "center",
     flexDirection: "row",
     alignItems: "center",
@@ -961,10 +1033,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   controlStack: {
-    position: "absolute",
-    bottom: 0,
-    left: 0,
-    right: 0,
+    // Now flows in the column below `previewArea` (was absolute).
     paddingHorizontal: 28,
     gap: 10,
   },
