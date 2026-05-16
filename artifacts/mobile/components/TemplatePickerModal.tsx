@@ -22,8 +22,13 @@ import {
 interface Props {
   visible: boolean;
   onClose: () => void;
-  /** Resolves with the id of the chosen template; parent does the apply. */
-  onPick: (templateId: string | number) => Promise<void>;
+  /**
+   * Resolves with the chosen template; parent does the apply. Title
+   * is forwarded so the parent can include it in the POST body —
+   * the server requires `title` on POST /api/projects/:id/checklists
+   * (it does not auto-derive from templateId).
+   */
+  onPick: (template: BackendChecklistTemplate) => Promise<void>;
 }
 
 /**
@@ -62,10 +67,10 @@ export function TemplatePickerModal({ visible, onClose, onPick }: Props) {
     };
   }, [visible]);
 
-  const choose = async (templateId: string | number) => {
-    setPickingId(String(templateId));
+  const choose = async (template: BackendChecklistTemplate) => {
+    setPickingId(String(template.id));
     try {
-      await onPick(templateId);
+      await onPick(template);
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't apply template.");
@@ -167,7 +172,7 @@ export function TemplatePickerModal({ visible, onClose, onPick }: Props) {
                 <Pressable
                   key={String(t.id)}
                   disabled={pickingId !== null}
-                  onPress={() => void choose(t.id)}
+                  onPress={() => void choose(t)}
                   style={({ pressed }) => [
                     styles.card,
                     {

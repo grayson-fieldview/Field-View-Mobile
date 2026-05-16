@@ -1646,9 +1646,9 @@ export default function ProjectDetailScreen() {
       <TemplatePickerModal
         visible={showChecklistModal}
         onClose={() => setShowChecklistModal(false)}
-        onPick={async (templateId) => {
+        onPick={async (template) => {
           try {
-            const created = await applyTemplate(templateId);
+            const created = await applyTemplate(template.id, template.title);
             showToast(`Applied "${created.title}".`);
           } catch (e) {
             showToast(

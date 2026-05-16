@@ -30,8 +30,15 @@ export interface ProjectChecklistsState {
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
-  /** Apply a template → spawn a new checklist instance on the project. */
-  applyTemplate: (templateId: string | number) => Promise<BackendChecklist>;
+  /**
+   * Apply a template → spawn a new checklist instance on the project.
+   * `title` is required because the server does not auto-derive it
+   * from the template — caller forwards the template's own title.
+   */
+  applyTemplate: (
+    templateId: string | number,
+    title: string,
+  ) => Promise<BackendChecklist>;
 }
 
 export function useProjectChecklists(
@@ -61,9 +68,13 @@ export function useProjectChecklists(
   }, [refresh]);
 
   const applyTemplate = useCallback(
-    async (templateId: string | number) => {
+    async (templateId: string | number, title: string) => {
       if (!projectId) throw new Error("projectId is required to apply a template");
-      const created = await api.applyChecklistTemplate(projectId, templateId);
+      const created = await api.applyChecklistTemplate(
+        projectId,
+        templateId,
+        title,
+      );
       setChecklists((curr) => [created, ...curr]);
       return created;
     },

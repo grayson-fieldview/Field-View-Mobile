@@ -1528,10 +1528,16 @@ export const api = {
   applyChecklistTemplate: (
     projectId: string | number,
     templateId: string | number,
+    title: string,
   ) =>
     apiFetch<BackendChecklist>(`/api/projects/${projectId}/checklists`, {
       method: "POST",
-      json: { templateId },
+      // Server requires `title` on POST — it does NOT auto-derive it
+      // from the template, so we forward the template's own title
+      // verbatim (exact mirror). `templateId` is the clone signal:
+      // server still uses it to copy sections/items into the new
+      // instance. Future feature: in-app rename on the instance.
+      json: { title, templateId },
     }),
 
   // ----- Reports (Mobile Reports R1) -----
