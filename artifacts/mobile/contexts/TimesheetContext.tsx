@@ -15,6 +15,7 @@ import { useToast } from "@/contexts/ToastContext";
 import { ApiError, api } from "@/services/api";
 import type { BackendTimesheetEntry } from "@/services/api";
 import { startHeartbeat, stopHeartbeat } from "@/services/heartbeat";
+import { checkInsideRegisteredGeofences } from "@/services/insideCheck";
 import {
   listPendingEnters,
   listUnsentPendingEnters,
@@ -556,10 +557,26 @@ export function TimesheetProvider({ children }: { children: React.ReactNode }) {
   }, [authReady, user, refresh]);
 
   // Re-sync on foreground.
+  //
+  // BUILD 13 / Diff 1: also kick the already-inside-on-foreground
+  // detector. iOS region monitoring only fires Enter on a boundary
+  // CROSSING — if the task was suspended while the user arrived at a
+  // site, no Enter ever dispatches. Foreground inside-check closes
+  // that gap by polling current location and posting enter-detected
+  // for the nearest registered region the device is inside.
+  //
+  // Active-session guard: read activeRef (not state) to avoid adding
+  // a deps cycle on `active`. The inside-check no-ops cleanly when
+  // the user is already clocked in.
   useEffect(() => {
     if (!authReady || !user) return;
     const sub = AppState.addEventListener("change", (state) => {
-      if (state === "active") void refresh();
+      if (state === "active") {
+        void refresh();
+        void checkInsideRegisteredGeofences({
+          hasActiveTimesheet: activeRef.current != null,
+        });
+      }
     });
     return () => sub.remove();
   }, [authReady, user, refresh]);

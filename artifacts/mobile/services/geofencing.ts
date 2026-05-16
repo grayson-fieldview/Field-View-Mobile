@@ -92,6 +92,13 @@ const REGION_PREFIX = "fv-project-v2-";
 // (PROXIMITY_THRESHOLD_M=200m) still gates actual clock-in, so this
 // value mainly controls how early the OS dispatches us.
 const RADIUS_METERS = 150;
+/**
+ * Public alias for the OS-registered geofence radius. Re-exported
+ * under a more descriptive name so non-task-body call sites
+ * (services/insideCheck.ts) can use the same threshold without
+ * reaching into module internals or duplicating the magic number.
+ */
+export const DEFAULT_GEOFENCE_RADIUS_M = RADIUS_METERS;
 const MAX_REGIONS = 20;
 // Bumped suffix invalidates the persisted snapshot when we change
 // either the serialized shape OR the meaning of the data inside —
@@ -161,8 +168,15 @@ function parseProjectId(regionId: string): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-/** Great-circle distance in meters between two lat/lng points. */
-function haversineMeters(
+/**
+ * Great-circle distance in meters between two lat/lng points.
+ *
+ * Exported so the inside-check path (services/insideCheck.ts) can
+ * use the same implementation without duplicating the math —
+ * keeping a single source of truth avoids subtle drift if either
+ * copy is later "optimized" inconsistently.
+ */
+export function haversineMeters(
   a: { latitude: number; longitude: number },
   b: { latitude: number; longitude: number },
 ): number {
@@ -1258,6 +1272,52 @@ rehydrationPromise = rehydrateRegisteredCacheFromStorage();
  * defensive checks anyway and returns an empty result with no errors
  * if those preconditions don't hold.
  */
+/**
+ * Fire-and-forget post-registration inside-check trigger
+ * (BUILD 13 / Diff 1).
+ *
+ * Called from every success branch of `registerGeofences()` —
+ * including the no-op "registration unchanged" early-return, which
+ * is the COMMON cold-launch case. iOS only fires Enter on boundary
+ * crossings; if the OS-registered task was suspended while the user
+ * arrived at a site (overnight, after a long quiet period), no
+ * Enter ever dispatches, and a no-change re-sync would otherwise
+ * skip the check entirely.
+ *
+ * Dynamic import breaks the circular dep: insideCheck.ts statically
+ * imports helpers (`haversineMeters`, `DEFAULT_GEOFENCE_RADIUS_M`,
+ * `getRegisteredRegions`) from this module, so a static import in
+ * the other direction would create a module-eval cycle. Runtime
+ * dynamic import dodges that.
+ *
+ * The `hasActiveTimesheet: false` default is intentional. This trigger
+ * fires from the foreground sync hook which doesn't have a synchronous
+ * TimesheetContext handle. The server's `enter-detected` handler is
+ * idempotent against already-clocked-in users (returns
+ * `skipped: already_clocked_in`), so the worst case is a redundant
+ * round-trip — not a correctness bug. The AppState listener in
+ * TimesheetContext threads the real value when it has access to it.
+ *
+ * Errors are swallowed: `checkInsideRegisteredGeofences` is itself
+ * silent on failure (best-effort latency optimization, not a critical
+ * path) and we wrap the dynamic-import await in a try/catch to handle
+ * the (vanishingly unlikely) case where the module itself fails to
+ * load.
+ */
+function triggerInsideCheck(): void {
+  void (async () => {
+    try {
+      const { checkInsideRegisteredGeofences } = await import("./insideCheck");
+      await checkInsideRegisteredGeofences({ hasActiveTimesheet: false });
+    } catch (e) {
+      console.log(
+        "[geofence] inside-check trigger failed:",
+        e instanceof Error ? e.message : e,
+      );
+    }
+  })();
+}
+
 export async function registerGeofences(
   projects: GeofenceEligibleProject[],
 ): Promise<RegistrationResult> {
@@ -1292,6 +1352,14 @@ export async function registerGeofences(
     console.log(
       `[geofence] sync starting: no changes (${lastRegisteredCache.size} regions registered)`,
     );
+    // BUILD 13 / Diff 1: still kick the inside-check on the no-op
+    // path. Cold-launch with unchanged registrations is the COMMON
+    // case (user opens app daily; project set rarely changes), and
+    // it's exactly when the "already inside on foreground" gap
+    // bites — iOS task was suspended overnight, no boundary cross
+    // happened, user is at the site, and a no-change sync would
+    // otherwise skip the check entirely. See triggerInsideCheck.
+    triggerInsideCheck();
     return result;
   }
 
@@ -1341,6 +1409,10 @@ export async function registerGeofences(
     console.log(
       `[geofence] registered ${desired.size} regions (skipped ${result.skipped.length} as unchanged)`,
     );
+
+    // BUILD 13 / Diff 1: post-registration inside-check (changed
+    // path). See triggerInsideCheck below.
+    triggerInsideCheck();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.log("[geofence] register error:", msg);
@@ -1381,6 +1453,29 @@ export async function unregisterAllGeofences(): Promise<void> {
  */
 export function getRegisteredGeofences(): string[] {
   return Array.from(lastRegisteredCache.keys());
+}
+
+/**
+ * Snapshot of currently-registered regions WITH their full project
+ * records (id, name, lat, lng, lastActivityAt). Used by the inside-
+ * check path (services/insideCheck.ts) to haversine-test the current
+ * device location against every monitored site without needing a
+ * separate API round-trip to refetch the geofence-eligible project
+ * list.
+ *
+ * Returns an array (not the live Map) so callers can iterate without
+ * holding a reference to internal state. Empty array on platforms
+ * that don't register (Android), pre-registration, or post-unregister.
+ */
+export function getRegisteredRegions(): Array<{
+  regionId: string;
+  project: GeofenceEligibleProject;
+}> {
+  const out: Array<{ regionId: string; project: GeofenceEligibleProject }> = [];
+  for (const [regionId, project] of lastRegisteredCache) {
+    out.push({ regionId, project });
+  }
+  return out;
 }
 
 /** Constants exported for the debug surface and test harnesses. */
