@@ -1,4 +1,41 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { DeviceEventEmitter } from "react-native";
+
+/**
+ * BUILD 13 / Diff 2: change-broadcast event name.
+ *
+ * Emitted on every mutation (upsert + every remove* function) so the
+ * top-level PendingEnterBanner and its TimesheetContext mirror can
+ * re-derive without polling. Single broadcast keyed by event name —
+ * no payload, subscribers always re-read `listPendingEnters()` to
+ * get a fresh snapshot. This avoids consistency drift between the
+ * event payload and AsyncStorage if multiple writes interleave.
+ *
+ * `DeviceEventEmitter` is the RN-native cross-module pub/sub bus
+ * (used by the same API the OS uses to deliver low-level events
+ * to JS). Stable across all RN versions we ship on. Chosen over
+ * adding a bespoke subscriber inside this module because:
+ *   (a) we only emit, never query subscribers from here, so
+ *       the module's "no subscribers / reactive surface" docstring
+ *       semantic is preserved — we're broadcasting, not maintaining
+ *       a subscription list, and
+ *   (b) it lets non-React listeners (e.g. test harnesses, future
+ *       background tasks) join without importing React state.
+ */
+export const PENDING_ENTER_CHANGED_EVENT = "fv:pending-enter-changed";
+
+function emitChange(): void {
+  // Wrapped in try because DeviceEventEmitter.emit() should never
+  // throw under normal conditions, but if a subscriber's handler
+  // synchronously throws, the emit call surfaces it. Persistence
+  // already succeeded by the time we emit — never let a flaky
+  // subscriber undo a successful write.
+  try {
+    DeviceEventEmitter.emit(PENDING_ENTER_CHANGED_EVENT);
+  } catch (e) {
+    console.log("[pending-enters] emit failed:", e);
+  }
+}
 
 /**
  * Local persistence of pending geofence-enter rows tracked server-side
@@ -183,6 +220,7 @@ export async function upsertPendingEnter(
     records = next;
   }
   await persist();
+  emitChange();
 }
 
 export async function removePendingEnterById(
@@ -191,7 +229,10 @@ export async function removePendingEnterById(
   await ensureLoaded();
   const before = records.length;
   records = records.filter((r) => r.pendingEnterId !== pendingEnterId);
-  if (records.length !== before) await persist();
+  if (records.length !== before) {
+    await persist();
+    emitChange();
+  }
 }
 
 /**
@@ -206,7 +247,10 @@ export async function removePendingEntersByProjectId(
   await ensureLoaded();
   const before = records.length;
   records = records.filter((r) => r.projectId !== projectId);
-  if (records.length !== before) await persist();
+  if (records.length !== before) {
+    await persist();
+    emitChange();
+  }
 }
 
 /**
@@ -223,7 +267,10 @@ export async function removePendingEnterByCompoundKey(
   records = records.filter(
     (r) => !(r.projectId === projectId && r.regionId === regionId),
   );
-  if (records.length !== before) await persist();
+  if (records.length !== before) {
+    await persist();
+    emitChange();
+  }
 }
 
 /**
@@ -265,4 +312,5 @@ export async function _resetForTesting(): Promise<void> {
   } catch (e) {
     console.log("[pending-enters] reset failed:", e);
   }
+  emitChange();
 }

@@ -1116,6 +1116,43 @@ export const api = {
       },
     ),
 
+  /**
+   * BUILD 13 / Diff 2: client-driven dwell-expiry fire.
+   *
+   * The cron that processes pending enter rows runs every minute,
+   * so even after dwell elapses (default 60s) the actual clock-in
+   * fires after a further 0–60s wait. Mobile drives the dwell timer
+   * locally and POSTs here at expiry to short-circuit the cron and
+   * cut latency from ~120s worst-case to <60s.
+   *
+   * Behavioral contract (server side, implemented in the web backend
+   * by the parallel Web Agent task; this client ships graceful-
+   * degraded until it lands):
+   *   201 — fired now; response includes the created time entry.
+   *         Mobile clears local pending row and refreshes timesheet.
+   *   404 — pending row not found / doesn't belong to caller.
+   *         Either cron already swept it or it was cancelled.
+   *   409 — user already has an active session (race vs cron or
+   *         manual clock-in). Mobile clears local pending row.
+   *   410 — pending was already fired or cancelled. Same handling
+   *         as 404 — clear local row.
+   *
+   * Mobile's banner caller handles every failure path identically
+   * (silent — let cron fallback continue). The response body isn't
+   * consumed because TimesheetContext.refresh() re-fetches the
+   * canonical active session post-fire.
+   */
+  geofenceFireNow: (pendingEnterId: string) =>
+    apiFetch<{
+      timeEntryId: number;
+      projectId: number;
+      clockInAt: string;
+      status: "fired";
+    }>("/api/geofence/fire-now", {
+      method: "POST",
+      json: { pendingEnterId },
+    }),
+
   // ----- Account / membership -----
 
   /**

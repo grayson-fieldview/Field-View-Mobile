@@ -17,6 +17,7 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { PendingEnterBanner } from "@/components/PendingEnterBanner";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { DataProvider } from "@/contexts/DataContext";
 import { TimesheetProvider } from "@/contexts/TimesheetContext";
@@ -419,6 +420,7 @@ export default function RootLayout() {
                         <AuthGate>
                           <NotificationDeepLinkHandler />
                           <ForegroundPushHandler />
+                          <PendingEnterBanner />
                           <RootLayoutNav />
                         </AuthGate>
                       </UploadStatusProvider>

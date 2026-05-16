@@ -8,7 +8,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { AppState } from "react-native";
+import { AppState, DeviceEventEmitter } from "react-native";
 
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/contexts/ToastContext";
@@ -17,11 +17,13 @@ import type { BackendTimesheetEntry } from "@/services/api";
 import { startHeartbeat, stopHeartbeat } from "@/services/heartbeat";
 import { checkInsideRegisteredGeofences } from "@/services/insideCheck";
 import {
+  PENDING_ENTER_CHANGED_EVENT,
   listPendingEnters,
   listUnsentPendingEnters,
   removePendingEnterById,
   removePendingEntersByProjectId,
   upsertPendingEnter,
+  type PendingEnterRecord,
 } from "@/services/pendingEnters";
 import {
   listPendingExits,
@@ -147,6 +149,26 @@ export interface TimesheetState {
   dismissFiredEnter: () => void;
   /** Symmetric to `setFiredExit` for the foreground push handler. */
   setFiredEnter: (next: FiredEnter | null) => void;
+  /**
+   * BUILD 13 / Diff 2: active pending-enter row (soonest-firing,
+   * non-dead, server-confirmed). Drives the top-level
+   * PendingEnterBanner countdown.
+   *
+   * Sourced from `listPendingEnters()` (AsyncStorage) and refreshed
+   * on every `fv:pending-enter-changed` DeviceEventEmitter signal —
+   * see the subscription effect in TimesheetProvider. Null when no
+   * pending row exists OR the only row is in the unsent-retry state
+   * (pendingEnterId === null), because the banner can't count down
+   * against a row that has no server-side dwell timer attached.
+   *
+   * NOT cleared imperatively: when the server-fired transition fires
+   * (post-facto discovery, line ~430 in this file), the same code
+   * path that surfaces `firedEnter` also calls
+   * `removePendingEntersByProjectId`, which emits and causes this to
+   * re-derive to null naturally. Single source of truth = the
+   * persisted list.
+   */
+  pendingEnter: PendingEnterRecord | null;
 }
 
 const TimesheetContext = createContext<TimesheetState | undefined>(undefined);
@@ -159,6 +181,9 @@ export function TimesheetProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(false);
   const [firedExit, setFiredExit] = useState<FiredExit | null>(null);
   const [firedEnter, setFiredEnter] = useState<FiredEnter | null>(null);
+  const [pendingEnter, setPendingEnter] = useState<PendingEnterRecord | null>(
+    null,
+  );
 
   // Single in-flight guard shared by refresh AND mutations so a
   // background foreground-refresh can't race with (and clobber) an
@@ -556,6 +581,72 @@ export function TimesheetProvider({ children }: { children: React.ReactNode }) {
     })();
   }, [authReady, user, refresh]);
 
+  // BUILD 13 / Diff 2: mirror the persisted pending-enter list into
+  // React state so the top-level PendingEnterBanner can subscribe.
+  //
+  // Selection rule: soonest-firing non-dead row with a non-null
+  // pendingEnterId. Rows in the unsent-retry state (pendingEnterId
+  // === null) are skipped — the banner has no server row to count
+  // down against and the existing TimesheetContext unsent-retry path
+  // owns posting them. Multiple eligible rows is rare in steady
+  // state (one site at a time) but the soonest-firing tiebreaker
+  // gives a deterministic, user-meaningful choice.
+  //
+  // Subscribes to `fv:pending-enter-changed` from pendingEnters.ts —
+  // every upsert / removeBy*  emits, so any code path that mutates
+  // the list (geofencing.ts task body, insideCheck.ts, the banner's
+  // own fire / cancel, the TimesheetContext post-facto cleanup) will
+  // trigger a re-derive. No polling.
+  //
+  // Auth gate: only runs once auth is settled and a user exists.
+  // On logout the pending list is implicitly orphaned (we don't
+  // wipe it — the next user's session may belong to the same
+  // account and the rows are still semantically valid). If they
+  // don't, the dead-after cutoff in pruneDead() will sweep them.
+  useEffect(() => {
+    if (!authReady || !user) {
+      setPendingEnter(null);
+      return;
+    }
+    let cancelled = false;
+    const recompute = async () => {
+      try {
+        const rows = await listPendingEnters();
+        // Filter unsent-retry rows out at the source so the banner
+        // never has to defensively re-check.
+        const eligible = rows.filter((r) => r.pendingEnterId != null);
+        if (eligible.length === 0) {
+          if (!cancelled) setPendingEnter(null);
+          return;
+        }
+        // Sort by firesAt ascending; soonest wins. Malformed
+        // firesAt (parseable as NaN) sinks to the bottom.
+        eligible.sort((a, b) => {
+          const am = Date.parse(a.firesAt);
+          const bm = Date.parse(b.firesAt);
+          const an = Number.isFinite(am) ? am : Number.POSITIVE_INFINITY;
+          const bn = Number.isFinite(bm) ? bm : Number.POSITIVE_INFINITY;
+          return an - bn;
+        });
+        if (!cancelled) setPendingEnter(eligible[0] ?? null);
+      } catch (e) {
+        // Best-effort surface; on failure leave the prior value
+        // intact. Worst case the banner shows stale state for one
+        // tick — the next emit will retry.
+        console.log("[Timesheet] pending-enter recompute failed:", e);
+      }
+    };
+    void recompute();
+    const sub = DeviceEventEmitter.addListener(
+      PENDING_ENTER_CHANGED_EVENT,
+      () => void recompute(),
+    );
+    return () => {
+      cancelled = true;
+      sub.remove();
+    };
+  }, [authReady, user]);
+
   // Re-sync on foreground.
   //
   // BUILD 13 / Diff 1: also kick the already-inside-on-foreground
@@ -650,6 +741,7 @@ export function TimesheetProvider({ children }: { children: React.ReactNode }) {
       firedEnter,
       dismissFiredEnter,
       setFiredEnter,
+      pendingEnter,
     }),
     [
       active,
@@ -664,6 +756,7 @@ export function TimesheetProvider({ children }: { children: React.ReactNode }) {
       firedEnter,
       dismissFiredEnter,
       setFiredEnter,
+      pendingEnter,
     ],
   );
 
