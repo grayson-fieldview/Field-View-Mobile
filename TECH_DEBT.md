@@ -44,3 +44,26 @@ Re-evaluate after launch if anyone hits the shared-link foot-gun. A
 reasonable middle ground is to do a *single* aggregated refs fetch for
 the batch and show one summary line ("This will affect N shared
 reports").
+
+### Server-side checklist-item-photo attach response should include joined media url
+
+The bulk-attach endpoint `POST /api/checklist-items/:itemId/photos`
+(body `{ mediaIds: number[] }`) returns junction rows that omit the
+joined media `url` field. Mobile compensates client-side by merging the
+known URL at the call sites:
+
+- `components/PhotoPickerModal.tsx` — merges from the candidate's
+  `remoteUrl ?? uri` before passing to `attachPhotoLocal`.
+- `services/uploadQueue.ts` `attachWithRetry` — merges from
+  `created.url` (the just-uploaded media row), threaded in as an
+  optional 3rd arg from `processItem`.
+- `components/ChecklistItemRow.tsx` — safety-net renders a muted
+  square instead of a broken image if `url` is ever missing at render.
+
+The robust long-term fix is server-side: the bulk-attach response
+should re-join the `media` table per inserted row and return the
+`{ id, itemId, mediaId, url, createdAt }` shape that the singular
+endpoint used to return — matching the existing
+`BackendChecklistItemPhoto` type contract. Once that ships, the three
+client-side merges above can be removed (the safety net in
+ChecklistItemRow is worth keeping regardless).

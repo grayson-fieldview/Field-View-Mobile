@@ -165,11 +165,24 @@ export function ChecklistItemRow({
                 onLongPress={() => confirmDetach(p, onDetachPhoto)}
                 style={[styles.thumb, { borderColor: colors.border }]}
               >
-                <Image
-                  source={{ uri: p.url }}
-                  style={styles.thumbImg}
-                  contentFit="cover"
-                />
+                {typeof p.url === "string" && p.url.trim().length > 0 ? (
+                  <Image
+                    source={{ uri: p.url }}
+                    style={styles.thumbImg}
+                    contentFit="cover"
+                  />
+                ) : (
+                  // Safety net: if a future code path lands a junction
+                  // row without `url`, show a muted square instead of a
+                  // broken/blank image so the regression is visible but
+                  // not user-breaking. See TECH_DEBT.md.
+                  <View
+                    style={[
+                      styles.thumbImg,
+                      { backgroundColor: colors.border },
+                    ]}
+                  />
+                )}
               </Pressable>
             ))}
           </View>

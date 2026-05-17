@@ -149,13 +149,30 @@ const ATTACH_RETRY_DELAYS_MS = [0, 2_000, 8_000];
 async function attachWithRetry(
   checklistItemId: string,
   mediaId: number,
+  uploadedUrl?: string,
 ): Promise<void> {
   let lastErr: unknown;
   for (let i = 0; i < ATTACH_RETRY_DELAYS_MS.length; i++) {
     const delay = ATTACH_RETRY_DELAYS_MS[i] ?? 0;
     if (delay > 0) await new Promise((r) => setTimeout(r, delay));
     try {
-      const photo = await api.attachPhotoToItem(checklistItemId, mediaId);
+      let photo = await api.attachPhotoToItem(checklistItemId, mediaId);
+      // Server's bulk-attach response may omit the joined media `url`.
+      // Patch from the uploaded URL we already have so the thumbnail
+      // renders immediately without a separate listChecklistItemPhotos
+      // round-trip. See TECH_DEBT.md: "Server-side checklist-item-photo
+      // attach response should include joined media url".
+      // Treat empty string as missing — server may send `url: ""`
+      // rather than omit the field entirely.
+      const hasUrl =
+        typeof photo.url === "string" && photo.url.trim().length > 0;
+      const fallback =
+        typeof uploadedUrl === "string" && uploadedUrl.trim().length > 0
+          ? uploadedUrl
+          : undefined;
+      if (!hasUrl && fallback) {
+        photo = { ...photo, url: fallback };
+      }
       console.log(
         `[upload-queue] ✓ attached media ${mediaId} → item ${checklistItemId} (attempt ${i + 1})`,
       );
@@ -289,7 +306,7 @@ async function processItem(item: QueuedUpload): Promise<void> {
     // emitted via subscribeAttach so the checklist UI can react without
     // polling/timing hacks.
     if (item.checklistItemId && Number.isFinite(mediaId)) {
-      void attachWithRetry(item.checklistItemId, mediaId);
+      void attachWithRetry(item.checklistItemId, mediaId, created.url);
     }
     // TODO: notify DataContext to refresh project media after successful upload
   } catch (e) {

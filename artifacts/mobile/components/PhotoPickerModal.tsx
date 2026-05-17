@@ -105,8 +105,31 @@ export function PhotoPickerModal({
     const mediaIds = Array.from(selected)
       .map((id) => mediaIdByLocalId.get(id))
       .filter((m): m is number => typeof m === "number");
+    // Pre-build mediaId → source URL so we can patch the junction row
+    // if the server response omits the convenience `url` field (the
+    // bulk-attach endpoint may return rows without the joined media url).
+    // Backend-originated photos populate `remoteUrl`; locally-captured-
+    // then-uploaded photos may only have the local `uri`, which still
+    // renders fine in expo-image.
+    // Normalize empty strings to missing so `""` doesn't short-circuit
+    // the fallback chain (nullish coalescing keeps `""`, which would
+    // leave us with a no-url junction row even when `uri` is valid).
+    const nonEmpty = (s: string | undefined | null): string | undefined =>
+      typeof s === "string" && s.trim().length > 0 ? s : undefined;
+    const urlByMediaId = new Map<number, string>();
+    for (const c of candidates) {
+      const fallbackUrl = nonEmpty(c.photo.remoteUrl) ?? nonEmpty(c.photo.uri);
+      if (fallbackUrl) urlByMediaId.set(c.mediaId, fallbackUrl);
+    }
     const results = await Promise.allSettled(
-      mediaIds.map((mediaId) => api.attachPhotoToItem(itemId, mediaId)),
+      mediaIds.map(async (mediaId) => {
+        const photo = await api.attachPhotoToItem(itemId, mediaId);
+        if (!nonEmpty(photo.url)) {
+          const fallback = urlByMediaId.get(mediaId);
+          if (fallback) return { ...photo, url: fallback };
+        }
+        return photo;
+      }),
     );
     const succeeded: BackendChecklistItemPhoto[] = [];
     let failedCount = 0;
