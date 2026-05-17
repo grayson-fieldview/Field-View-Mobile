@@ -281,7 +281,25 @@ export default function ChecklistDetailScreen() {
       <Stack.Screen
         options={{
           title: headerTitle,
-          headerBackTitle: "Back",
+          // Explicit headerLeft fully replaces the system back button —
+          // guarantees the back action works even if the default
+          // chevron's hit region gets squeezed by a long title +
+          // headerRight kebab on iOS.
+          headerLeft: () => (
+            <Pressable
+              onPress={() => router.back()}
+              hitSlop={16}
+              accessibilityRole="button"
+              accessibilityLabel="Back"
+              style={{ paddingHorizontal: 8 }}
+            >
+              <Feather
+                name="chevron-left"
+                size={28}
+                color={colors.foreground}
+              />
+            </Pressable>
+          ),
           headerRight: () => (
             <Pressable
               onPress={openKebab}
@@ -332,9 +350,6 @@ export default function ChecklistDetailScreen() {
               { backgroundColor: colors.card, borderColor: colors.border },
             ]}
           >
-            <Text style={[styles.progressTitle, { color: colors.foreground }]}>
-              {headerTitle}
-            </Text>
             <Text
               style={[
                 styles.progressSub,

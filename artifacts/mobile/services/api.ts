@@ -1583,11 +1583,25 @@ export const api = {
    * created junction row (id + mediaId + url for immediate render).
    * Idempotent on (itemId, mediaId) server-side.
    */
-  attachPhotoToItem: (itemId: string | number, mediaId: number) =>
-    apiFetch<BackendChecklistItemPhoto>(
-      `/api/checklist-items/${itemId}/photos`,
-      { method: "POST", json: { mediaId } },
-    ),
+  attachPhotoToItem: async (itemId: string | number, mediaId: number) => {
+    // Server expects { mediaIds: number[] } (plural array) and may return
+    // either a single junction row or an array of them depending on
+    // version. We wrap on send and accept either shape on receive — all
+    // current call sites attach a single mediaId at a time so the (itemId,
+    // mediaId) signature stays unchanged for callers.
+    const response = await apiFetch<
+      BackendChecklistItemPhoto | BackendChecklistItemPhoto[]
+    >(`/api/checklist-items/${itemId}/photos`, {
+      method: "POST",
+      json: { mediaIds: [mediaId] },
+    });
+    if (Array.isArray(response)) {
+      if (response.length === 0)
+        throw new Error("Server returned no photo for attach.");
+      return response[0];
+    }
+    return response;
+  },
 
   /** Detach a previously-attached photo. The media row itself is preserved. */
   detachPhotoFromItem: (itemPhotoId: string | number) =>
