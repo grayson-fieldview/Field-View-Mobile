@@ -298,12 +298,12 @@ export default function ProfileScreen() {
         <Row
           icon="shield"
           label="Privacy Policy"
-          onPress={() => openExternal("https://field-view.com/privacy")}
+          onPress={() => openExternal("https://www.field-view.com/legal/privacy-policy")}
         />
         <Row
           icon="file-text"
           label="Terms of Service"
-          onPress={() => openExternal("https://field-view.com/terms")}
+          onPress={() => openExternal("https://www.field-view.com/legal/terms-and-conditions")}
         />
       </View>
 

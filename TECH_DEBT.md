@@ -67,3 +67,23 @@ endpoint used to return — matching the existing
 `BackendChecklistItemPhoto` type contract. Once that ships, the three
 client-side merges above can be removed (the safety net in
 ChecklistItemRow is worth keeping regardless).
+
+### Signup screen has no T&C / Privacy Policy consent footer
+
+`artifacts/mobile/app/(auth)/signup.tsx` collects email + password +
+name and creates an account, but does not surface any "By creating an
+account you agree to our Terms and Privacy Policy" copy or inline
+links. Legal links are currently only reachable post-login via the
+Profile tab (`app/(tabs)/profile.tsx` "Legal" section), which satisfies
+the strict letter of Apple's in-app-accessibility guideline.
+
+Some App Store reviewers expect signup-time disclosure for apps that
+collect accounts, so a rejection on this basis is possible (not
+guaranteed). Holding for post-launch — will address if rejected.
+
+Follow-up: add a small footer below the signup CTA reading roughly
+"By creating an account you agree to our [Terms](https://www.field-view.com/legal/terms-and-conditions)
+and [Privacy Policy](https://www.field-view.com/legal/privacy-policy)"
+with the same `openExternal()` helper used in `profile.tsx`. Keep the
+text muted (`colors.textSecondary`) and the links underlined in the
+brand accent color for clarity.
