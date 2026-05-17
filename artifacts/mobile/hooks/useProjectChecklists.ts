@@ -39,6 +39,13 @@ export interface ProjectChecklistsState {
     templateId: string | number,
     title: string,
   ) => Promise<BackendChecklist>;
+  /**
+   * Optimistic delete of a checklist instance. Removes it from local
+   * state immediately, calls DELETE, and reverts on failure (re-throws
+   * so the caller can show a toast). FK cascade on the server removes
+   * sections/items/photo joins automatically — no extra cleanup here.
+   */
+  deleteChecklist: (id: string | number) => Promise<void>;
 }
 
 export function useProjectChecklists(
@@ -81,7 +88,49 @@ export function useProjectChecklists(
     [projectId],
   );
 
-  return { checklists, loading, error, refresh, applyTemplate };
+  const deleteChecklist = useCallback(
+    async (id: string | number) => {
+      const target = String(id);
+      // Per-entity rollback (matches useProjectReports.deleteReport):
+      // capture just the removed row + index inside the setter, so on
+      // failure we re-insert that one row iff no other state op has
+      // already re-introduced it. A whole-array snapshot restore would
+      // resurrect rows that a concurrent delete successfully removed.
+      let removed: BackendChecklist | undefined;
+      let removedIndex = -1;
+      setChecklists((curr) => {
+        removedIndex = curr.findIndex((c) => String(c.id) === target);
+        if (removedIndex < 0) return curr;
+        removed = curr[removedIndex];
+        return curr.filter((_, i) => i !== removedIndex);
+      });
+      try {
+        await api.deleteChecklist(id);
+      } catch (e) {
+        if (removed) {
+          const restored = removed;
+          const idx = removedIndex;
+          setChecklists((curr) => {
+            if (curr.some((c) => String(c.id) === target)) return curr;
+            const next = curr.slice();
+            next.splice(Math.min(idx, next.length), 0, restored);
+            return next;
+          });
+        }
+        throw e;
+      }
+    },
+    [],
+  );
+
+  return {
+    checklists,
+    loading,
+    error,
+    refresh,
+    applyTemplate,
+    deleteChecklist,
+  };
 }
 
 // ---------------- detail hook ----------------

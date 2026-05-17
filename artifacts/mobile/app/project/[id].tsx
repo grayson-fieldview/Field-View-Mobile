@@ -1,7 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import Svg, { Path as SvgPath } from "react-native-svg";
-import { Stack, useLocalSearchParams, useRouter } from "expo-router";
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActionSheetIOS,
@@ -44,7 +44,12 @@ import { useUploadStatus } from "@/contexts/UploadStatusContext";
 import { useColors } from "@/hooks/useColors";
 import { useProjectChecklists } from "@/hooks/useProjectChecklists";
 import { useProjectReports } from "@/hooks/useProjectReports";
-import { api, ApiError, type BackendProjectAssignment } from "@/services/api";
+import {
+  api,
+  ApiError,
+  buildMediaReferencesMessage,
+  type BackendProjectAssignment,
+} from "@/services/api";
 import {
   removeItem as removeUploadQueueItem,
   retryItem as retryUploadQueueItem,
@@ -115,7 +120,18 @@ export default function ProjectDetailScreen() {
     error: checklistsError,
     refresh: refreshChecklists,
     applyTemplate,
+    deleteChecklist: deleteChecklistInstance,
   } = useProjectChecklists(id);
+
+  // Refetch checklists whenever this screen regains focus — covers the
+  // case where the checklist detail screen deleted the current checklist
+  // via the header kebab and called router.back(). Without this we'd
+  // show a stale row. Cheap (one GET) so we don't worry about debounce.
+  useFocusEffect(
+    useCallback(() => {
+      void refreshChecklists();
+    }, [refreshChecklists]),
+  );
   // Server-backed reports for this project (Mobile Reports R1).
   // Same pattern as checklists: hook owns its loading/error state,
   // refetches on project id change, and exposes optimistic create +
@@ -614,11 +630,144 @@ export default function ProjectDetailScreen() {
     });
   };
 
+  // Single-photo delete entry point used by PhotoTile.onDelete and by
+  // anywhere else a "delete this one photo" action lives. Handles:
+  //  - failed/pending uploads (no server media row) → local-only confirm
+  //  - synced photos → fetch refs, show refs-aware confirm, server-first
+  //    delete then local cleanup. Errors surface as toasts; 401 is silent.
+  const confirmAndDeletePhoto = useCallback(
+    async (photo: import("@/services/types").Photo) => {
+      const mediaId = photo.mediaId;
+
+      const doServerThenLocal = async () => {
+        try {
+          if (mediaId !== undefined) await api.deleteMedia(mediaId);
+          await deletePhoto(photo.id);
+        } catch (e) {
+          if (e instanceof ApiError && e.status === 401) return;
+          showToast(
+            e instanceof Error ? e.message : "Couldn't delete photo.",
+          );
+        }
+      };
+
+      // Local-only path (failed/pending upload — no server media row).
+      if (mediaId === undefined) {
+        if (Platform.OS === "web") return deletePhoto(photo.id);
+        Alert.alert(
+          "Delete photo?",
+          "This will permanently remove the photo.",
+          [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Delete",
+              style: "destructive",
+              onPress: () => void deletePhoto(photo.id),
+            },
+          ],
+        );
+        return;
+      }
+
+      // Server-backed path: fetch refs, then refs-aware confirm.
+      let refsMessage = "";
+      try {
+        const refs = await api.getMediaReferences(mediaId);
+        refsMessage = buildMediaReferencesMessage(refs);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 401) return;
+        showToast(
+          e instanceof Error ? e.message : "Couldn't check references.",
+        );
+        return;
+      }
+
+      const body = refsMessage || "This will permanently remove the photo.";
+      if (Platform.OS === "web") return doServerThenLocal();
+      Alert.alert("Delete photo?", body, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", style: "destructive", onPress: doServerThenLocal },
+      ]);
+    },
+    [deletePhoto, showToast],
+  );
+
+  // Checklist-instance delete (long-press on a row). Confirmation copy
+  // mirrors the spec; on confirm we call the hook's optimistic delete,
+  // which removes the row immediately and rolls back on server failure.
+  const confirmDeleteChecklist = useCallback(
+    (checklistId: string | number, _title: string) => {
+      const doIt = async () => {
+        try {
+          await deleteChecklistInstance(checklistId);
+          showToast("Checklist deleted");
+        } catch (e) {
+          if (e instanceof ApiError && e.status === 401) return;
+          showToast(
+            e instanceof Error ? e.message : "Couldn't delete checklist.",
+          );
+        }
+      };
+      if (Platform.OS === "web") return doIt();
+      Alert.alert(
+        "Delete checklist?",
+        "This will permanently remove the checklist and all its sections, items, and recorded responses.",
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Delete", style: "destructive", onPress: () => void doIt() },
+        ],
+      );
+    },
+    [deleteChecklistInstance, showToast],
+  );
+
   const deleteSelected = () => {
     const ids = Array.from(selected);
     if (ids.length === 0) return;
+    // Build a parallel array of mediaIds so we know which photos need a
+    // server DELETE vs which are local-only (failed/pending uploads).
+    const photosById = new Map(photos.map((p) => [p.id, p]));
     const doIt = async () => {
-      for (const pid of ids) await deletePhoto(pid);
+      // Server-first per item: if the media DELETE fails we surface a
+      // toast and continue to the next item — partial success is better
+      // than stopping. Local cleanup always runs (matches the previous
+      // local-only behavior; safe because deletePhoto is idempotent on
+      // missing ids).
+      //
+      // INTENTIONAL: no per-item references check in batch mode. Doing
+      // it N times would either spam dialogs or aggregate into something
+      // unworkable. Trade-off: users batch-deleting from shared reports
+      // won't get the "shared link will break" heads-up. See TECH_DEBT.md.
+      // Strictly server-first: only remove locally if the server DELETE
+      // succeeds (or the row was already gone — 404 counts as success
+      // because the desired end state matches). Anything else leaves
+      // the local row in place so the user sees the failure and can
+      // retry rather than ending up with phantom-deleted photos that
+      // still exist server-side. Failures are aggregated into one toast.
+      let failureCount = 0;
+      for (const pid of ids) {
+        const ph = photosById.get(pid);
+        if (ph?.mediaId !== undefined) {
+          try {
+            await api.deleteMedia(ph.mediaId);
+          } catch (e) {
+            if (e instanceof ApiError && e.status === 401) {
+              exitSelectMode();
+              return;
+            }
+            if (!(e instanceof ApiError && e.status === 404)) {
+              failureCount += 1;
+              continue; // skip local removal — keep row visible
+            }
+          }
+        }
+        await deletePhoto(pid);
+      }
+      if (failureCount > 0) {
+        showToast(
+          `Couldn't delete ${failureCount} photo${failureCount === 1 ? "" : "s"}.`,
+        );
+      }
       exitSelectMode();
     };
     if (Platform.OS === "web") return doIt();
@@ -1122,7 +1271,8 @@ export default function ProjectDetailScreen() {
                             primaryForeground={colors.primaryForeground}
                             onOpen={() => router.push(`/photo/${ph.id}`)}
                             onToggleSelected={() => togglePhotoSelected(ph.id)}
-                            onDelete={() => deletePhoto(ph.id)}
+                            onDelete={() => void confirmAndDeletePhoto(ph)}
+                            onRemoveLocal={() => void deletePhoto(ph.id)}
                           />
                         ))}
                       </View>
@@ -1334,6 +1484,7 @@ export default function ProjectDetailScreen() {
                   // Tappable summary row — opens the detail screen which owns
                   // sections + items + photo workflow. We don't fetch counts
                   // here (would mean N+1); the detail screen shows progress.
+                  // Long-press → delete confirm (mirrors tasks pattern).
                   return (
                     <Pressable
                       key={String(c.id)}
@@ -1347,6 +1498,7 @@ export default function ProjectDetailScreen() {
                           },
                         })
                       }
+                      onLongPress={() => confirmDeleteChecklist(c.id, c.title)}
                       style={({ pressed }) => [
                         styles.checklistCard,
                         {
@@ -2115,6 +2267,7 @@ function PhotoTile({
   onOpen,
   onToggleSelected,
   onDelete,
+  onRemoveLocal,
 }: {
   photo: import("@/services/types").Photo;
   borderColor: string;
@@ -2125,7 +2278,19 @@ function PhotoTile({
   primaryForeground: string;
   onOpen: () => void;
   onToggleSelected: () => void;
+  /**
+   * Full delete flow including refs check + server DELETE. Parent owns
+   * the confirmation dialog (so it can show the refs-aware copy), so
+   * PhotoTile invokes this without any inline Alert of its own.
+   */
   onDelete: () => void;
+  /**
+   * Local-only cleanup used by the failed-upload action sheet. No
+   * server call, no refs check — the photo never made it to the server,
+   * so there's nothing to delete server-side. The failed-upload sheet
+   * already presents its own confirm dialog.
+   */
+  onRemoveLocal: () => void;
 }) {
   // Suppress the onPress that fires when a long-press releases.
   const longPressed = useRef(false);
@@ -2142,14 +2307,11 @@ function PhotoTile({
   const handleLongPress = () => {
     if (selectMode) return;
     longPressed.current = true;
-    if (Platform.OS === "web") {
-      onDelete();
-      return;
-    }
-    Alert.alert("Delete photo?", undefined, [
-      { text: "Cancel", style: "cancel" },
-      { text: "Delete", style: "destructive", onPress: onDelete },
-    ]);
+    // No inline Alert — parent's onDelete owns the confirmation dialog
+    // because it needs to fetch references first and show refs-aware
+    // copy ("This photo is in N reports …"). Web and native go through
+    // the same path now.
+    onDelete();
   };
 
   const handlePress = () => {
@@ -2162,7 +2324,10 @@ function PhotoTile({
       return;
     }
     if (uploadStatus === "failed" && photo.uploadQueueId) {
-      showFailedUploadActionSheet(photo.uploadQueueId, onDelete);
+      // Failed-upload "Remove" path: never went to the server, so do
+      // local-only cleanup (no refs check, no server DELETE). The
+      // action sheet itself handles its own confirmation copy.
+      showFailedUploadActionSheet(photo.uploadQueueId, onRemoveLocal);
       return;
     }
     // Uploading photos still open the detail screen — they're viewable

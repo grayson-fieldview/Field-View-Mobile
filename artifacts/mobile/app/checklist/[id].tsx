@@ -18,9 +18,10 @@ import { Button } from "@/components/Button";
 import { ChecklistItemRow } from "@/components/ChecklistItemRow";
 import { PhotoPickerModal } from "@/components/PhotoPickerModal";
 import { useToast } from "@/contexts/ToastContext";
+import KebabIcon from "@/components/KebabIcon";
 import { useChecklistDetail } from "@/hooks/useProjectChecklists";
 import { useColors } from "@/hooks/useColors";
-import { ApiError, type BackendChecklistItem } from "@/services/api";
+import { ApiError, api, type BackendChecklistItem } from "@/services/api";
 import { subscribeAttach } from "@/services/uploadQueue";
 
 /**
@@ -216,9 +217,84 @@ export default function ChecklistDetailScreen() {
 
   const headerTitle = titleParam || "Checklist";
 
+  // ----- Delete this checklist (header kebab) -----
+  // Mirrors the report-detail kebab pattern: ActionSheetIOS on iOS,
+  // Alert.alert fallback on Android/web. On confirm we call the server
+  // DELETE directly (the project page's useProjectChecklists will
+  // refetch on focus when we router.back()). We deliberately do NOT
+  // wire the hook here — this screen receives `id` via deep link and
+  // doesn't always have access to a projectId, so going through the
+  // hook would be inert anyway. Server-first; local refresh on back.
+  const handleDeleteChecklist = () => {
+    if (!checklistId) return;
+    Alert.alert(
+      "Delete checklist?",
+      "This will permanently remove the checklist and all its sections, items, and recorded responses.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await api.deleteChecklist(checklistId);
+              showToast("Checklist deleted");
+              router.back();
+            } catch (e) {
+              if (e instanceof ApiError && e.status === 401) return;
+              showToast(
+                e instanceof Error ? e.message : "Couldn't delete checklist.",
+              );
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const openKebab = () => {
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: ["Cancel", "Delete checklist"],
+          cancelButtonIndex: 0,
+          destructiveButtonIndex: 1,
+        },
+        (idx) => {
+          if (idx === 1) handleDeleteChecklist();
+        },
+      );
+    } else {
+      Alert.alert("Checklist", undefined, [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete checklist",
+          style: "destructive",
+          onPress: handleDeleteChecklist,
+        },
+      ]);
+    }
+  };
+
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
-      <Stack.Screen options={{ title: headerTitle, headerBackTitle: "Back" }} />
+      <Stack.Screen
+        options={{
+          title: headerTitle,
+          headerBackTitle: "Back",
+          headerRight: () => (
+            <Pressable
+              onPress={openKebab}
+              hitSlop={12}
+              accessibilityRole="button"
+              accessibilityLabel="Checklist options"
+              style={{ paddingHorizontal: 4 }}
+            >
+              <KebabIcon size={20} color={colors.foreground} />
+            </Pressable>
+          ),
+        }}
+      />
 
       {loading && items.length === 0 ? (
         <View style={[styles.center, { paddingTop: insets.top + 80 }]}>

@@ -4,6 +4,7 @@ import * as MediaLibrary from "expo-media-library";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   Platform,
   Pressable,
@@ -17,6 +18,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Path } from "react-native-svg";
 
 import { useData } from "@/contexts/DataContext";
+import { useToast } from "@/contexts/ToastContext";
+import { ApiError, api, buildMediaReferencesMessage } from "@/services/api";
 import { isRenderablePencilStroke } from "@/services/types";
 import type { AnnotationStroke, Photo } from "@/services/types";
 
@@ -28,6 +31,12 @@ export default function PhotoViewerScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const { photos, updatePhoto, deletePhoto } = useData();
+  const { showToast } = useToast();
+  // True while we're fetching references for the trash button — drives
+  // the inline spinner replacement of the trash icon. The actual
+  // Alert.alert isn't a "loading" surface, so the spinner only shows
+  // during the GET /api/media/:id/references round-trip.
+  const [trashLoading, setTrashLoading] = useState(false);
 
   const startPhoto = useMemo(() => photos.find((p) => p.id === id), [photos, id]);
   const projectPhotos = useMemo(
@@ -144,19 +153,79 @@ export default function PhotoViewerScreen() {
     await updatePhoto(pid, { annotations: [] });
   };
 
-  const onDelete = () => {
-    const photoId = currentPhoto.id;
-    const doIt = async () => {
-      // Navigate back FIRST so we don't briefly render the "Photo not found"
-      // fallback (the URL `id` would dangle after the photo is removed from
-      // state). The actual delete happens after the screen is dismissed.
+  const onDelete = async () => {
+    const photo = currentPhoto;
+    const photoId = photo.id;
+    const mediaId = photo.mediaId;
+
+    // Server-first then local. Sequence is deliberate:
+    //  1. Resolve mediaId — if the photo never uploaded (failed/pending),
+    //     skip the server entirely and just do local cleanup.
+    //  2. Fetch references and build the warning copy. Show spinner on
+    //     the trash button only during this fetch.
+    //  3. Confirm dialog (refs-aware copy).
+    //  4. On confirm: DELETE /api/media/:id, THEN router.back() + local
+    //     cleanup. router.back() runs even on server failure (no state
+    //     drift, gallery just refetches on focus); local cleanup only
+    //     runs after the server confirms.
+    const doServerThenLocal = async () => {
       router.back();
-      await deletePhoto(photoId);
+      try {
+        if (mediaId !== undefined) {
+          await api.deleteMedia(mediaId);
+        }
+        await deletePhoto(photoId);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 401) return;
+        showToast(
+          e instanceof Error ? e.message : "Couldn't delete photo.",
+        );
+      }
     };
-    if (Platform.OS === "web") return doIt();
-    Alert.alert("Delete photo?", undefined, [
+
+    // No server media row → local-only path (failed/pending upload).
+    // Same UX as the previous simple-confirm flow used to be.
+    if (mediaId === undefined) {
+      if (Platform.OS === "web") {
+        router.back();
+        await deletePhoto(photoId);
+        return;
+      }
+      Alert.alert("Delete photo?", "This will permanently remove the photo.", [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            router.back();
+            await deletePhoto(photoId);
+          },
+        },
+      ]);
+      return;
+    }
+
+    // Server-backed path: fetch refs (with spinner), then confirm.
+    setTrashLoading(true);
+    let refsMessage = "";
+    try {
+      const refs = await api.getMediaReferences(mediaId);
+      refsMessage = buildMediaReferencesMessage(refs);
+    } catch (e) {
+      setTrashLoading(false);
+      if (e instanceof ApiError && e.status === 401) return;
+      showToast(
+        e instanceof Error ? e.message : "Couldn't check references.",
+      );
+      return;
+    }
+    setTrashLoading(false);
+
+    const body = refsMessage || "This will permanently remove the photo.";
+    if (Platform.OS === "web") return doServerThenLocal();
+    Alert.alert("Delete photo?", body, [
       { text: "Cancel", style: "cancel" },
-      { text: "Delete", style: "destructive", onPress: doIt },
+      { text: "Delete", style: "destructive", onPress: doServerThenLocal },
     ]);
   };
 
@@ -349,12 +418,22 @@ export default function PhotoViewerScreen() {
             disabled={currentStrokeList.length === 0}
             label="Undo last stroke"
           />
-          <ToolButton
-            onPress={onDelete}
-            icon="trash-2"
-            tint="#ef4444"
-            label="Delete photo"
-          />
+          {trashLoading ? (
+            // Match ToolButton footprint so the toolbar doesn't reflow.
+            // We disable the press surface entirely while the references
+            // fetch is in flight — a second tap during the round-trip
+            // would just queue another dialog.
+            <View style={styles.trashSpinner}>
+              <ActivityIndicator color="#ef4444" />
+            </View>
+          ) : (
+            <ToolButton
+              onPress={() => void onDelete()}
+              icon="trash-2"
+              tint="#ef4444"
+              label="Delete photo"
+            />
+          )}
         </View>
 
         {editing ? (
@@ -546,6 +625,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   toolBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  // Sized to match ToolButton (30×30) so swapping the trash icon for a
+  // spinner during the references fetch doesn't reflow the toolbar.
+  trashSpinner: {
     width: 30,
     height: 30,
     borderRadius: 8,

@@ -466,6 +466,59 @@ export interface BackendMedia {
   createdAt: string;
 }
 
+/**
+ * Reverse-lookup of where a single media row is referenced. Returned by
+ * GET /api/media/:id/references and consumed by the photo-delete flow
+ * to warn the user when deleting will also strip a photo from reports
+ * or checklists (and, for shared reports, break the public share link).
+ *
+ * Server-side note: restricted users only see rows they can otherwise
+ * read; mobile does NOT try to compensate. `tasks` is always [] per the
+ * current server contract — typed for parity, ignored by callers.
+ */
+export interface MediaReferences {
+  reports: Array<{ id: number | string; title: string; isShared: boolean }>;
+  checklists: Array<{ id: number | string; title: string }>;
+  tasks: Array<{ id: number | string }>;
+}
+
+/**
+ * Build the user-facing "this photo is in X" sentence for the delete
+ * dialog. Returns "" when there are no references — callers should
+ * fall back to the generic "This will permanently remove the photo."
+ * copy in that case (handled by the photo-delete confirm path).
+ *
+ * Grammar contract (singular/plural, reports-first when mixed):
+ *   1 report          → "1 report"
+ *   N reports         → "N reports"
+ *   1 checklist       → "1 checklist"
+ *   N checklists      → "N checklists"
+ *   N reports + M checklists → "N reports and M checklists"
+ *
+ * Appends a shared-report warning if ANY referenced report has an
+ * active share token.
+ */
+export function buildMediaReferencesMessage(refs: MediaReferences): string {
+  const r = refs.reports.length;
+  const c = refs.checklists.length;
+  if (r === 0 && c === 0) return "";
+  const reportPart = r > 0 ? `${r} report${r === 1 ? "" : "s"}` : "";
+  const checklistPart =
+    c > 0 ? `${c} checklist${c === 1 ? "" : "s"}` : "";
+  const places =
+    r > 0 && c > 0
+      ? `${reportPart} and ${checklistPart}`
+      : reportPart || checklistPart;
+  // Singular vs plural location count: "from there" reads naturally for
+  // a single location, "from those places" for two or more. Avoids the
+  // "in 1 report. … from those places" grammar bug.
+  const fromWhere = r + c === 1 ? "there" : "those places";
+  const sharedWarning = refs.reports.some((rep) => rep.isShared)
+    ? "\n\nThis is a shared report — deleting will break the shared link."
+    : "";
+  return `This photo is in ${places}. Deleting will remove it from ${fromWhere} too. Are you sure?${sharedWarning}`;
+}
+
 /** Task status enum — mirrors the postgres `tasks.status` enum exactly. */
 export type BackendTaskStatus = "todo" | "in_progress" | "done";
 
@@ -1539,6 +1592,42 @@ export const api = {
       // instance. Future feature: in-app rename on the instance.
       json: { title, templateId },
     }),
+
+  /**
+   * Delete a checklist instance. Server returns 200 {message:"Deleted"};
+   * FK cascade removes sections, items, item options, photo joins, and
+   * responses. The underlying media rows are preserved (only the join
+   * rows in checklist_item_photos are dropped).
+   */
+  deleteChecklist: (checklistId: string | number) =>
+    apiFetch<{ message: string }>(`/api/checklists/${checklistId}`, {
+      method: "DELETE",
+    }),
+
+  // ----- Media delete + references -----
+  /**
+   * Hard-delete a media row. Server cascades all join rows
+   * (checklist_item_photos, report_section_photos) and removes the
+   * underlying S3 object. Returns {success:true}.
+   *
+   * Callers should typically call `getMediaReferences` first to warn
+   * the user about reports/checklists this photo is attached to. The
+   * batch (multi-select) path skips the references check intentionally
+   * — see TECH_DEBT.md.
+   */
+  deleteMedia: (mediaId: string | number) =>
+    apiFetch<{ success: boolean }>(`/api/media/${mediaId}`, {
+      method: "DELETE",
+    }),
+
+  /**
+   * Where is this media referenced? Server filters by the caller's
+   * visibility (a restricted user only sees rows they can otherwise
+   * read), so we never get back something they shouldn't be able to
+   * preview. tasks[] is always empty by current server contract.
+   */
+  getMediaReferences: (mediaId: string | number) =>
+    apiFetch<MediaReferences>(`/api/media/${mediaId}/references`),
 
   // ----- Reports (Mobile Reports R1) -----
   // DELETE endpoints in this group return 200 + body `{message: "Deleted"}`
