@@ -218,7 +218,7 @@ export default function ProfileScreen() {
   const handleDeleteAccountStart = () => {
     Alert.alert(
       "Delete account?",
-      "This permanently deletes the entire account, all projects, all photos, all team members, and your subscription. After 30 days, all data is destroyed and cannot be recovered.",
+      "This permanently deletes the entire account, all projects, all photos, and all team members. After 30 days, all data is destroyed and cannot be recovered.",
       [
         { text: "Cancel", style: "cancel" },
         {

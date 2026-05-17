@@ -125,15 +125,21 @@ export default function LoginScreen() {
           </Pressable>
         </View>
 
-        <Pressable
-          onPress={() => router.push("/(auth)/forgot")}
-          hitSlop={8}
-          style={{ alignSelf: "flex-end", marginTop: 10 }}
-        >
-          <Text style={[styles.link, { color: colors.primary }]}>
-            Forgot password?
-          </Text>
-        </Pressable>
+        {/*
+          TODO(post-launch): Re-enable Forgot password once mobile password reset is wired up.
+          Hidden for App Store submission to avoid the "isn't wired up yet" error path being visible to reviewers.
+        */}
+        {false && (
+          <Pressable
+            onPress={() => router.push("/(auth)/forgot")}
+            hitSlop={8}
+            style={{ alignSelf: "flex-end", marginTop: 10 }}
+          >
+            <Text style={[styles.link, { color: colors.primary }]}>
+              Forgot password?
+            </Text>
+          </Pressable>
+        )}
 
         {error ? (
           <Text
