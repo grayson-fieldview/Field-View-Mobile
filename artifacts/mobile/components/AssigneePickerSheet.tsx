@@ -17,7 +17,7 @@ import { useColors } from "@/hooks/useColors";
 import {
   ApiError,
   api,
-  type BackendProjectAssignment,
+  type BackendUser,
   type UserRole,
 } from "@/services/api";
 
@@ -40,16 +40,18 @@ interface Props {
 }
 
 /**
- * Bottom-sheet picker for assigning a task to a project teammate.
+ * Bottom-sheet picker for assigning a task to an account teammate.
  *
- * On open, fetches `/api/projects/:id/assignments` (the same source
- * `AssignUserToProjectModal` uses for the project Team tab). Always
- * includes an "Unassigned" option at the top. Tapping a row immediately
- * fires `onSelect` and closes — no separate "Save" step, mirroring the
- * iOS native picker convention.
+ * On open, fetches `/api/users?assignableForProjectId=<projectId>` so
+ * the server returns the role-aware list (admin/manager/standard always;
+ * restricted only when explicitly assigned to the project). This matches
+ * web's assignee-picker behavior since the 2026-05 role rework. It is
+ * intentionally NOT scoped to project_assignments — managers/admins who
+ * aren't on the project Team tab still need to be assignable here.
  *
- * Empty state hint points users at the Team tab so they know how to
- * make teammates available here.
+ * Always includes an "Unassigned" option at the top. Tapping a row
+ * immediately fires `onSelect` and closes — no separate "Save" step,
+ * mirroring the iOS native picker convention.
  */
 export function AssigneePickerSheet({
   visible,
@@ -61,9 +63,7 @@ export function AssigneePickerSheet({
   const colors = useColors();
   const insets = useSafeAreaInsets();
 
-  const [assignments, setAssignments] = useState<BackendProjectAssignment[]>(
-    [],
-  );
+  const [users, setUsers] = useState<BackendUser[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -76,9 +76,15 @@ export function AssigneePickerSheet({
       setLoading(true);
       setLoadError(null);
       try {
-        const rows = await api.listProjectAssignments(projectId);
+        const rows = await api.listUsers({ assignableForProjectId: projectId });
         if (cancelled) return;
-        setAssignments(Array.isArray(rows) ? rows : []);
+        // Filter out soft-deleted users client-side — same convention
+        // AssignUserToProjectModal uses. Server may or may not include
+        // them depending on caller role; safer to always drop them here.
+        const live = (Array.isArray(rows) ? rows : []).filter(
+          (u) => u.deletedAt == null,
+        );
+        setUsers(live);
       } catch (e) {
         if (cancelled) return;
         if (e instanceof ApiError && e.status === 401) return;
@@ -95,8 +101,8 @@ export function AssigneePickerSheet({
   }, [visible, projectId]);
 
   // Sort by display name so the list reads predictably.
-  const sortedAssignments = useMemo(() => {
-    return [...assignments].sort((a, b) => {
+  const sortedUsers = useMemo(() => {
+    return [...users].sort((a, b) => {
       const aKey =
         (`${a.firstName ?? ""} ${a.lastName ?? ""}`.trim() || a.email)
           .toLowerCase();
@@ -105,17 +111,17 @@ export function AssigneePickerSheet({
           .toLowerCase();
       return aKey.localeCompare(bKey);
     });
-  }, [assignments]);
+  }, [users]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return sortedAssignments;
-    return sortedAssignments.filter((u) => {
+    if (!q) return sortedUsers;
+    return sortedUsers.filter((u) => {
       const hay =
         `${u.firstName ?? ""} ${u.lastName ?? ""} ${u.email}`.toLowerCase();
       return hay.includes(q);
     });
-  }, [sortedAssignments, search]);
+  }, [sortedUsers, search]);
 
   const handleSelect = (selection: AssigneeSelection) => {
     onSelect(selection);
@@ -156,7 +162,7 @@ export function AssigneePickerSheet({
           <View style={{ width: 50 }} />
         </View>
 
-        {assignments.length > 4 ? (
+        {users.length > 4 ? (
           <View style={{ paddingHorizontal: 20, paddingTop: 14 }}>
             <Input
               value={search}
@@ -168,7 +174,7 @@ export function AssigneePickerSheet({
           </View>
         ) : null}
 
-        {loading && assignments.length === 0 ? (
+        {loading && users.length === 0 ? (
           <View style={{ paddingVertical: 40, alignItems: "center" }}>
             <ActivityIndicator color={colors.mutedForeground} />
           </View>
@@ -243,7 +249,7 @@ export function AssigneePickerSheet({
               ) : null}
             </Pressable>
 
-            {assignments.length === 0 ? (
+            {users.length === 0 ? (
               <View style={{ padding: 20, gap: 6 }}>
                 <Text
                   style={{
@@ -252,7 +258,7 @@ export function AssigneePickerSheet({
                     fontSize: 14,
                   }}
                 >
-                  No teammates assigned to this project yet.
+                  No teammates available.
                 </Text>
                 <Text
                   style={{
@@ -261,7 +267,7 @@ export function AssigneePickerSheet({
                     fontSize: 13,
                   }}
                 >
-                  Assign someone from the Team tab first.
+                  Invite someone to your account first.
                 </Text>
               </View>
             ) : filtered.length === 0 ? (
@@ -278,7 +284,7 @@ export function AssigneePickerSheet({
               </View>
             ) : (
               filtered.map((u) => {
-                const id = String(u.userId);
+                const id = String(u.id);
                 const fullName =
                   `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim() || u.email;
                 const initials =
@@ -287,6 +293,9 @@ export function AssigneePickerSheet({
                   }`.toUpperCase() ||
                   (u.email[0]?.toUpperCase() ?? "?");
                 const isSelected = selectedUserId === id;
+                // BackendProjectAssignment used `avatarUrl`; BackendUser
+                // uses `profileImageUrl`. Same semantic — display picture.
+                const avatarUrl = u.profileImageUrl;
                 return (
                   <Pressable
                     key={id}
@@ -310,9 +319,9 @@ export function AssigneePickerSheet({
                         { backgroundColor: colors.muted },
                       ]}
                     >
-                      {u.avatarUrl ? (
+                      {avatarUrl ? (
                         <Image
-                          source={{ uri: u.avatarUrl }}
+                          source={{ uri: avatarUrl }}
                           style={{ width: 36, height: 36, borderRadius: 18 }}
                           contentFit="cover"
                         />

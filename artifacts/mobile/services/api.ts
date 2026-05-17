@@ -1410,6 +1410,33 @@ export const api = {
    */
   listAccountUsers: () => apiFetch<BackendUser[]>("/api/users"),
 
+  /**
+   * Account users that the caller is allowed to assign work to.
+   *
+   * Without `assignableForProjectId`, identical to `listAccountUsers`
+   * (returns every user in the account). With `assignableForProjectId`,
+   * the server applies the role-aware filter (web parity, 2026-05):
+   *  - admin / manager / standard → always returned
+   *  - restricted → only returned if explicitly in `project_assignments`
+   *    for that project
+   *
+   * Consumed by the task assignee picker so restricted users who
+   * aren't on the project don't show up there.
+   *
+   * `assignableForProjectId` is dropped when undefined / null / empty
+   * string — never sent as `?assignableForProjectId=` with no value
+   * (the server would treat that as "filter by project id ''", which
+   * is not the same as "no filter").
+   */
+  listUsers: (opts?: { assignableForProjectId?: string | number }) => {
+    const pid = opts?.assignableForProjectId;
+    const hasPid = pid !== undefined && pid !== null && String(pid).length > 0;
+    const qs = hasPid
+      ? `?assignableForProjectId=${encodeURIComponent(String(pid))}`
+      : "";
+    return apiFetch<BackendUser[]>(`/api/users${qs}`);
+  },
+
   // TODO: not used in mobile yet; web handles invites. Mobile consumer
   // = invitations list view if/when we build it.
   /** All pending invitations for the current account (admin scope). */
