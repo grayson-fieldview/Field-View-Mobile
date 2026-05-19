@@ -80,6 +80,12 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     // (preprompted), already on Always, or in a system-restricted state
     // where the screen has nothing actionable to offer. The in-app banner
     // handles re-engagement for the denied / undetermined-after-skip cases.
+    // TODO(tech-debt): AuthGate re-routes when preprompted is set but
+    // upgradeShown isn't. Currently harmless because the only path to
+    // that state ("Not now" on location onboarding) was removed in Build
+    // 20. If a future change reintroduces an exitToApp path that doesn't
+    // burn upgradeShown, the loop will resurface. Fix: have AuthGate
+    // check both flags.
     const needsOnboarding =
       !preprompted &&
       locationStatus !== "always-granted" &&

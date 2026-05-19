@@ -123,11 +123,6 @@ export default function LocationOnboardingScreen() {
     }
   }, [requestBackgroundPermission, exitToApp]);
 
-  const showSkip =
-    status !== "loading" &&
-    status !== "always-granted" &&
-    status !== "restricted";
-
   return (
     <View
       style={[
@@ -158,17 +153,6 @@ export default function LocationOnboardingScreen() {
           onContinue={exitToApp}
           onOpenSettings={openSettings}
         />
-        {showSkip ? (
-          <Pressable
-            onPress={exitToApp}
-            hitSlop={10}
-            style={{ alignSelf: "center", marginTop: 14 }}
-          >
-            <Text style={[styles.skip, { color: colors.mutedForeground }]}>
-              Not now
-            </Text>
-          </Pressable>
-        ) : null}
       </View>
     </View>
   );
@@ -430,9 +414,5 @@ const styles = StyleSheet.create({
   },
   footer: {
     width: "100%",
-  },
-  skip: {
-    fontSize: 14,
-    fontFamily: "Inter_500Medium",
   },
 });
