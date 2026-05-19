@@ -334,12 +334,12 @@ export default function ProfileScreen() {
           Tracking
         </Text>
         <Text style={[styles.debugCaption, { color: colors.mutedForeground }]}>
-          Automatically clock in when you arrive at a job site and clock out
-          when you leave. Turn off to manage clock-in/out manually.
+          Field View detects when you arrive at or leave a job site and updates
+          your timesheet automatically.
         </Text>
         <Row
           icon="map-pin"
-          label="Auto clock in/out"
+          label="Auto clock-in/out (Geofencing)"
           value={user?.autoTrackingEnabled ?? true}
           onValueChange={handleAutoTrackingToggle}
         />

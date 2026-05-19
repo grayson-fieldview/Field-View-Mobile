@@ -256,8 +256,7 @@ export default function CaptureScreen() {
           Field View needs your camera to capture project photos. You can revoke
           access anytime from system settings.
         </Text>
-        <Button title="Grant camera access" onPress={requestPermission} size="lg" />
-        <Button title="Cancel" variant="ghost" onPress={() => router.back()} />
+        <Button title="Continue" onPress={requestPermission} size="lg" />
       </View>
     );
   }
