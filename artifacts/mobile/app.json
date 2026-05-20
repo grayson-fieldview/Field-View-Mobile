@@ -22,7 +22,6 @@
         "NSMicrophoneUsageDescription": "Field View records audio with your project videos so the captured footage matches what you said on site.",
         "NSLocationWhenInUseUsageDescription": "Field View tags your photos with GPS coordinates so you can map site locations.",
 "NSLocationAlwaysAndWhenInUseUsageDescription": "Field View uses your location in the background to automatically clock you in and out when you arrive at or leave a project site.",
-        "UIBackgroundModes": ["location"],
         "NSPhotoLibraryUsageDescription": "Field View needs access to your photo library so you can attach existing photos to a project.",
         "NSPhotoLibraryAddUsageDescription": "Field View saves captured photos to your library.",
         "ITSAppUsesNonExemptEncryption": false
@@ -75,7 +74,7 @@
         {
           "locationWhenInUsePermission": "Field View tags your photos with GPS coordinates so you can map site locations.",
 "locationAlwaysAndWhenInUsePermission": "Field View uses your location in the background to automatically clock you in and out when you arrive at or leave a project site.",
-          "isIosBackgroundLocationEnabled": true
+          "isIosBackgroundLocationEnabled": false
         }
       ],
       [

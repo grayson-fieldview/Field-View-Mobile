@@ -199,6 +199,18 @@ export async function startHeartbeat(): Promise<void> {
     return;
   }
   if (Platform.OS === "web") return;
+  if (Platform.OS === "ios") {
+    // Build 21: iOS background-location mode removed from app.json.
+    // Region monitoring (services/geofencing.ts) does not require
+    // UIBackgroundModes=["location"] and remains the PRIMARY auto-
+    // clock detector. The continuous-updates heartbeat does require
+    // the background mode and would throw "Background Location has
+    // not been configured" if invoked. Android still runs heartbeat
+    // (it's the only auto-exit detector there — geofencing is iOS-
+    // only). Mirror of the Platform.OS guard in geofencing.ts.
+    console.log("[heartbeat] start skipped: iOS (background mode disabled)");
+    return;
+  }
   try {
     // Open the persisted gate FIRST. If the OS dispatches the
     // task body between this write and startLocationUpdatesAsync
@@ -265,6 +277,12 @@ export async function startHeartbeat(): Promise<void> {
 export async function stopHeartbeat(): Promise<void> {
   if (!taskManagerAvailable) return;
   if (Platform.OS === "web") return;
+  if (Platform.OS === "ios") {
+    // Build 21: symmetric with startHeartbeat. Nothing was ever
+    // started, so there's nothing to stop. Skip the gate clear too —
+    // startHeartbeat never opens it on iOS.
+    return;
+  }
   // Close the persisted gate FIRST. If the OS has a fix queued
   // for delivery between this point and stopLocationUpdatesAsync
   // resolving, the task body's gate check reads "closed" and
