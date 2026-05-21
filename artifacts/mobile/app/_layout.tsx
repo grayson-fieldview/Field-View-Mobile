@@ -80,22 +80,24 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // `routed` flips to true the first time the routing effect runs
-  // with enough data to make a decision. Children are NOT rendered
-  // until then — see the gate at the return statement below.
+  // `routed` flips to true the first time the routing effect has
+  // enough data to make a decision. It is NOT used to gate the
+  // navigator (that was the earlier broken approach — gating
+  // children unmounts the Stack and lets `router.replace` fire
+  // before the navigator commits, which expo-router silently
+  // drops). It IS used by `RootLayout` to hold the splash screen
+  // until the redirect has been issued, so the brief default-route
+  // → login/onboarding swap happens under the splash instead of
+  // surfacing a Projects flash.
   //
-  // Build 23 follow-up (Issue 2): on cold launch, expo-router
-  // mounts the default URL `/(tabs)/index` synchronously while
-  // AuthGate is still waiting on `preprompted` and `locationStatus`
-  // to resolve. `(tabs)/index.tsx` has a mount effect that calls
-  // `Location.requestForegroundPermissionsAsync()` (`refreshUserLoc`
-  // for the Nearby sort), so the iOS dialog opens BEFORE we get a
-  // chance to `router.replace` to onboarding. The onboarding
-  // pre-prompt screen then renders underneath the already-visible
-  // dialog. Gating children on `routed` prevents (tabs)/index from
-  // mounting in that limbo window — the URL is settled before any
-  // screen module gets to run its mount effects.
+  // Exposed via the module-level setter below so `RootLayout` can
+  // subscribe without a React context plumbing pass. `AuthGate`
+  // already owns the decision; this just lets the splash effect
+  // observe the result.
   const [routed, setRouted] = useState(false);
+  useEffect(() => {
+    if (routed) setAuthGateRouted(true);
+  }, [routed]);
 
   useEffect(() => {
     if (!ready) return;
@@ -164,15 +166,35 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     };
   }, [user, preprompted, segments]);
 
-  // Children gate (see `routed` comment above). Returning null
-  // here is preferable to a spinner because expo-router has not
-  // yet committed the correct route — rendering a spinner would
-  // still mount whatever screen the initial URL resolves to under
-  // the spinner overlay, which is exactly what we're trying to
-  // avoid. The window is sub-second on every launch.
-  if (!routed) return null;
-
   return <>{children}</>;
+}
+
+// --- Splash-hold bridge ---------------------------------------------------
+// `AuthGate` decides the route; `RootLayout` owns the splash. We
+// bridge them with a tiny module-level pub/sub instead of threading
+// React context through every provider in the tree. `RootLayout`
+// subscribes once on mount and hides the splash only when fonts +
+// routing have both settled, which keeps the cold-launch redirect
+// (default URL → login/onboarding) hidden under the native splash
+// — no Projects flash, no white gap.
+let authGateRouted = false;
+const authGateRoutedListeners = new Set<(v: boolean) => void>();
+function setAuthGateRouted(v: boolean): void {
+  if (authGateRouted === v) return;
+  authGateRouted = v;
+  for (const l of authGateRoutedListeners) {
+    try {
+      l(v);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+function subscribeAuthGateRouted(cb: (v: boolean) => void): () => void {
+  authGateRoutedListeners.add(cb);
+  return () => {
+    authGateRoutedListeners.delete(cb);
+  };
 }
 
 /**
@@ -467,11 +489,27 @@ export default function RootLayout() {
     Inter_700Bold,
   });
 
+  // Mirror AuthGate's `routed` flag into local state via the
+  // module-level pub/sub. Seed from the module-level value in case
+  // AuthGate routed before RootLayout's subscriber ran (very fast
+  // sessions, hot reload).
+  const [routed, setRouted] = useState<boolean>(() => authGateRouted);
   useEffect(() => {
-    if (fontsLoaded || fontError) {
+    setRouted(authGateRouted);
+    return subscribeAuthGateRouted(setRouted);
+  }, []);
+
+  // Hide the native splash only after BOTH fonts and routing have
+  // settled. Without the routing gate, the splash hides on font
+  // load and the user sees whatever screen the default URL maps
+  // to (typically (tabs)/index = Projects) for the brief window
+  // before AuthGate's `router.replace` lands — a visible "Projects
+  // flash" on cold launch into login/onboarding.
+  useEffect(() => {
+    if ((fontsLoaded || fontError) && routed) {
       SplashScreen.hideAsync();
     }
-  }, [fontsLoaded, fontError]);
+  }, [fontsLoaded, fontError, routed]);
 
   // Start the background upload queue processor once at app launch. The
   // function is idempotent so re-runs during fast-refresh are safe.

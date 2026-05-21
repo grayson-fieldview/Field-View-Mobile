@@ -94,10 +94,19 @@ export default function ProjectsScreen() {
   // and "Nearby" sort order frozen at wherever the user opened the
   // app, regardless of subsequent movement.
   //
-  // Uses getForegroundPermissionsAsync() (cheap, no prompt) before
-  // requestForegroundPermissionsAsync() so we don't re-prompt on
-  // every foreground transition. Errors are swallowed: keep the
-  // last good fix on screen rather than blanking the UI.
+  // CHECK-ONLY (Build 23 follow-up — Issue 2 hardening).
+  // This screen MUST NEVER call requestForegroundPermissionsAsync.
+  // (onboarding)/location is the single owner of the foreground
+  // permission prompt — having (tabs)/index also prompt was the
+  // structural defect that surfaced the iOS dialog before the
+  // onboarding pre-prompt could render on cold launch (because
+  // (tabs)/index briefly mounted in the AuthGate-routing window).
+  // If permission isn't granted yet, we silently skip location.
+  // `filteredAndSorted` below already falls back to createdAt
+  // ordering when userLoc === null, so the UX degradation is just
+  // "no distance labels + no Nearby sort" until the user finishes
+  // onboarding — which on next focus/foreground transition will
+  // pick up the fix automatically without any further code change.
   //
   // Concurrency: mount + focus + AppState→active can fire in quick
   // succession on cold-launch. `requestIdRef` is a monotonically
@@ -120,12 +129,12 @@ export default function ProjectsScreen() {
     const myId = ++requestIdRef.current;
     try {
       const existing = await Location.getForegroundPermissionsAsync();
-      let status = existing.status;
-      if (status !== "granted") {
-        const next = await Location.requestForegroundPermissionsAsync();
-        status = next.status;
+      if (existing.status !== "granted") {
+        // Not granted yet — silent no-op. Do NOT prompt here; the
+        // onboarding flow owns the request. Sort falls back to
+        // createdAt via the !userLoc branch in filteredAndSorted.
+        return;
       }
-      if (status !== "granted") return;
       const loc = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.Balanced,
       });
