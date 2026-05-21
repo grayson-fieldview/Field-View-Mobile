@@ -27,7 +27,6 @@ import {
 } from "@/services/imageProcessing";
 import { autoTrackingPref } from "@/services/preferences";
 import {
-  registerForPushNotificationsAsync,
   registerPushTokenWithServer,
   subscribeToPushTokenRotation,
   unregisterPushTokenWithServer,
@@ -427,44 +426,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setAccountSettings(null);
   }, []);
 
-  // Push token capture + rotation. Two effects so they have
-  // independent lifecycles:
+  // Push token rotation listener. Mounted for the lifetime of the
+  // provider. Expo can rotate the token at any time; when it does,
+  // we re-POST so the server's record stays fresh. Subscription is
+  // created once and torn down on unmount.
   //
-  //   1. Capture-on-login: gated on `user` becoming non-null.
-  //      Requests permission (once per install via the OS), captures
-  //      the Expo push token if granted, and POSTs it to the server.
-  //      No-op for signed-out users so we don't prompt at cold start
-  //      before the user has even logged in. Re-runs on every fresh
-  //      sign-in (after a sign-out / sign-in cycle); the OS prompt
-  //      doesn't reappear once granted/denied, so this is cheap.
-  //
-  //   2. Rotation listener: mounted for the lifetime of the
-  //      provider. Expo can rotate the token at any time; when it
-  //      does, we re-POST so the server's record stays fresh.
-  //      Subscription is created once and torn down on unmount.
-  useEffect(() => {
-    if (!user) return;
-    let cancelled = false;
-    // Defer the push permission prompt by 3s post-login. The native
-    // iOS prompt triggers an AppState inactive→active transition,
-    // which fires the foreground refreshUser() listener below. Doing
-    // that mid-login races with the just-set session cookie and (in
-    // CSRF-enforce mode pre-fix) caused refreshUser to 401 and yank
-    // the user. The 3s delay lets the login flow + initial nav
-    // settle before iOS surfaces its modal.
-    const timer = setTimeout(() => {
-      void (async () => {
-        const token = await registerForPushNotificationsAsync();
-        if (cancelled) return;
-        if (token) await registerPushTokenWithServer(token);
-      })();
-    }, 3000);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [user]);
-
+  // Build 23: the prior capture-on-login effect (3s setTimeout
+  // calling registerForPushNotificationsAsync) was removed. That
+  // wallclock timer raced the iPad onboarding location dialogs,
+  // stacking the notification permission modal on top of the
+  // foreground/always location prompts — the chaotic ordering App
+  // Review rejected Build 22 for. The notification permission
+  // request is now owned exclusively by the onboarding controller
+  // (app/(onboarding)/location.tsx). Token capture is handled by
+  // AuthGate calling registerExistingPushTokenIfGranted ONCE the
+  // user has cleared onboarding (preprompted flag set), so the
+  // capture never prompts and never races location.
   useEffect(() => {
     const unsub = subscribeToPushTokenRotation((token) => {
       console.log("[push] token rotated, re-registering");

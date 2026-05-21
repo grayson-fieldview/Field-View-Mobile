@@ -54,6 +54,62 @@ function getEasProjectId(): string | null {
 }
 
 /**
+ * CHECK-ONLY token capture. Returns the Expo push token IF the user
+ * has already granted notification permission; returns null otherwise
+ * and NEVER prompts. Used by AuthGate to register the token once the
+ * user has cleared onboarding — the notification permission request
+ * itself is owned exclusively by the onboarding controller in
+ * app/(onboarding)/location.tsx (Build 23 single-owner invariant).
+ *
+ * Returns null on the same non-permission failure modes as
+ * `registerForPushNotificationsAsync`: missing native binding,
+ * simulator, missing EAS projectId, or any thrown error.
+ *
+ * Side-effect: ensures the Android default notification channel
+ * exists on first call.
+ */
+export async function registerExistingPushTokenIfGranted(): Promise<
+  string | null
+> {
+  if (!notificationsAvailable || !Notifications) return null;
+  if (Platform.OS === "web") return null;
+
+  if (deviceAvailable && Device && Device.isDevice === false) {
+    console.log("[push] skipping token capture: not a physical device");
+    return null;
+  }
+
+  await ensureAndroidChannel();
+
+  try {
+    const existing = await Notifications.getPermissionsAsync();
+    if (existing.status !== Notifications.PermissionStatus.GRANTED) {
+      console.log(
+        `[push] check-only: permission not granted (${existing.status}), skipping token capture`,
+      );
+      return null;
+    }
+  } catch (err) {
+    console.log("[push] check-only permission read failed:", err);
+    return null;
+  }
+
+  const projectId = getEasProjectId();
+  if (!projectId) {
+    console.log("[push] no EAS projectId in expoConfig.extra.eas.projectId");
+    return null;
+  }
+
+  try {
+    const tok = await Notifications.getExpoPushTokenAsync({ projectId });
+    return tok.data;
+  } catch (err) {
+    console.log("[push] getExpoPushTokenAsync failed:", err);
+    return null;
+  }
+}
+
+/**
  * Permission check + request if needed, then capture and return the
  * Expo push token. Returns null on:
  *   - missing native binding (web, pre-S31b dev build)
@@ -64,6 +120,13 @@ function getEasProjectId(): string | null {
  *
  * Side-effect: ensures the Android default notification channel
  * exists on first call (no-op on iOS / repeat calls).
+ *
+ * NOTE (Build 23): no longer called from any production code path.
+ * The onboarding notifications step requests permission directly
+ * via `services/notifications.requestNotificationPermission`, and
+ * `registerExistingPushTokenIfGranted` (above) handles token
+ * capture without prompting. Retained for the rotation subscriber
+ * and future debug surfaces.
  */
 export async function registerForPushNotificationsAsync(): Promise<
   string | null

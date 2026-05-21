@@ -11,7 +11,7 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -32,7 +32,11 @@ import {
   parseClockOutReceiptData,
   subscribeToNotificationResponses,
 } from "@/services/notifications";
-import { subscribeToForegroundNotifications } from "@/services/pushNotifications";
+import {
+  registerExistingPushTokenIfGranted,
+  registerPushTokenWithServer,
+  subscribeToForegroundNotifications,
+} from "@/services/pushNotifications";
 import {
   locationOnboardingFlags,
   useLocationPermission,
@@ -80,12 +84,12 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     // (preprompted), already on Always, or in a system-restricted state
     // where the screen has nothing actionable to offer. The in-app banner
     // handles re-engagement for the denied / undetermined-after-skip cases.
-    // TODO(tech-debt): AuthGate re-routes when preprompted is set but
-    // upgradeShown isn't. Currently harmless because the only path to
-    // that state ("Not now" on location onboarding) was removed in Build
-    // 20. If a future change reintroduces an exitToApp path that doesn't
-    // burn upgradeShown, the loop will resurface. Fix: have AuthGate
-    // check both flags.
+    // Build 23: closed the asymmetric-flag risk at the WRITE source.
+    // `exitToApp` in app/(onboarding)/location.tsx now sets BOTH
+    // @fv/onboarding/preprompted AND @fv/onboarding/locationUpgradeShown
+    // idempotently on every exit path. AuthGate continues to check
+    // preprompted alone (kept stable to avoid changing routing
+    // semantics); the invariant is enforced at the writer instead.
     const needsOnboarding =
       !preprompted &&
       locationStatus !== "always-granted" &&
@@ -97,6 +101,35 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       router.replace("/(tabs)");
     }
   }, [user, ready, segments, router, preprompted, locationStatus]);
+
+  // Build 23: post-onboarding push token capture. Replaces the
+  // 3-second setTimeout in AuthContext that raced the location
+  // onboarding dialogs. Runs at most ONCE per provider lifetime,
+  // gated on (a) authenticated user, (b) onboarding cleared
+  // (preprompted), (c) not currently on the onboarding/auth
+  // screens. `registerExistingPushTokenIfGranted` is check-only —
+  // it never prompts. If permission isn't granted (user tapped
+  // "Not now" on the notifications onboarding step) we silently
+  // do nothing; receipts degrade gracefully and the profile
+  // screen's settings deep-link remains the recovery path.
+  const pushRegisteredRef = useRef(false);
+  useEffect(() => {
+    if (!user) return;
+    if (preprompted !== true) return;
+    if (pushRegisteredRef.current) return;
+    const inGate = segments[0] === "(auth)" || segments[0] === "(onboarding)";
+    if (inGate) return;
+    pushRegisteredRef.current = true;
+    let cancelled = false;
+    void (async () => {
+      const token = await registerExistingPushTokenIfGranted();
+      if (cancelled) return;
+      if (token) await registerPushTokenWithServer(token);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user, preprompted, segments]);
 
   return <>{children}</>;
 }

@@ -1,30 +1,61 @@
 import { Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "@/components/Button";
 import { useColors } from "@/hooks/useColors";
 import {
+  notificationOnboardingFlags,
+  requestNotificationPermission,
+} from "@/services/notifications";
+import {
+  beginPermissionRequest,
+  endPermissionRequest,
   locationOnboardingFlags,
   useLocationPermission,
   type LocationPermissionStatus,
 } from "@/services/permissions";
 
 /**
- * Two-phase flow:
+ * Three-phase imperative onboarding controller (Build 23).
  *
- *   "main"           → value-prop + primary action driven by `status`
- *   "alwaysUpgrade"  → interstitial after foreground grant. Re-grounds the
- *                      value prop right before iOS's one-shot Always
- *                      dialog so the user doesn't reflexively dismiss the
- *                      stacked second prompt.
+ *   "foreground"     → value-prop + "Enable Location" → await
+ *                      requestForegroundPermissionsAsync → advance
+ *                      to alwaysUpgrade regardless of grant/deny.
+ *   "alwaysUpgrade"  → "One more step" interstitial → "Continue" →
+ *                      burn @fv/onboarding/locationUpgradeShown
+ *                      BEFORE the call → await
+ *                      requestBackgroundPermissionsAsync → advance
+ *                      to notifications regardless of outcome.
+ *   "notifications"  → "Stay informed" pre-prompt → "Turn on
+ *                      notifications" OR "Not now" → notifications
+ *                      branch awaits Notifications.requestPermissions
+ *                      (the single owner of that request across
+ *                      the entire app) → stamp
+ *                      @fv/onboarding/notificationsPrompted in a
+ *                      finally → exitToApp.
  *
- * Skipping at any point sets `preprompted=true` so AuthGate never gates
- * the user here again; in-app banners handle re-engagement.
+ * Design invariants:
+ *   1. Phase is owned by component state, set EXPLICITLY by step
+ *      handlers (and once at mount based on incoming status).
+ *      Status churn from AppState→active transitions (worse on
+ *      iPad while iOS dialogs show/hide) MUST NOT mutate phase.
+ *   2. Each request*PermissionsAsync await is bracketed by
+ *      beginPermissionRequest() / endPermissionRequest() so the
+ *      useLocationPermission AppState listener suppresses
+ *      `status` refresh while the dialog is up. Combined with #1
+ *      this guarantees the iPad loop cannot recur — neither the
+ *      phase machine nor AuthGate's needsOnboarding can re-derive
+ *      mid-flow.
+ *   3. Every exit path (foreground "Continue without location",
+ *      notifications enable/skip) routes through `exitToApp`,
+ *      which burns BOTH @fv/onboarding/preprompted AND
+ *      @fv/onboarding/locationUpgradeShown. Closes the
+ *      asymmetric-flag risk at the write source.
  */
-type Phase = "main" | "alwaysUpgrade";
+type Phase = "loading" | "foreground" | "alwaysUpgrade" | "notifications";
 
 export default function LocationOnboardingScreen() {
   const colors = useColors();
@@ -38,12 +69,12 @@ export default function LocationOnboardingScreen() {
   } = useLocationPermission();
 
   const [busy, setBusy] = useState(false);
-  const [phase, setPhase] = useState<Phase>("main");
+  const [phase, setPhase] = useState<Phase>("loading");
   const [upgradeShown, setUpgradeShown] = useState<boolean | null>(null);
 
-  // Read the persisted "Always upgrade already shown once" flag once on
-  // mount so we don't burn iOS's single-shot Always dialog on a user who
-  // has already declined it.
+  // Read the persisted "Always upgrade already shown once" flag on
+  // mount so we don't burn iOS's single-shot Always dialog on a user
+  // who has already declined it. Mount-only — never re-read.
   useEffect(() => {
     let alive = true;
     locationOnboardingFlags.getUpgradeShown().then((v) => {
@@ -54,74 +85,135 @@ export default function LocationOnboardingScreen() {
     };
   }, []);
 
-  // All exit paths funnel through here so AuthGate's `preprompted` skip
-  // condition is set exactly once. Idempotent — safe to call repeatedly.
+  // Single point of exit. Burns BOTH onboarding flags so:
+  //   - preprompted=true → AuthGate skips onboarding on next launch
+  //   - upgradeShown=true → if a future bug ever bounces this screen
+  //     back up, we don't re-burn iOS's one-shot Always dialog
+  // Idempotent on both flags (storage.setFlag(...,true) is a no-op
+  // when already true). Build 23: closes the asymmetric-flag TODO.
   const exitToApp = useCallback(async () => {
-    await locationOnboardingFlags.setPreprompted();
+    try {
+      await locationOnboardingFlags.setPreprompted();
+    } catch {
+      /* best-effort — storage failure must not block exit */
+    }
+    try {
+      await locationOnboardingFlags.setUpgradeShown();
+    } catch {
+      /* best-effort */
+    }
     router.replace("/(tabs)");
   }, [router]);
 
-  // Auto-advance once the user reaches Always — there's nothing left to
-  // ask for and no decision to surface.
+  // Mount-once phase selection. Runs exactly one time per screen
+  // mount, gated by phaseInitRef. Status changes AFTER this fires
+  // do NOT re-derive phase — that's the whole point of the iPad
+  // fix. Subsequent phase transitions are owned by step handlers.
+  const phaseInitRef = useRef(false);
   useEffect(() => {
-    if (status === "always-granted") {
-      void exitToApp();
-    }
-  }, [status, exitToApp]);
-
-  // Entry-time interstitial: a returning user who already has fg
-  // permission (e.g. granted previously by the "Nearby" sort feature, or
-  // killed the app mid-onboarding after the fg prompt) should still get
-  // one shot at the Always upgrade — the interstitial is the whole point
-  // of splitting it out, so don't skip it just because the fg grant
-  // happened in a prior session.
-  //
-  // Gate on BOTH `status !== "loading"` AND `upgradeShown !== null` so we
-  // don't render the wrong copy for a frame on cold start before the
-  // AsyncStorage read resolves.
-  const [didCheckEntry, setDidCheckEntry] = useState(false);
-  useEffect(() => {
-    if (didCheckEntry) return;
+    if (phaseInitRef.current) return;
     if (status === "loading" || upgradeShown === null) return;
-    setDidCheckEntry(true);
-    if (status === "foreground-granted" && upgradeShown === false) {
+    phaseInitRef.current = true;
+    if (status === "always-granted") {
+      // Returning user with full location grant but preprompted=false
+      // (otherwise AuthGate wouldn't have routed them here). Skip
+      // both location phases; still surface the notifications step.
+      setPhase("notifications");
+    } else if (status === "foreground-granted") {
+      setPhase(upgradeShown ? "notifications" : "alwaysUpgrade");
+    } else if (status === "restricted") {
+      // Nothing actionable for location; still ask about notifications.
+      setPhase("notifications");
+    } else {
+      // undetermined OR denied — show foreground step. Denied users
+      // can tap "Open Settings"; the phase will not change on return.
+      setPhase("foreground");
+    }
+  }, [status, upgradeShown]);
+
+  // --- Step handlers ------------------------------------------------------
+
+  const handleEnableForeground = useCallback(async () => {
+    setBusy(true);
+    beginPermissionRequest();
+    try {
+      await requestForegroundPermission();
+    } finally {
+      endPermissionRequest();
+      setBusy(false);
+      // Advance regardless of grant/deny per the strict-serial spec.
+      // If denied, the subsequent alwaysUpgrade request will be a
+      // no-op at the OS level (no dialog), and we'll fall through
+      // to the notifications step.
       setPhase("alwaysUpgrade");
     }
-  }, [didCheckEntry, status, upgradeShown]);
+  }, [requestForegroundPermission]);
 
-  const handleEnable = useCallback(async () => {
-    setBusy(true);
-    try {
-      const next = await requestForegroundPermission();
-      if (next === "foreground-granted" && upgradeShown === false) {
-        // Don't auto-chain into the system dialog. Surface the
-        // interstitial first so the user re-grounds before the one-shot
-        // Always prompt.
-        setPhase("alwaysUpgrade");
-      } else {
-        // Granted Always somehow, denied, or restricted — nothing more
-        // to ask. The status-driven render handles the rest.
-      }
-    } finally {
-      setBusy(false);
-    }
-  }, [requestForegroundPermission, upgradeShown]);
+  // For the foreground phase when status arrives as fg-granted
+  // (e.g. user previously tapped "Open Settings" on denied and
+  // granted in iOS Settings, then returned). Advances explicitly;
+  // does not call request*.
+  const handleForegroundContinue = useCallback(() => {
+    setPhase(upgradeShown ? "notifications" : "alwaysUpgrade");
+  }, [upgradeShown]);
+
+  // For the foreground phase under `restricted` — terminal, no
+  // location available. Skip both location phases entirely.
+  const handleForegroundContinueWithoutLocation = useCallback(() => {
+    setPhase("notifications");
+  }, []);
 
   const handleAlwaysContinue = useCallback(async () => {
     setBusy(true);
+    // Persist BEFORE the request so a crash mid-prompt doesn't burn
+    // iOS's one-shot dialog twice on next launch.
     try {
-      // Persist BEFORE the request so a crash mid-prompt doesn't burn
-      // the dialog twice on next launch.
       await locationOnboardingFlags.setUpgradeShown();
       setUpgradeShown(true);
+    } catch {
+      /* best-effort */
+    }
+    beginPermissionRequest();
+    try {
       await requestBackgroundPermission();
     } finally {
+      endPermissionRequest();
       setBusy(false);
-      // Whether the user granted, denied, or dismissed Always, the
-      // onboarding is done. The banner re-engages later if needed.
-      void exitToApp();
+      setPhase("notifications");
     }
-  }, [requestBackgroundPermission, exitToApp]);
+  }, [requestBackgroundPermission]);
+
+  const handleNotificationsEnable = useCallback(async () => {
+    setBusy(true);
+    beginPermissionRequest();
+    try {
+      await requestNotificationPermission();
+    } finally {
+      endPermissionRequest();
+      // Stamp regardless of outcome so the geofence-sync check-only
+      // path short-circuits forever after.
+      try {
+        await notificationOnboardingFlags.setPrompted();
+      } catch {
+        /* best-effort */
+      }
+      setBusy(false);
+    }
+    void exitToApp();
+  }, [exitToApp]);
+
+  const handleNotificationsSkip = useCallback(async () => {
+    setBusy(true);
+    try {
+      await notificationOnboardingFlags.setPrompted();
+    } catch {
+      /* best-effort */
+    }
+    setBusy(false);
+    void exitToApp();
+  }, [exitToApp]);
+
+  // --- Render -------------------------------------------------------------
 
   return (
     <View
@@ -135,24 +227,42 @@ export default function LocationOnboardingScreen() {
       ]}
     >
       <View style={styles.content}>
-        {phase === "main" ? (
-          <MainCopy status={status} onOpenSettings={openSettings} />
-        ) : (
-          <AlwaysUpgradeCopy />
+        {phase === "foreground" && (
+          <ForegroundCopy status={status} onOpenSettings={openSettings} />
         )}
+        {phase === "alwaysUpgrade" && <AlwaysUpgradeCopy />}
+        {phase === "notifications" && <NotificationsCopy />}
       </View>
 
       <View style={styles.footer}>
-        <PrimaryAction
-          phase={phase}
-          status={status}
-          busy={busy}
-          upgradeShown={upgradeShown}
-          onEnable={handleEnable}
-          onAlwaysContinue={handleAlwaysContinue}
-          onContinue={exitToApp}
-          onOpenSettings={openSettings}
-        />
+        {phase === "loading" && (
+          <Button title="Enable Location" onPress={() => {}} loading />
+        )}
+        {phase === "foreground" && (
+          <ForegroundAction
+            status={status}
+            busy={busy}
+            onEnable={handleEnableForeground}
+            onContinue={handleForegroundContinue}
+            onContinueWithoutLocation={handleForegroundContinueWithoutLocation}
+            onOpenSettings={openSettings}
+          />
+        )}
+        {phase === "alwaysUpgrade" && (
+          <Button
+            title="Continue"
+            size="lg"
+            loading={busy}
+            onPress={handleAlwaysContinue}
+          />
+        )}
+        {phase === "notifications" && (
+          <NotificationsActions
+            busy={busy}
+            onEnable={handleNotificationsEnable}
+            onSkip={handleNotificationsSkip}
+          />
+        )}
       </View>
     </View>
   );
@@ -160,7 +270,7 @@ export default function LocationOnboardingScreen() {
 
 // --- Copy blocks -----------------------------------------------------------
 
-function MainCopy({
+function ForegroundCopy({
   status,
   onOpenSettings,
 }: {
@@ -213,6 +323,30 @@ function AlwaysUpgradeCopy() {
           &ldquo;Change to Always Allow&rdquo;
         </Text>{" "}
         on the next prompt.
+      </Text>
+    </>
+  );
+}
+
+function NotificationsCopy() {
+  const colors = useColors();
+  return (
+    <>
+      <View
+        style={[
+          styles.iconWrap,
+          { backgroundColor: colors.muted, borderColor: colors.border },
+        ]}
+      >
+        <Feather name="bell" size={32} color={colors.primary} />
+      </View>
+      <Text style={[styles.title, { color: colors.foreground }]}>
+        Stay informed
+      </Text>
+      <Text style={[styles.subtitle, { color: colors.mutedForeground }]}>
+        We&apos;ll let you know when you&apos;re clocked in or out
+        automatically, so you always have a clear record of your day —
+        even when the app isn&apos;t open.
       </Text>
     </>
   );
@@ -283,40 +417,25 @@ function StatusBanner({
   return null;
 }
 
-// --- Primary CTA -----------------------------------------------------------
+// --- Action blocks ---------------------------------------------------------
 
-function PrimaryAction({
-  phase,
+function ForegroundAction({
   status,
   busy,
-  upgradeShown,
   onEnable,
-  onAlwaysContinue,
   onContinue,
+  onContinueWithoutLocation,
   onOpenSettings,
 }: {
-  phase: Phase;
   status: LocationPermissionStatus;
   busy: boolean;
-  upgradeShown: boolean | null;
   onEnable: () => void;
-  onAlwaysContinue: () => void;
   onContinue: () => void;
+  onContinueWithoutLocation: () => void;
   onOpenSettings: () => void;
 }) {
-  if (status === "loading" || upgradeShown === null) {
+  if (status === "loading") {
     return <Button title="Enable Location" onPress={() => {}} loading />;
-  }
-
-  if (phase === "alwaysUpgrade") {
-    return (
-      <Button
-        title="Continue"
-        size="lg"
-        loading={busy}
-        onPress={onAlwaysContinue}
-      />
-    );
   }
 
   if (status === "undetermined") {
@@ -330,11 +449,9 @@ function PrimaryAction({
     );
   }
 
-  if (status === "foreground-granted") {
-    return <Button title="Continue" size="lg" onPress={onContinue} />;
-  }
-
-  if (status === "always-granted") {
+  if (status === "foreground-granted" || status === "always-granted") {
+    // User returned from Settings (or status was already advanced
+    // out from under us). Advance explicitly without re-requesting.
     return <Button title="Continue" size="lg" onPress={onContinue} />;
   }
 
@@ -344,14 +461,48 @@ function PrimaryAction({
     );
   }
 
-  // restricted — promote to primary since it's the only available action.
+  // restricted — promote to primary since it's the only available
+  // action. Routes through `Continue without location` → notifications
+  // step → exitToApp.
   return (
     <Button
       title="Continue without location"
       variant="primary"
       size="lg"
-      onPress={onContinue}
+      onPress={onContinueWithoutLocation}
     />
+  );
+}
+
+function NotificationsActions({
+  busy,
+  onEnable,
+  onSkip,
+}: {
+  busy: boolean;
+  onEnable: () => void;
+  onSkip: () => void;
+}) {
+  const colors = useColors();
+  return (
+    <>
+      <Button
+        title="Turn on notifications"
+        size="lg"
+        loading={busy}
+        onPress={onEnable}
+      />
+      <Pressable
+        onPress={onSkip}
+        disabled={busy}
+        hitSlop={10}
+        style={styles.skipButton}
+      >
+        <Text style={[styles.skipText, { color: colors.mutedForeground }]}>
+          Not now
+        </Text>
+      </Pressable>
+    </>
   );
 }
 
@@ -414,5 +565,14 @@ const styles = StyleSheet.create({
   },
   footer: {
     width: "100%",
+  },
+  skipButton: {
+    alignSelf: "center",
+    paddingVertical: 14,
+    marginTop: 4,
+  },
+  skipText: {
+    fontSize: 15,
+    fontFamily: "Inter_500Medium",
   },
 });

@@ -52,6 +52,51 @@ export const locationOnboardingFlags = {
   setUpgradeShown: () => storage.setFlag(UPGRADE_SHOWN_KEY, true),
 };
 
+// --- AppState-refresh suppression for in-flight permission prompts ---------
+//
+// Build 23: iPad churn. When iOS shows or dismisses a permission
+// dialog, the host app transitions inactive → active multiple times
+// in rapid succession (much more aggressively than iPhone). Each
+// such transition fires the AppState listener below, which calls
+// readCurrentStatus() and mutates `status`. The onboarding screen
+// previously re-derived its phase from `status`, so iPad's dialog
+// churn would reset the phase mid-flow and reopen prompts — the
+// loop App Review rejected Build 22 for.
+//
+// The onboarding screen now owns its phase explicitly (per step
+// handler) and brackets each request*PermissionsAsync await with
+// beginPermissionRequest() / endPermissionRequest(). While in
+// flight (and for a brief grace window after) the AppState→active
+// refresh is suppressed, so status remains stable from the moment
+// a dialog opens through its dismissal. AuthGate's
+// `needsOnboarding` is a function of `locationStatus`, so freezing
+// `locationStatus` also prevents AuthGate from re-evaluating
+// routing while a request modal is up.
+//
+// Counter is intentionally module-scoped (the hook is mounted in
+// multiple places: AuthGate + the onboarding screen + tabs; any
+// consumer of useLocationPermission must respect the same gate).
+let permissionRequestsInFlight = 0;
+let suppressActiveUntilMs = 0;
+const POST_REQUEST_GRACE_MS = 750;
+
+export function beginPermissionRequest(): void {
+  permissionRequestsInFlight += 1;
+}
+
+export function endPermissionRequest(): void {
+  permissionRequestsInFlight = Math.max(0, permissionRequestsInFlight - 1);
+  // Grace window absorbs the dialog-dismiss inactive→active event
+  // that fires AFTER the request promise resolves on iPad.
+  suppressActiveUntilMs = Date.now() + POST_REQUEST_GRACE_MS;
+}
+
+function isActiveRefreshSuppressed(): boolean {
+  return (
+    permissionRequestsInFlight > 0 || Date.now() < suppressActiveUntilMs
+  );
+}
+
 // --- Status derivation -----------------------------------------------------
 
 /**
@@ -121,7 +166,18 @@ export function useLocationPermission(): UseLocationPermissionResult {
     // may have toggled the setting in iOS Settings while we were in the
     // background.
     const sub = AppState.addEventListener("change", (state) => {
-      if (state === "active") refresh();
+      if (state !== "active") return;
+      if (isActiveRefreshSuppressed()) {
+        // Onboarding has a permission dialog in flight (or just
+        // dismissed one). Skipping the refresh keeps `status` stable
+        // so the onboarding controller's phase machine isn't
+        // perturbed and AuthGate doesn't re-route mid-flow.
+        console.log(
+          "[permissions] AppState→active refresh suppressed: request in flight",
+        );
+        return;
+      }
+      refresh();
     });
     return () => {
       mountedRef.current = false;
