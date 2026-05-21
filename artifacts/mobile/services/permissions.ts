@@ -45,9 +45,50 @@ export interface UseLocationPermissionResult {
 const PREPROMPTED_KEY = "@fv/onboarding/preprompted";
 const UPGRADE_SHOWN_KEY = "@fv/onboarding/locationUpgradeShown";
 
+// In-process pub/sub for `preprompted`. Build 23 follow-up: AuthGate
+// reads `preprompted` from AsyncStorage exactly once on mount, so a
+// write performed by the onboarding screen mid-session was invisible
+// to AuthGate — the screen would `router.replace("/(tabs)")` and
+// AuthGate would immediately bounce back to onboarding because its
+// in-memory `preprompted` was still false. Listeners let the writer
+// push the new value to every live consumer synchronously, so the
+// next routing decision sees the truth.
+//
+// Module-scoped so it doesn't depend on a particular React tree.
+// Both the AuthGate hook subscription and the onboarding writer
+// reach this same Set.
+const prepromptedListeners = new Set<(value: boolean) => void>();
+
 export const locationOnboardingFlags = {
   getPreprompted: () => storage.getFlag(PREPROMPTED_KEY),
-  setPreprompted: () => storage.setFlag(PREPROMPTED_KEY, true),
+  setPreprompted: async () => {
+    await storage.setFlag(PREPROMPTED_KEY, true);
+    // Notify AFTER the write resolves so any listener that re-reads
+    // storage as a sanity check observes the new value. Errors in
+    // individual listeners must not block the others.
+    for (const listener of prepromptedListeners) {
+      try {
+        listener(true);
+      } catch (err) {
+        console.log(
+          "[permissions] preprompted listener threw:",
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  },
+  /**
+   * Subscribe to in-process `preprompted` changes. Returns an
+   * unsubscribe function. Subscribers do NOT receive the current
+   * value synchronously — callers should still read the initial
+   * value via `getPreprompted()`.
+   */
+  subscribePreprompted: (cb: (value: boolean) => void): (() => void) => {
+    prepromptedListeners.add(cb);
+    return () => {
+      prepromptedListeners.delete(cb);
+    };
+  },
   getUpgradeShown: () => storage.getFlag(UPGRADE_SHOWN_KEY),
   setUpgradeShown: () => storage.setFlag(UPGRADE_SHOWN_KEY, true),
 };
@@ -89,6 +130,24 @@ export function endPermissionRequest(): void {
   // Grace window absorbs the dialog-dismiss inactive→active event
   // that fires AFTER the request promise resolves on iPad.
   suppressActiveUntilMs = Date.now() + POST_REQUEST_GRACE_MS;
+}
+
+/**
+ * Force-clear the in-flight counter AND the post-request grace
+ * window. Called by `exitToApp` in the onboarding screen right
+ * before `router.replace("/(tabs)")` so a stale `locationStatus`
+ * cached during the notifications-step grace window doesn't carry
+ * forward into the post-onboarding routing decision. Without this,
+ * AuthGate could see `locationStatus="foreground-granted"` (from
+ * before the Always upgrade prompt) for up to 750 ms after exit,
+ * and — in any future refactor where `preprompted` alone doesn't
+ * short-circuit `needsOnboarding` — bounce the user back to
+ * onboarding. Belt-and-braces alongside the in-memory `preprompted`
+ * sync.
+ */
+export function clearPermissionRequestSuppression(): void {
+  permissionRequestsInFlight = 0;
+  suppressActiveUntilMs = 0;
 }
 
 function isActiveRefreshSuppressed(): boolean {

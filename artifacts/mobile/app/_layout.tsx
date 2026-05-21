@@ -55,16 +55,47 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 
   // `null` until we've read AsyncStorage; treated as "still loading" so we
   // don't bounce a returning user out of (tabs) for one frame on cold start.
+  //
+  // Build 23 follow-up: ALSO subscribe to in-process updates from
+  // `locationOnboardingFlags.setPreprompted`. AsyncStorage on its
+  // own doesn't notify other readers, so the onboarding screen's
+  // mid-session write was invisible here — AuthGate's stale
+  // `preprompted=false` triggered an immediate bounce back to
+  // onboarding right after `exitToApp`'s `router.replace("/(tabs)")`,
+  // which only force-quit cleared. With the subscription, the
+  // listener pushes `true` synchronously when setPreprompted
+  // resolves, and the next routing-effect run sees the truth.
   const [preprompted, setPreprompted] = useState<boolean | null>(null);
   useEffect(() => {
     let alive = true;
     locationOnboardingFlags.getPreprompted().then((v) => {
       if (alive) setPreprompted(v);
     });
+    const unsub = locationOnboardingFlags.subscribePreprompted((v) => {
+      if (alive) setPreprompted(v);
+    });
     return () => {
       alive = false;
+      unsub();
     };
   }, []);
+
+  // `routed` flips to true the first time the routing effect runs
+  // with enough data to make a decision. Children are NOT rendered
+  // until then — see the gate at the return statement below.
+  //
+  // Build 23 follow-up (Issue 2): on cold launch, expo-router
+  // mounts the default URL `/(tabs)/index` synchronously while
+  // AuthGate is still waiting on `preprompted` and `locationStatus`
+  // to resolve. `(tabs)/index.tsx` has a mount effect that calls
+  // `Location.requestForegroundPermissionsAsync()` (`refreshUserLoc`
+  // for the Nearby sort), so the iOS dialog opens BEFORE we get a
+  // chance to `router.replace` to onboarding. The onboarding
+  // pre-prompt screen then renders underneath the already-visible
+  // dialog. Gating children on `routed` prevents (tabs)/index from
+  // mounting in that limbo window — the URL is settled before any
+  // screen module gets to run its mount effects.
+  const [routed, setRouted] = useState(false);
 
   useEffect(() => {
     if (!ready) return;
@@ -73,6 +104,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 
     if (!user) {
       if (!inAuthGroup) router.replace("/(auth)/login");
+      setRouted(true);
       return;
     }
 
@@ -100,6 +132,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     } else if (inAuthGroup || inOnboardingGroup) {
       router.replace("/(tabs)");
     }
+    setRouted(true);
   }, [user, ready, segments, router, preprompted, locationStatus]);
 
   // Build 23: post-onboarding push token capture. Replaces the
@@ -130,6 +163,14 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       cancelled = true;
     };
   }, [user, preprompted, segments]);
+
+  // Children gate (see `routed` comment above). Returning null
+  // here is preferable to a spinner because expo-router has not
+  // yet committed the correct route — rendering a spinner would
+  // still mount whatever screen the initial URL resolves to under
+  // the spinner overlay, which is exactly what we're trying to
+  // avoid. The window is sub-second on every launch.
+  if (!routed) return null;
 
   return <>{children}</>;
 }

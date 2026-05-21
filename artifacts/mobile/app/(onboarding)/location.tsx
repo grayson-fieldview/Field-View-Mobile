@@ -12,6 +12,7 @@ import {
 } from "@/services/notifications";
 import {
   beginPermissionRequest,
+  clearPermissionRequestSuppression,
   endPermissionRequest,
   locationOnboardingFlags,
   useLocationPermission,
@@ -91,6 +92,17 @@ export default function LocationOnboardingScreen() {
   //     back up, we don't re-burn iOS's one-shot Always dialog
   // Idempotent on both flags (storage.setFlag(...,true) is a no-op
   // when already true). Build 23: closes the asymmetric-flag TODO.
+  //
+  // Build 23 follow-up: setPreprompted() now ALSO pushes the new
+  // value to AuthGate's in-memory state via the module-level
+  // listener Set. Without that, AsyncStorage-only writes left
+  // AuthGate's preprompted=false, and the router.replace below
+  // would bounce straight back to onboarding (visible as a "hang"
+  // on the notifications step that only force-quit recovered from).
+  // We also clear the permission-request suppression window
+  // explicitly so a stale locationStatus cached during the
+  // notification prompt's 750 ms grace can't influence the
+  // post-exit routing decision.
   const exitToApp = useCallback(async () => {
     try {
       await locationOnboardingFlags.setPreprompted();
@@ -102,6 +114,7 @@ export default function LocationOnboardingScreen() {
     } catch {
       /* best-effort */
     }
+    clearPermissionRequestSuppression();
     router.replace("/(tabs)");
   }, [router]);
 
