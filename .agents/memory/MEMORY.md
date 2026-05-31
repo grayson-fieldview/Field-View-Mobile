@@ -1,2 +1,1 @@
-- [Mobile annotation sync](annotation-sync.md) — Field View mobile↔web annotation sync: per-user union rows, canonical 0..1 coords + 1000-unit width, external backend endpoints, dirty/load/save invariants.
-- [expo-camera recording knobs](expo-camera-recording.md) — SDK 54 v17: resolution via CameraView `videoQuality`; `recordAsync({maxDuration,maxFileSize})`; maxFileSize works on iOS too (not Android-only).
+- [Mobile task status](mobile-task-status.md) — status enum is source of truth; done is derived; never binary-toggle (clobbers in_progress)

@@ -134,7 +134,13 @@ interface DataState {
       dueDate?: string | null;
     },
   ) => Promise<void>;
-  toggleTask: (id: string) => Promise<void>;
+  /**
+   * Advance a task's status one step in the web-matching cycle
+   * todo → in_progress → done → todo via updateTask({status}). Replaces
+   * the old binary done-toggle so mobile can both SET and PRESERVE
+   * in_progress (a binary toggle silently jumped in_progress → done).
+   */
+  cycleTaskStatus: (id: string) => Promise<void>;
   deleteTask: (id: string) => Promise<void>;
 
   /** Wipe all local data (used by account-deletion / leave-team flows). */
@@ -884,12 +890,19 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     [setTasksList, bumpTaskVersion, getTaskVersion],
   );
 
-  const toggleTask: DataState["toggleTask"] = useCallback(
+  const cycleTaskStatus: DataState["cycleTaskStatus"] = useCallback(
     async (id) => {
       const current = tasksRef.current.find((t) => t.id === id);
       if (!current) return;
-      const nextStatus: TaskStatus =
-        current.status === "done" ? "todo" : "done";
+      // Web-matching forward cycle. Falls back to "todo" as the current
+      // status for any task whose status is somehow unset, so the first
+      // tap always advances to "in_progress".
+      const NEXT: Record<TaskStatus, TaskStatus> = {
+        todo: "in_progress",
+        in_progress: "done",
+        done: "todo",
+      };
+      const nextStatus: TaskStatus = NEXT[current.status ?? "todo"];
       await updateTask(id, { status: nextStatus });
     },
     [updateTask],
@@ -959,7 +972,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       saveAnnotations,
       createTask,
       updateTask,
-      toggleTask,
+      cycleTaskStatus,
       deleteTask,
       clearAll,
     }),
@@ -983,7 +996,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       saveAnnotations,
       createTask,
       updateTask,
-      toggleTask,
+      cycleTaskStatus,
       deleteTask,
       clearAll,
     ],

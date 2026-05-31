@@ -26,6 +26,8 @@ import Animated, {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AssigneePickerSheet, type AssigneeSelection } from "@/components/AssigneePickerSheet";
+import { TaskStatusPill } from "@/components/TaskStatusPill";
+import { buildDuePresets } from "@/services/dueDate";
 import { AssignUserToProjectModal } from "@/components/AssignUserToProjectModal";
 import { Button } from "@/components/Button";
 import { ClockReceiptBanner } from "@/components/ClockReceiptBanner";
@@ -84,7 +86,7 @@ export default function ProjectDetailScreen() {
     tasks,
     deleteProject,
     createTask,
-    toggleTask,
+    cycleTaskStatus,
     deleteTask,
     deletePhoto,
     loadProjectDetail,
@@ -1351,7 +1353,6 @@ export default function ProjectDetailScreen() {
                 {projectTasks.map((t) => (
                   <Pressable
                     key={t.id}
-                    onPress={() => toggleTask(t.id)}
                     onLongPress={() => {
                       if (Platform.OS === "web") return deleteTask(t.id);
                       Alert.alert("Delete task?", undefined, [
@@ -1368,28 +1369,14 @@ export default function ProjectDetailScreen() {
                       {
                         backgroundColor: colors.card,
                         borderColor: colors.border,
+                        alignItems: "flex-start",
                       },
                     ]}
                   >
-                    <View
-                      style={[
-                        styles.checkbox,
-                        {
-                          borderColor: t.done ? colors.primary : colors.border,
-                          backgroundColor: t.done
-                            ? colors.primary
-                            : "transparent",
-                        },
-                      ]}
-                    >
-                      {t.done ? (
-                        <Feather
-                          name="check"
-                          size={14}
-                          color={colors.primaryForeground}
-                        />
-                      ) : null}
-                    </View>
+                    <TaskStatusPill
+                      status={t.status ?? "todo"}
+                      onPress={() => cycleTaskStatus(t.id).catch(() => {})}
+                    />
                     <View style={{ flex: 1 }}>
                       <Text
                         style={[
@@ -1790,13 +1777,14 @@ export default function ProjectDetailScreen() {
         visible={showTaskModal}
         projectId={project.id}
         onClose={() => setShowTaskModal(false)}
-        onSubmit={async ({ title, notes, assignee }) => {
+        onSubmit={async ({ title, notes, assignee, dueDate }) => {
           try {
             await createTask(project.id, {
               title,
               description: notes,
               assignedToId: assignee?.userId ?? null,
               assignedToName: assignee?.displayName,
+              dueDate: dueDate ?? undefined,
             });
             setShowTaskModal(false);
           } catch (e) {
@@ -2573,6 +2561,7 @@ function TaskModal({
     title: string;
     notes?: string;
     assignee: AssigneeSelection;
+    dueDate: string | null;
   }) => Promise<void>;
 }) {
   const colors = useColors();
@@ -2581,8 +2570,12 @@ function TaskModal({
   // null = explicitly Unassigned. The picker emits this shape directly so
   // the modal doesn't have to maintain parallel id/name state.
   const [assignee, setAssignee] = useState<AssigneeSelection>(null);
+  const [dueDate, setDueDate] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  // Recomputed each open so "Today"/"Tomorrow" track the current date.
+  const duePresets = useMemo(() => buildDuePresets(), [visible]);
 
   // Reset on close so the next "Add task" starts clean.
   useEffect(() => {
@@ -2590,6 +2583,7 @@ function TaskModal({
       setTitle("");
       setNotes("");
       setAssignee(null);
+      setDueDate(null);
     }
   }, [visible]);
 
@@ -2601,6 +2595,7 @@ function TaskModal({
         title: title.trim(),
         notes: notes.trim() || undefined,
         assignee,
+        dueDate,
       });
     } catch {
       // Toast handled by parent; keep modal open so user can retry.
@@ -2663,6 +2658,52 @@ function TaskModal({
               color={colors.mutedForeground}
             />
           </Pressable>
+        </View>
+
+        <View style={{ gap: 6 }}>
+          <Text
+            style={{
+              color: colors.foreground,
+              fontFamily: "Inter_600SemiBold",
+              fontSize: 13,
+            }}
+          >
+            Due date
+          </Text>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            {duePresets.map((p) => {
+              const active = dueDate === p.value;
+              return (
+                <Pressable
+                  key={p.key}
+                  onPress={() => setDueDate(p.value)}
+                  style={({ pressed }) => [
+                    {
+                      paddingHorizontal: 14,
+                      paddingVertical: 9,
+                      borderRadius: 999,
+                      borderWidth: 1,
+                      borderColor: active ? colors.primary : colors.border,
+                      backgroundColor: active ? colors.primary : colors.card,
+                      opacity: pressed ? 0.85 : 1,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={{
+                      color: active
+                        ? colors.primaryForeground
+                        : colors.foreground,
+                      fontFamily: "Inter_500Medium",
+                      fontSize: 14,
+                    }}
+                  >
+                    {p.label}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
         </View>
 
         <Input
