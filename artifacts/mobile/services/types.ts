@@ -135,6 +135,13 @@ export interface Photo {
   projectId: string;
   uri: string;
   remoteUrl?: string;
+  /**
+   * True when this media item is a video rather than a still image.
+   * Derived from the backend media row's `mimeType` (video/*) in
+   * mapBackendMedia, and set explicitly for locally-captured recordings.
+   * Render paths branch on this so a video URL never reaches <Image>.
+   */
+  isVideo?: boolean;
   takenAt: string;
   latitude?: number;
   longitude?: number;

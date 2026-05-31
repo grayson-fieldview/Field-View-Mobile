@@ -440,7 +440,7 @@ export default function CaptureScreen() {
       const result = await cameraRef.current.recordAsync({ maxDuration: 300 });
       setRecording(false);
       if (result?.uri) {
-        // Save to camera roll if available; backend video sync is not wired up yet.
+        // Save to camera roll if available (best-effort, independent of upload).
         try {
           const perm = await MediaLibrary.requestPermissionsAsync();
           if (perm.granted) {
@@ -456,6 +456,33 @@ export default function CaptureScreen() {
         Haptics.notificationAsync(
           Haptics.NotificationFeedbackType.Success,
         ).catch(() => {});
+
+        // Upload the recording through the SAME presign → S3 → create-media
+        // flow photos use. iOS records .mov (video/quicktime); prepareForUpload
+        // derives the mimeType from the file extension (MIME_BY_EXT). If the
+        // upload meta can't be prepared we keep the local copy and surface an
+        // error rather than silently dropping the capture.
+        const prepared = await prepareForUpload(result.uri, "video/quicktime");
+        if (prepared) {
+          await addPhoto({
+            projectId: project.id,
+            uri: prepared.localUri,
+            takenAt: new Date().toISOString(),
+            latitude: locationCoord?.latitude,
+            longitude: locationCoord?.longitude,
+            accuracy: locationCoord?.accuracy,
+            isVideo: true,
+            originalName: prepared.originalName,
+            mimeType: prepared.mimeType,
+            fileSize: prepared.fileSize,
+            checklistItemId,
+          });
+          setSessionCount((s) => s + 1);
+        } else {
+          setErrorMsg(
+            "Video recorded and saved locally, but couldn't be queued for upload.",
+          );
+        }
       }
     } catch (e) {
       setRecording(false);

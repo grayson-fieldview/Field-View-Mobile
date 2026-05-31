@@ -811,7 +811,19 @@ export default function ProjectDetailScreen() {
     );
   };
 
-  const heroPhoto = project.coverPhotoUrl ?? projectPhotos[0]?.uri;
+  // Hero must never feed a video URL to <Image>. coverPhotoUrl comes from
+  // the server (recentPhotos[0], which carries no media type), so if we can
+  // see it's actually a video in the loaded media, skip it and fall back to
+  // the first non-video photo.
+  const coverIsKnownVideo = projectPhotos.some(
+    (p) =>
+      p.isVideo &&
+      (p.remoteUrl === project.coverPhotoUrl || p.uri === project.coverPhotoUrl),
+  );
+  const heroPhoto =
+    (coverIsKnownVideo ? undefined : project.coverPhotoUrl) ??
+    projectPhotos.find((p) => !p.isVideo)?.uri ??
+    projectPhotos[0]?.uri;
   const status = (project.status ?? "active").toLowerCase();
   const statusColor =
     status === "active"
@@ -2360,12 +2372,23 @@ function PhotoTile({
         },
       ]}
     >
-      <Image
-        source={{ uri: photo.uri }}
-        style={styles.photo}
-        contentFit="cover"
-        transition={120}
-      />
+      {photo.isVideo ? (
+        // Video tile: never hand a video URL to <Image>. Show a neutral
+        // placeholder with a centered play badge. On-device thumbnail
+        // generation is intentionally skipped here.
+        <View style={[styles.photo, styles.videoTile]}>
+          <View style={styles.videoPlayBadge}>
+            <Feather name="play" size={18} color="#fff" />
+          </View>
+        </View>
+      ) : (
+        <Image
+          source={{ uri: photo.uri }}
+          style={styles.photo}
+          contentFit="cover"
+          transition={120}
+        />
+      )}
       {photo.annotations && photo.annotations.length > 0 ? (
         <AnnotationOverlay strokes={photo.annotations} />
       ) : null}
@@ -3061,6 +3084,20 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.06)",
   },
   photo: { width: "100%", height: "100%" },
+  videoTile: {
+    backgroundColor: "#1f2937",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  videoPlayBadge: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingLeft: 2,
+  },
   photoBadge: {
     position: "absolute",
     bottom: 6,

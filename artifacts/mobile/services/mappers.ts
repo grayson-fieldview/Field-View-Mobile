@@ -37,6 +37,7 @@ export function mapBackendMedia(m: BackendMedia): Photo {
     projectId: String(m.projectId),
     uri: m.url,
     remoteUrl: m.url,
+    isVideo: typeof m.mimeType === "string" && m.mimeType.startsWith("video/"),
     takenAt: m.createdAt,
     latitude: m.latitude ?? undefined,
     longitude: m.longitude ?? undefined,

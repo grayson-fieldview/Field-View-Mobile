@@ -1,6 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import * as MediaLibrary from "expo-media-library";
+import { VideoView, useVideoPlayer } from "expo-video";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -26,6 +27,45 @@ import type { AnnotationStroke, Photo, StoredStroke } from "@/services/types";
 
 const COLORS = ["#ef4444", "#22c55e", "#3b82f6", "#F09001", "#a855f7", "#111111"];
 const SIZES = [3, 6, 12];
+
+/**
+ * Full-screen video player for the viewer. Used both inside the gallery
+ * (read mode) and in place of the annotate canvas when the open media is a
+ * video (videos can't be drawn on). Uses expo-video's useVideoPlayer —
+ * which is why this lives in its own component: the gallery's renderItem
+ * can't call hooks per-item, so each video item mounts one of these.
+ */
+function VideoGalleryItem({
+  uri,
+  onReady,
+}: {
+  uri: string;
+  /**
+   * Optional. react-native-awesome-gallery needs a non-zero item size or
+   * its pinch/zoom math divides by zero. Images report it via expo-image's
+   * onLoad; video has no equivalent, so the gallery branch passes this to
+   * seed a size once after mount.
+   */
+  onReady?: () => void;
+}) {
+  const player = useVideoPlayer(uri, (p) => {
+    p.loop = false;
+  });
+  useEffect(() => {
+    onReady?.();
+  }, [onReady]);
+  return (
+    <View style={StyleSheet.absoluteFill}>
+      <VideoView
+        player={player}
+        style={StyleSheet.absoluteFill}
+        contentFit="contain"
+        nativeControls
+        allowsFullscreen
+      />
+    </View>
+  );
+}
 
 export default function PhotoViewerScreen() {
   const insets = useSafeAreaInsets();
@@ -452,6 +492,25 @@ export default function PhotoViewerScreen() {
             const saved = (item.annotations ?? [])
               .map((s) => toPixels(s, readBox.w, readBox.h))
               .filter(isRenderablePencilStroke);
+            if (item.isVideo) {
+              // Videos render through expo-video, not <Image>. Seed a
+              // non-zero size after mount so the gallery's pinch/zoom math
+              // doesn't treat the item as 0×0; native controls handle
+              // playback.
+              return (
+                <View style={StyleSheet.absoluteFill}>
+                  <VideoGalleryItem
+                    uri={item.uri}
+                    onReady={() =>
+                      setImageDimensions({
+                        width: readBox.w || 1,
+                        height: readBox.h || 1,
+                      })
+                    }
+                  />
+                </View>
+              );
+            }
             return (
               <View
                 style={StyleSheet.absoluteFill}
@@ -510,6 +569,7 @@ export default function PhotoViewerScreen() {
             active={editing}
             onPress={() => setEditing((v) => !v)}
             icon="edit-2"
+            disabled={currentPhoto?.isVideo}
             label={editing ? "Stop drawing" : "Draw on photo"}
           />
           <ToolButton
