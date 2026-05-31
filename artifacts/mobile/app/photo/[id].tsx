@@ -19,9 +19,10 @@ import Svg, { Path } from "react-native-svg";
 
 import { useData } from "@/contexts/DataContext";
 import { useToast } from "@/contexts/ToastContext";
+import { rawToCanonical, toPixels } from "@/services/annotations";
 import { ApiError, api, buildMediaReferencesMessage } from "@/services/api";
 import { isRenderablePencilStroke } from "@/services/types";
-import type { AnnotationStroke, Photo } from "@/services/types";
+import type { AnnotationStroke, Photo, StoredStroke } from "@/services/types";
 
 const COLORS = ["#ef4444", "#22c55e", "#3b82f6", "#F09001", "#a855f7", "#111111"];
 const SIZES = [3, 6, 12];
@@ -30,7 +31,8 @@ export default function PhotoViewerScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { photos, updatePhoto, deletePhoto } = useData();
+  const { photos, updatePhoto, deletePhoto, loadPhotoAnnotations, saveAnnotations } =
+    useData();
   const { showToast } = useToast();
   // True while we're fetching references for the trash button — drives
   // the inline spinner replacement of the trash icon. The actual
@@ -70,32 +72,100 @@ export default function PhotoViewerScreen() {
   const [editing, setEditing] = useState(false);
   const [color, setColor] = useState(COLORS[0]);
   const [size, setSize] = useState(SIZES[1]);
-  // Per-photo working stroke state, keyed by photo id.
+  // Per-photo EDITABLE buffer — the current user's OWN strokes, in canonical
+  // (0..1) form, keyed by photo id. Seeded from the server on photo open via
+  // loadPhotoAnnotations (server is source of truth). undo/clear/draw all
+  // operate on this buffer; it is the payload saved back to the server.
   const [strokesById, setStrokesById] = useState<
-    Record<string, AnnotationStroke[]>
-  >(() => {
-    const init: Record<string, AnnotationStroke[]> = {};
-    for (const p of projectPhotos) init[p.id] = p.annotations ?? [];
-    return init;
-  });
-  // Re-seed if the photo set changes (e.g. after delete).
-  useEffect(() => {
-    setStrokesById((prev) => {
-      const next = { ...prev };
-      for (const p of projectPhotos) {
-        if (!(p.id in next)) next[p.id] = p.annotations ?? [];
-      }
-      return next;
-    });
-  }, [projectPhotos]);
+    Record<string, StoredStroke[]>
+  >({});
+  // Other users' strokes, kept separate so the editor can render the full
+  // union (others + own-live-buffer) without double-drawing or letting the
+  // user edit collaborators' strokes.
+  const [othersById, setOthersById] = useState<Record<string, StoredStroke[]>>(
+    {},
+  );
 
   const currentStroke = useRef<AnnotationStroke | null>(null);
   const [, force] = useState(0);
 
-  // Captured drawing-canvas size, used so freshly-drawn strokes record
-  // the canvas dimensions they were laid out against (for future
-  // re-render at different sizes, mirroring the web app's behavior).
+  // Captured drawing-canvas size. Kept as a ref (read synchronously at draw
+  // time so freshly-drawn px points record the box they were laid out
+  // against) AND mirrored to state so the render can denormalize canonical
+  // strokes to px against the current box.
   const canvasSize = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
+  const [editBox, setEditBox] = useState<{ w: number; h: number }>({
+    w: 0,
+    h: 0,
+  });
+  // Read-mode (gallery) box. Items are absoluteFill, so a single captured
+  // size denormalizes every sibling's canonical strokes.
+  const [readBox, setReadBox] = useState<{ w: number; h: number }>({
+    w: 0,
+    h: 0,
+  });
+
+  // Photos with unsaved buffer changes since the last server flush. We flush
+  // on edit-mode exit (and unmount) rather than per-stroke to avoid spamming
+  // the server with a request for every finger lift.
+  const dirtyRef = useRef<Set<string>>(new Set());
+
+  // Server is source of truth on open: fetch the photo's annotation rows and
+  // seed the editable buffer (own) + others split for the current photo.
+  const currentPhotoId = currentPhoto?.id;
+  useEffect(() => {
+    if (!currentPhotoId) return;
+    let cancelled = false;
+    void (async () => {
+      const { ownStrokes, othersStrokes } =
+        await loadPhotoAnnotations(currentPhotoId);
+      if (cancelled) return;
+      // Never let a late server response clobber unsaved local edits: if the
+      // user started drawing before this fetch resolved, the photo is dirty
+      // and the local buffer wins (last-write-wins for the own row). Others'
+      // strokes always update — they're not user-editable here.
+      if (!dirtyRef.current.has(currentPhotoId)) {
+        setStrokesById((prev) => ({ ...prev, [currentPhotoId]: ownStrokes }));
+      }
+      setOthersById((prev) => ({ ...prev, [currentPhotoId]: othersStrokes }));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentPhotoId, loadPhotoAnnotations]);
+
+  // Flush the own-row buffer to the server when the user leaves edit mode.
+  const prevEditingRef = useRef(editing);
+  useEffect(() => {
+    const was = prevEditingRef.current;
+    prevEditingRef.current = editing;
+    if (was && !editing && currentPhotoId && dirtyRef.current.has(currentPhotoId)) {
+      const pid = currentPhotoId;
+      void (async () => {
+        // Clear dirty ONLY after the server accepts the write. On failure the
+        // flag stays set so the unmount flush (or next exit) retries — the
+        // edit is never silently dropped.
+        const ok = await saveAnnotations(pid, strokesById[pid] ?? []);
+        if (ok) dirtyRef.current.delete(pid);
+      })();
+    }
+  }, [editing, currentPhotoId, saveAnnotations, strokesById]);
+
+  // Safety net: flush any still-dirty buffers when the screen unmounts. A ref
+  // holds the latest closure so the unmount-only effect sees current state.
+  const flushRef = useRef<() => void>(() => {});
+  flushRef.current = () => {
+    for (const pid of [...dirtyRef.current]) {
+      void (async () => {
+        // Clear dirty per-photo only on success; a failed write leaves the
+        // flag set (best-effort on unmount — there's no further retry hook,
+        // but the local buffer is already persisted so nothing is lost).
+        const ok = await saveAnnotations(pid, strokesById[pid] ?? []);
+        if (ok) dirtyRef.current.delete(pid);
+      })();
+    }
+  };
+  useEffect(() => () => flushRef.current(), []);
 
   if (!startPhoto || !currentPhoto) {
     return (
@@ -124,6 +194,16 @@ export default function PhotoViewerScreen() {
     currentStroke.current.points.push({ x, y });
     force((n) => n + 1);
   };
+  // Persist a buffer change locally (offline buffer + optimistic render set)
+  // and mark the photo dirty for the next server flush. The local render set
+  // (Photo.annotations) is the union of others + own so thumbnails / read
+  // mode stay correct without waiting for the server round-trip.
+  const persistLocalUnion = async (pid: string, ownNext: StoredStroke[]) => {
+    dirtyRef.current.add(pid);
+    const others = othersById[pid] ?? [];
+    await updatePhoto(pid, { annotations: [...others, ...ownNext] });
+  };
+
   const endStroke = async () => {
     if (!editing) return;
     const s = currentStroke.current;
@@ -132,10 +212,17 @@ export default function PhotoViewerScreen() {
       force((n) => n + 1);
       return;
     }
+    // Convert the freshly-drawn raw px stroke to canonical 0..1 at the edge,
+    // stamping type "pencil". The buffer is uniformly canonical from here.
+    const canonical = rawToCanonical({
+      ...s,
+      canvasW: canvasSize.current.w || undefined,
+      canvasH: canvasSize.current.h || undefined,
+    });
     const pid = currentPhoto.id;
-    const next = [...(strokesById[pid] ?? []), s];
+    const next = [...(strokesById[pid] ?? []), canonical];
     setStrokesById((prev) => ({ ...prev, [pid]: next }));
-    await updatePhoto(pid, { annotations: next });
+    await persistLocalUnion(pid, next);
   };
 
   const undo = async () => {
@@ -144,13 +231,13 @@ export default function PhotoViewerScreen() {
     if (list.length === 0) return;
     const next = list.slice(0, -1);
     setStrokesById((prev) => ({ ...prev, [pid]: next }));
-    await updatePhoto(pid, { annotations: next });
+    await persistLocalUnion(pid, next);
   };
 
   const clearAll = async () => {
     const pid = currentPhoto.id;
     setStrokesById((prev) => ({ ...prev, [pid]: [] }));
-    await updatePhoto(pid, { annotations: [] });
+    await persistLocalUnion(pid, []);
   };
 
   const onDelete = async () => {
@@ -253,14 +340,21 @@ export default function PhotoViewerScreen() {
     }
   };
 
-  // Edit-mode-only: combine committed strokes with the live in-progress
-  // stroke so the user sees their finger trail. The gallery (read-only)
-  // branch never sees `live` because edit mode unmounts the gallery.
+  // Edit-mode render set, resolved to px against the edit canvas box:
+  //   others' canonical strokes + own canonical buffer (denormalized)
+  //   + the live in-progress raw px stroke (already in canvas px space).
+  // The gallery (read-only) branch never sees `live` because edit mode
+  // unmounts the gallery.
   const live = currentStroke.current;
   const currentStrokeList = strokesById[currentPhoto.id] ?? [];
-  const allStrokes = live
-    ? [...currentStrokeList, live]
-    : currentStrokeList;
+  const editOthers = othersById[currentPhoto.id] ?? [];
+  const editStrokesPx = [
+    ...editOthers.map((s) => toPixels(s, editBox.w, editBox.h)),
+    ...currentStrokeList.map((s) => toPixels(s, editBox.w, editBox.h)),
+    ...(live
+      ? [{ type: "pencil", color: live.color, size: live.size, points: live.points }]
+      : []),
+  ].filter(isRenderablePencilStroke);
 
   return (
     <View style={styles.bg}>
@@ -294,10 +388,10 @@ export default function PhotoViewerScreen() {
         <View
           style={StyleSheet.absoluteFill}
           onLayout={(e) => {
-            canvasSize.current = {
-              w: e.nativeEvent.layout.width,
-              h: e.nativeEvent.layout.height,
-            };
+            const w = e.nativeEvent.layout.width;
+            const h = e.nativeEvent.layout.height;
+            canvasSize.current = { w, h };
+            setEditBox((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
           }}
           onStartShouldSetResponder={() => true}
           onMoveShouldSetResponder={() => true}
@@ -316,12 +410,12 @@ export default function PhotoViewerScreen() {
             contentFit="contain"
           />
           <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
-            {allStrokes.filter(isRenderablePencilStroke).map((s, i) => (
-              // Filter guards against text/arrow/etc. strokes that the
-              // web app may write into a photo's annotations array
-              // (mobile renderer is pencil-only). Locally-created
-              // strokes always pass — they have no `type` field and
-              // always carry a non-empty points array.
+            {editStrokesPx.map((s, i) => (
+              // editStrokesPx is already px-resolved and pencil-filtered:
+              // others + own canonical buffer denormalized against the
+              // edit box, plus the live raw px stroke. The filter upstream
+              // drops text/arrow/etc. strokes (mobile renderer is
+              // pencil-only).
               <Path
                 key={i}
                 d={pointsToPath(s.points)}
@@ -349,15 +443,26 @@ export default function PhotoViewerScreen() {
             index: number;
             setImageDimensions: (d: { width: number; height: number }) => void;
           }) => {
-            // Render BOTH committed-but-unsaved strokes from the local
-            // edit buffer (strokesById) AND the photo's persisted
-            // annotations as a fallback, so swiping to a sibling that
-            // wasn't seeded yet still shows its saved annotations.
-            const saved = (
-              strokesById[item.id] ?? item.annotations ?? []
-            ).filter(isRenderablePencilStroke);
+            // Read mode renders the photo's UNION render set
+            // (item.annotations = others + own, kept current by
+            // loadPhotoAnnotations and every local buffer write),
+            // denormalized to px against the captured read box and
+            // pencil-filtered. canonical 0..1 strokes scale to the box;
+            // legacy/px strokes are normalized by toPixels first.
+            const saved = (item.annotations ?? [])
+              .map((s) => toPixels(s, readBox.w, readBox.h))
+              .filter(isRenderablePencilStroke);
             return (
-              <View style={StyleSheet.absoluteFill}>
+              <View
+                style={StyleSheet.absoluteFill}
+                onLayout={(e) => {
+                  const w = e.nativeEvent.layout.width;
+                  const h = e.nativeEvent.layout.height;
+                  setReadBox((prev) =>
+                    prev.w === w && prev.h === h ? prev : { w, h },
+                  );
+                }}
+              >
                 <Image
                   source={{ uri: item.uri }}
                   style={StyleSheet.absoluteFill}

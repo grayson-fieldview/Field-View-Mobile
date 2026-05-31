@@ -17,10 +17,12 @@ import {
   mapBackendProject,
   mapBackendTask,
 } from "@/services/mappers";
+import { toCanonicalForSave, hasCanvasMeta } from "@/services/annotations";
 import { storage } from "@/services/storage";
 import type {
   Photo,
   Project,
+  StoredStroke,
   Task,
   TaskPriority,
   TaskStatus,
@@ -72,6 +74,27 @@ interface DataState {
   addPhotosBatch: (inputs: AddPhotoInput[]) => Promise<Photo[]>;
   deletePhoto: (id: string) => Promise<void>;
   updatePhoto: (id: string, patch: Partial<Photo>) => Promise<void>;
+
+  /**
+   * Fetch the server-side annotation rows for a photo (one per user) and
+   * make the server the source of truth on open. Updates the photo's
+   * render-set union (Photo.annotations) and returns the split the editor
+   * needs: the current user's OWN editable strokes vs. everyone else's.
+   * No-op (returns empty/own-only) for photos without a server mediaId.
+   */
+  loadPhotoAnnotations: (
+    photoId: string,
+  ) => Promise<{ ownStrokes: StoredStroke[]; othersStrokes: StoredStroke[] }>;
+  /**
+   * Persist the current user's OWN strokes for a photo. Writes to the
+   * server (PUT existing row / POST new row, keyed by Photo.mediaId) and
+   * updates the local render-set union. For not-yet-uploaded local photos
+   * it persists locally only (server flush deferred to upload).
+   */
+  saveAnnotations: (
+    photoId: string,
+    ownStrokes: StoredStroke[],
+  ) => Promise<boolean>;
 
   /**
    * Create a server-backed task. The optimistic row is prepended with
@@ -182,9 +205,20 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const projectsRef = useRef(projects);
   const tasksRef = useRef(tasks);
   const photosRef = useRef(photos);
+  const userRef = useRef(user);
   projectsRef.current = projects;
   tasksRef.current = tasks;
   photosRef.current = photos;
+  userRef.current = user;
+
+  // Annotation bookkeeping, keyed by String(mediaId):
+  //  - annotationRowIdRef:  the current user's OWN annotation row id, so a
+  //    save can PUT (update) instead of POST (create a duplicate row).
+  //  - annotationOthersRef: the union of OTHER users' strokes, kept so the
+  //    render set (Photo.annotations) can be recomposed after an own-row
+  //    save without re-fetching every collaborator.
+  const annotationRowIdRef = useRef<Record<string, string>>({});
+  const annotationOthersRef = useRef<Record<string, StoredStroke[]>>({});
 
   // Throttle + dedupe refreshes triggered from many places (auth ready, app
   // foreground, screen focus, manual pull-to-refresh).
@@ -310,7 +344,15 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         // Always replace remote photos for this project (even with empty list,
         // so stale deletions on the web propagate); keep local-only rows.
         console.log("[photos] received from backend:", detail.media?.length ?? 0);
-        const mappedMedia = (detail.media ?? []).map(mapBackendMedia);
+        // Carry over any annotations already loaded for these media. The
+        // project detail GET does NOT include annotation rows (they're
+        // fetched per-media on photo open), so a naive remap would wipe the
+        // render set on every refresh. Preserve the previously-fetched
+        // strokes by media id.
+        const mappedMedia = (detail.media ?? []).map(mapBackendMedia).map((m) => {
+          const prev = photosRef.current.find((p) => p.id === m.id);
+          return prev?.annotations ? { ...m, annotations: prev.annotations } : m;
+        });
         console.log("[photos] after mapping:", mappedMedia.length);
         const keptLocalPhotos = photosRef.current.filter(
           (p) => !(p.remote && p.projectId === idStr),
@@ -580,6 +622,132 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     [photos, persistPhotos],
   );
 
+  const loadPhotoAnnotations: DataState["loadPhotoAnnotations"] = useCallback(
+    async (photoId) => {
+      const photo = photosRef.current.find((p) => p.id === photoId);
+      // Local (not-yet-uploaded) photo: nothing lives on the server. Its
+      // own strokes are whatever we persisted locally in Photo.annotations.
+      if (!photo || photo.mediaId == null) {
+        return { ownStrokes: photo?.annotations ?? [], othersStrokes: [] };
+      }
+
+      const mediaKey = String(photo.mediaId);
+      // Legacy local own strokes (px, carry canvasW/H) cached before this
+      // build — preserved so a first save uploads them (requirement #3).
+      const legacyOwn = (photo.annotations ?? []).filter(hasCanvasMeta);
+
+      let rows;
+      try {
+        rows = await api.listMediaAnnotations(photo.mediaId);
+      } catch {
+        // Tolerant: keep whatever we have rather than blanking the photo.
+        return { ownStrokes: legacyOwn, othersStrokes: [] };
+      }
+
+      const uid = userRef.current?.id;
+      const others: StoredStroke[] = [];
+      let ownStrokes: StoredStroke[] = [];
+      let ownRowId: string | undefined;
+      for (const row of rows ?? []) {
+        const strokes = Array.isArray(row.strokes) ? row.strokes : [];
+        if (uid != null && String(row.userId) === String(uid)) {
+          ownStrokes = strokes;
+          ownRowId = String(row.id);
+        } else {
+          others.push(...strokes);
+        }
+      }
+
+      // Keep the cached own-row id in lockstep with the server. Clearing it
+      // when the server has no row for us prevents saveAnnotations from
+      // PUT-ing forever against a stale/deleted row id (it falls back to POST).
+      if (ownRowId) annotationRowIdRef.current[mediaKey] = ownRowId;
+      else delete annotationRowIdRef.current[mediaKey];
+      annotationOthersRef.current[mediaKey] = others;
+      // If the server has no row for us yet, fall back to any legacy local
+      // own strokes so they survive until the user's next save uploads them.
+      if (!ownRowId && legacyOwn.length) ownStrokes = legacyOwn;
+
+      await persistPhotos(
+        photosRef.current.map((p) =>
+          p.id === photoId
+            ? { ...p, annotations: [...others, ...ownStrokes] }
+            : p,
+        ),
+      );
+      return { ownStrokes, othersStrokes: others };
+    },
+    [persistPhotos],
+  );
+
+  const saveAnnotations: DataState["saveAnnotations"] = useCallback(
+    async (photoId, ownStrokes) => {
+      const photo = photosRef.current.find((p) => p.id === photoId);
+      if (!photo) return false;
+
+      // Canonicalize the FULL own-row payload — including non-pencil strokes
+      // the mobile renderer can't draw. Never strip types from the save.
+      const canonical = ownStrokes.map(toCanonicalForSave);
+
+      // No server media yet → persist locally and defer the server flush.
+      // Returns true (locally saved is all we can do): there is no server row
+      // to create, so callers should NOT keep this photo dirty for retry. The
+      // post-upload push remains a separate, unimplemented concern.
+      if (photo.mediaId == null) {
+        // TODO(flush-on-upload): when this local photo finishes uploading
+        // and gets a mediaId, push these annotations to the server.
+        await persistPhotos(
+          photosRef.current.map((p) =>
+            p.id === photoId ? { ...p, annotations: canonical } : p,
+          ),
+        );
+        return true;
+      }
+
+      const mediaId = photo.mediaId;
+      const mediaKey = String(mediaId);
+
+      // Persist the optimistic local union first, independent of the server
+      // result, so the UI reflects the edit even if the network write fails.
+      const others = annotationOthersRef.current[mediaKey] ?? [];
+      await persistPhotos(
+        photosRef.current.map((p) =>
+          p.id === photoId
+            ? { ...p, annotations: [...others, ...canonical] }
+            : p,
+        ),
+      );
+
+      // Server write. Self-heals a stale/invalid own-row id: a failed PUT
+      // drops the cached id and falls back to POST so a remotely-deleted row
+      // can't permanently block syncing. Row id is cached only on success.
+      // Returns whether the server actually accepted the write so the caller
+      // can keep the photo dirty and retry on failure (no silent data loss).
+      const existingId = annotationRowIdRef.current[mediaKey];
+      try {
+        if (existingId) {
+          try {
+            const row = await api.updateAnnotation(existingId, canonical);
+            if (row?.id) annotationRowIdRef.current[mediaKey] = String(row.id);
+          } catch {
+            delete annotationRowIdRef.current[mediaKey];
+            const row = await api.createMediaAnnotation(mediaId, canonical);
+            if (row?.id) annotationRowIdRef.current[mediaKey] = String(row.id);
+          }
+        } else {
+          const row = await api.createMediaAnnotation(mediaId, canonical);
+          if (row?.id) annotationRowIdRef.current[mediaKey] = String(row.id);
+        }
+        return true;
+      } catch {
+        // Tolerant: optimistic local state already persisted above; signal
+        // failure so the caller keeps the dirty flag and retries later.
+        return false;
+      }
+    },
+    [persistPhotos],
+  );
+
   const createTask: DataState["createTask"] = useCallback(
     async (projectId, input) => {
       const tmpId = `tmp-${newId()}`;
@@ -787,6 +955,8 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       addPhotosBatch,
       deletePhoto,
       updatePhoto,
+      loadPhotoAnnotations,
+      saveAnnotations,
       createTask,
       updateTask,
       toggleTask,
@@ -809,6 +979,8 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       addPhotosBatch,
       deletePhoto,
       updatePhoto,
+      loadPhotoAnnotations,
+      saveAnnotations,
       createTask,
       updateTask,
       toggleTask,

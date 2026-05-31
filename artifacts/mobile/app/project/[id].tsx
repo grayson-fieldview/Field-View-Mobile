@@ -2414,42 +2414,31 @@ function PhotoTile({
 function AnnotationOverlay({
   strokes,
 }: {
-  strokes: import("@/services/types").AnnotationStroke[];
+  strokes: import("@/services/types").StoredStroke[];
 }) {
-  // Filter out non-pencil / malformed strokes BEFORE any iteration —
-  // both the viewBox math (reads s.canvasW/H + walks s.points) and
-  // the render map (calls pointsToPath(s.points)) would crash on a
-  // text-kind stroke with no points array. Forward-compat with the
-  // 2026-Q2 web schema additions; see isRenderablePencilStroke().
+  // Thumbnail overlay. Photo.annotations is the canonical/legacy render-set
+  // UNION (others + own). Denormalize every stroke into a fixed 1000×1000
+  // viewBox via toPixels — canonical 0..1 strokes map to 0..1000 and legacy
+  // px strokes are normalized first — then pencil-filter. A constant square
+  // viewBox with slice scaling fits the tile without needing per-stroke
+  // canvas dimensions; the math/render can't crash on text-kind strokes
+  // because the filter drops them. See isRenderablePencilStroke().
   const { isRenderablePencilStroke } =
     require("@/services/types") as typeof import("@/services/types");
-  const renderable = strokes.filter(isRenderablePencilStroke);
-  let w = 0;
-  let h = 0;
-  for (const s of renderable) {
-    if (s.canvasW && s.canvasW > w) w = s.canvasW;
-    if (s.canvasH && s.canvasH > h) h = s.canvasH;
-  }
-  if (w === 0 || h === 0) {
-    let maxX = 0;
-    let maxY = 0;
-    for (const s of strokes)
-      for (const p of s.points) {
-        if (p.x > maxX) maxX = p.x;
-        if (p.y > maxY) maxY = p.y;
-      }
-    w = w || maxX + 16;
-    h = h || maxY + 16;
-  }
-  if (w <= 0 || h <= 0) return null;
+  const { toPixels } =
+    require("@/services/annotations") as typeof import("@/services/annotations");
+  const renderable = strokes
+    .map((s) => toPixels(s, 1000, 1000))
+    .filter(isRenderablePencilStroke);
+  if (renderable.length === 0) return null;
   return (
     <Svg
       pointerEvents="none"
       style={StyleSheet.absoluteFill}
-      viewBox={`0 0 ${w} ${h}`}
+      viewBox="0 0 1000 1000"
       preserveAspectRatio="xMidYMid slice"
     >
-      {strokes.map((s, i) => (
+      {renderable.map((s, i) => (
         <SvgPath
           key={i}
           d={pointsToPath(s.points)}

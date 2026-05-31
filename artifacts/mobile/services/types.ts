@@ -45,6 +45,63 @@ export interface AnnotationStroke {
 }
 
 /**
+ * Canonical, cross-platform stroke shape — the wire format stored in
+ * `media_annotations.strokes` and shared with the web client.
+ *
+ *  - `points` are normalized 0..1 against the displayed canvas box.
+ *  - `width` is in 1000-virtual-canvas units (NOT px, NOT 0..1).
+ *  - `type` is a required enum on the wire ("pencil" | "line" | "arrow" |
+ *    "rectangle" | "circle"); "text" strokes carry no points and instead
+ *    use {x, y, content, fontSize}.
+ *
+ * All fields are optional here so the type can also describe partial /
+ * tolerated payloads; conversion helpers in services/annotations.ts fill
+ * the gaps and enforce the canonical form at the read/write edge.
+ */
+export interface CanonicalStroke {
+  type?: string;
+  points?: { x: number; y: number }[];
+  color?: string;
+  width?: number;
+  /** text-stroke fields (web-authored; mobile preserves but doesn't render) */
+  x?: number;
+  y?: number;
+  content?: string;
+  fontSize?: number;
+}
+
+/**
+ * A stroke as it may exist in local storage / in flight: canonical fields
+ * PLUS the legacy mobile px fields (`size`, `canvasW`, `canvasH`). The
+ * render/save converters accept this union so a single code path handles
+ * both server-canonical strokes and pre-existing AsyncStorage px strokes.
+ */
+export interface StoredStroke extends CanonicalStroke {
+  /** Legacy px stroke width (mobile pre-sync builds). */
+  size?: number;
+  canvasW?: number;
+  canvasH?: number;
+}
+
+/** One row of media_annotations (one per user per media). */
+export interface MediaAnnotationRow {
+  id: string | number;
+  mediaId: string | number;
+  userId: string | number;
+  strokes: StoredStroke[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/** A stroke resolved to px coordinates against a concrete render box. */
+export interface PixelStroke {
+  type?: string;
+  color: string;
+  size: number;
+  points: { x: number; y: number }[];
+}
+
+/**
  * Render-time guard for the pencil-only mobile SVG renderer.
  *
  * Returns true iff `s` is structurally a pencil stroke we can hand to
@@ -98,7 +155,13 @@ export interface Photo {
   mediaId?: number;
   tags?: string[];
   remote?: boolean;
-  annotations?: AnnotationStroke[];
+  /**
+   * Render set for this photo: the UNION of every user's strokes, in
+   * canonical (or tolerated-legacy) form. Populated from the server on
+   * photo open (see DataContext.loadPhotoAnnotations). For not-yet-
+   * uploaded local photos this holds the owner's own strokes only.
+   */
+  annotations?: StoredStroke[];
 }
 
 /** Task status — mirrors the server enum exactly (tasks.status). */

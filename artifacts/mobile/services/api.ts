@@ -1,5 +1,6 @@
 import { Platform } from "react-native";
 import { secureStorage } from "./secureStorage";
+import type { CanonicalStroke, StoredStroke } from "./types";
 
 /**
  * API client for the Field View web backend.
@@ -464,6 +465,21 @@ export interface BackendMedia {
   longitude?: number | null;
   tags?: string[] | null;
   createdAt: string;
+}
+
+/**
+ * One annotation row from the media_annotations table — one per user per
+ * media. `strokes` is the canonical wire array (normalized 0..1 points,
+ * width in 1000-units). Typed as StoredStroke[] so the tolerant render
+ * path can also accept any legacy-shaped strokes the server might return.
+ */
+export interface BackendAnnotationRow {
+  id: string | number;
+  mediaId: string | number;
+  userId: string | number;
+  strokes: StoredStroke[];
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 /**
@@ -1669,6 +1685,38 @@ export const api = {
    */
   getMediaReferences: (mediaId: string | number) =>
     apiFetch<MediaReferences>(`/api/media/${mediaId}/references`),
+
+  // ----- Media annotations (cross-platform sync, 2026-06) -----
+  //
+  // Annotations live in their own table, one row PER USER per media, and
+  // are NOT included in the project detail GET — they're fetched per-media
+  // on photo open. Stroke payloads use the canonical wire format
+  // (normalized 0..1 points, width in 1000-units); conversion to/from the
+  // mobile px model happens in services/annotations.ts at the call edge.
+  /** List every user's annotation row for a media (the render-set union). */
+  listMediaAnnotations: (mediaId: string | number) =>
+    apiFetch<BackendAnnotationRow[]>(`/api/media/${mediaId}/annotations`),
+  /** Create the caller's annotation row for a media. Returns the new row (carry `id`). */
+  createMediaAnnotation: (
+    mediaId: string | number,
+    strokes: CanonicalStroke[],
+  ) =>
+    apiFetch<BackendAnnotationRow>(`/api/media/${mediaId}/annotations`, {
+      method: "POST",
+      json: { strokes },
+    }),
+  /** Replace the strokes of the caller's existing annotation row. */
+  updateAnnotation: (id: string | number, strokes: CanonicalStroke[]) =>
+    apiFetch<BackendAnnotationRow>(`/api/annotations/${id}`, {
+      method: "PUT",
+      json: { strokes },
+    }),
+  /** Delete the caller's annotation row. Tolerates an empty (204) body. */
+  deleteAnnotation: (id: string | number) =>
+    apiFetch<void>(`/api/annotations/${id}`, {
+      method: "DELETE",
+      allowEmptyBody: true,
+    }),
 
   // ----- Reports (Mobile Reports R1) -----
   // DELETE endpoints in this group return 200 + body `{message: "Deleted"}`
