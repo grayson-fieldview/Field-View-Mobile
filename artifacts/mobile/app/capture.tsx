@@ -33,6 +33,17 @@ import type { Photo } from "@/services/types";
 
 const HOLD_TO_BURST_MS = 350;
 
+// Video capture caps to keep clips under the 500MB server upload limit.
+// Capture is pinned to 1080p (see CameraView `videoQuality`); ~180s at 1080p
+// stays comfortably under 500MB worst-case. Duration is the UX cap; the byte
+// cap below is the true hard limit.
+const MAX_RECORDING_SECONDS = 180;
+// Hard byte backstop via recordAsync `maxFileSize`. Honored natively on BOTH
+// iOS (videoFileOutput.maxRecordedFileSize) and Android. 450 MiB = 471,859,200
+// bytes, which stays under the 500MB cap whether the server measures it as
+// 500 MiB (524,288,000) or decimal 500,000,000 bytes.
+const MAX_RECORDING_BYTES = 450 * 1024 * 1024;
+
 type ZoomPreset = { label: string; value: number };
 const ZOOM_PRESETS: ZoomPreset[] = [
   { label: ".5x", value: 0 },
@@ -437,7 +448,14 @@ export default function CaptureScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
 
     try {
-      const result = await cameraRef.current.recordAsync({ maxDuration: 300 });
+      // Cap recording so a clip can't exceed the 500MB server upload cap.
+      // At 1080p (pinned via CameraView `videoQuality`), ~180s stays under 500MB
+      // worst-case. `maxFileSize` is the hard byte backstop and is honored
+      // natively on both iOS and Android, so it's applied on both.
+      const result = await cameraRef.current.recordAsync({
+        maxDuration: MAX_RECORDING_SECONDS,
+        maxFileSize: MAX_RECORDING_BYTES,
+      });
       setRecording(false);
       if (result?.uri) {
         // Save to camera roll if available (best-effort, independent of upload).
@@ -664,6 +682,7 @@ export default function CaptureScreen() {
             flash={flash}
             zoom={zoomValue}
             mode={mode}
+            videoQuality="1080p"
             onCameraReady={() => setCameraReady(true)}
           />
 
