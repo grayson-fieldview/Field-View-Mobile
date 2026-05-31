@@ -974,6 +974,18 @@ export const api = {
       allowEmptyBody: true,
     }),
 
+  /**
+   * Delete a project (cascades its photos, tasks, and checklists on the
+   * server). Server returns 204 No Content on success. apiFetch throws
+   * an ApiError carrying the HTTP status + server `message` on non-2xx
+   * (e.g. 403 permission, 409 "has time entries"), which callers surface.
+   */
+  deleteProject: (projectId: string | number) =>
+    apiFetch<void>(`/api/projects/${projectId}`, {
+      method: "DELETE",
+      allowEmptyBody: true,
+    }),
+
   // ----- Timesheets (manual clock-in/out) -----
   activeTimesheet: () =>
     apiFetch<BackendTimesheetEntry | null>("/api/timesheets/active"),

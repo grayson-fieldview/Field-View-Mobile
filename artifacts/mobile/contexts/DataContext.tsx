@@ -438,6 +438,13 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
   const deleteProject: DataState["deleteProject"] = useCallback(
     async (id) => {
+      // Server is the source of truth: delete remotely FIRST. On a
+      // non-2xx (e.g. 403 permission, 409 "has time entries") apiFetch
+      // throws an ApiError, we skip the local prune, and the error
+      // propagates to the caller's catch so the UI can surface it.
+      // Without this the old local-only prune silently reverted on the
+      // next sync (mergeById re-added the still-present server row).
+      await api.deleteProject(id);
       await persistProjects(projects.filter((p) => p.id !== id));
       await persistPhotos(photos.filter((p) => p.projectId !== id));
       setTasksList(tasks.filter((t) => t.projectId !== id));

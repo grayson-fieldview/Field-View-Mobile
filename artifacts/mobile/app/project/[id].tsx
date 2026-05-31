@@ -798,14 +798,26 @@ export default function ProjectDetailScreen() {
 
   const onDelete = () => {
     const doIt = () =>
-      deleteProject(project.id).then(() => router.back());
+      deleteProject(project.id)
+        .then(() => router.back())
+        .catch((e: unknown) => {
+          // Surface the server's reason so the user knows why it failed —
+          // notably 409 "has time entries" and 403 permission. apiFetch
+          // throws ApiError(status, serverMessage); fall back to a generic
+          // line for anything else.
+          const msg =
+            e instanceof ApiError
+              ? e.message
+              : "Couldn't delete project. Please try again.";
+          showToast(msg);
+        });
     if (Platform.OS === "web") {
       doIt();
       return;
     }
     Alert.alert(
       "Delete project?",
-      `"${project.name}" and all its photos, tasks, and checklists will be removed.`,
+      `"${project.name}" and all of its photos and tasks will be permanently removed.`,
       [
         { text: "Cancel", style: "cancel" },
         { text: "Delete", style: "destructive", onPress: doIt },
@@ -1978,23 +1990,25 @@ export default function ProjectDetailScreen() {
                 </Text>
               </Pressable>
             ) : null}
-            <Pressable
-              onPress={() => {
-                setShowProjectMenu(false);
-                onDelete();
-              }}
-              style={({ pressed }) => [
-                styles.menuItem,
-                { opacity: pressed ? 0.6 : 1 },
-              ]}
-            >
-              <Feather name="trash-2" size={16} color={colors.destructive} />
-              <Text
-                style={[styles.menuItemTxt, { color: colors.destructive }]}
+            {currentUser?.role !== "restricted" ? (
+              <Pressable
+                onPress={() => {
+                  setShowProjectMenu(false);
+                  onDelete();
+                }}
+                style={({ pressed }) => [
+                  styles.menuItem,
+                  { opacity: pressed ? 0.6 : 1 },
+                ]}
               >
-                Delete project
-              </Text>
-            </Pressable>
+                <Feather name="trash-2" size={16} color={colors.destructive} />
+                <Text
+                  style={[styles.menuItemTxt, { color: colors.destructive }]}
+                >
+                  Delete project
+                </Text>
+              </Pressable>
+            ) : null}
           </Pressable>
         </Pressable>
       </Modal>
