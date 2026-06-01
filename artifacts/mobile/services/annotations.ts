@@ -4,6 +4,7 @@ import type {
   PixelStroke,
   StoredStroke,
 } from "./types";
+import { newId } from "./id";
 
 /**
  * Coordinate-space conversions between the mobile renderer (px against a
@@ -88,6 +89,8 @@ export function rawToCanonical(s: AnnotationStroke): CanonicalStroke {
   const cw = s.canvasW && s.canvasW > 0 ? s.canvasW : 1;
   const ch = s.canvasH && s.canvasH > 0 ? s.canvasH : 1;
   return {
+    // Freshly-drawn stroke: stamp a stable id once, at creation.
+    id: newId(),
     type: "pencil",
     points: (s.points ?? []).map((p) => ({
       x: clamp01(p.x / cw),
@@ -107,8 +110,13 @@ export function rawToCanonical(s: AnnotationStroke): CanonicalStroke {
  * the save payload must round-trip the user's full row.
  */
 export function toCanonicalForSave(s: StoredStroke): CanonicalStroke {
+  // Preserve an existing stable id (web-authored / previously-saved strokes
+  // already carry one); only mint a new id when the stroke has none. Never
+  // regenerate — ids must be stable across saves.
+  const id = typeof s.id === "string" && s.id ? s.id : newId();
   if (s.type === "text") {
     return {
+      id,
       type: "text",
       x: s.x,
       y: s.y,
@@ -121,6 +129,7 @@ export function toCanonicalForSave(s: StoredStroke): CanonicalStroke {
     const cw = s.canvasW as number;
     const ch = s.canvasH as number;
     return {
+      id,
       type: s.type ?? "pencil",
       points: (s.points ?? []).map((p) => ({
         x: clamp01(p.x / cw),
@@ -136,6 +145,7 @@ export function toCanonicalForSave(s: StoredStroke): CanonicalStroke {
     };
   }
   return {
+    id,
     type: s.type ?? "pencil",
     points: Array.isArray(s.points)
       ? s.points.map((p) => ({ x: clamp01(p.x), y: clamp01(p.y) }))

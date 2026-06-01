@@ -59,6 +59,15 @@ export interface AnnotationStroke {
  * the gaps and enforce the canonical form at the read/write edge.
  */
 export interface CanonicalStroke {
+  /**
+   * Per-stroke stable id. REQUIRED on the wire — the web backend's Zod
+   * union validates `id: z.string()` on every stroke (vector + text), and
+   * rejects the whole annotation row 400 if any stroke lacks it. Assigned
+   * once at creation and preserved across every later save (never
+   * regenerated); web-authored strokes round-tripped through mobile keep
+   * their original id.
+   */
+  id: string;
   type?: string;
   points?: { x: number; y: number }[];
   color?: string;

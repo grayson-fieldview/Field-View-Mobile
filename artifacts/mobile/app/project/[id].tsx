@@ -1,5 +1,6 @@
 import { Feather } from "@expo/vector-icons";
 import { Image } from "expo-image";
+import * as VideoThumbnails from "expo-video-thumbnails";
 import Svg, { Path as SvgPath } from "react-native-svg";
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -2318,6 +2319,30 @@ function PhotoTile({
         ? "uploading"
         : null;
 
+  // On-device video poster: generate the first-frame thumbnail ONCE per
+  // tile (keyed by this PhotoTile instance + the source uri). time:100ms
+  // avoids the common all-black frame-0. On failure (or while generating)
+  // we fall back to the grey videoTile placeholder — never block the grid,
+  // never crash. Non-video tiles skip this entirely.
+  const [videoPoster, setVideoPoster] = useState<string | null>(null);
+  useEffect(() => {
+    if (!photo.isVideo || !photo.uri) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { uri } = await VideoThumbnails.getThumbnailAsync(photo.uri, {
+          time: 100,
+        });
+        if (!cancelled) setVideoPoster(uri);
+      } catch {
+        // Keep the grey placeholder; generation failures are non-fatal.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [photo.isVideo, photo.uri]);
+
   const handleLongPress = () => {
     if (selectMode) return;
     longPressed.current = true;
@@ -2375,10 +2400,19 @@ function PhotoTile({
       ]}
     >
       {photo.isVideo ? (
-        // Video tile: never hand a video URL to <Image>. Show a neutral
-        // placeholder with a centered play badge. On-device thumbnail
-        // generation is intentionally skipped here.
+        // Video tile: never hand a video URL to <Image>. Render the
+        // on-device-generated first-frame poster when ready, else the
+        // neutral grey placeholder. The play badge sits on top in both
+        // cases so videos stay visually distinct from stills.
         <View style={[styles.photo, styles.videoTile]}>
+          {videoPoster ? (
+            <Image
+              source={{ uri: videoPoster }}
+              style={StyleSheet.absoluteFill}
+              contentFit="cover"
+              transition={120}
+            />
+          ) : null}
           <View style={styles.videoPlayBadge}>
             <Feather name="play" size={18} color="#fff" />
           </View>

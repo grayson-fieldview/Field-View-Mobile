@@ -1,2 +1,3 @@
 - [Mobile task status](mobile-task-status.md) — status enum is source of truth; done is derived; never binary-toggle (clobbers in_progress)
 - [Mobile mutations server-first](mobile-mutations-server-first.md) — locally-cached entities (projects/photos) resync via mergeById; mutate server FIRST then prune local, else change silently reverts
+- [Annotation stroke wire contract](annotation-stroke-id.md) — every stroke needs a stable per-stroke `id: string` or the web Zod union 400s the whole row; preserve incoming ids, never regenerate
