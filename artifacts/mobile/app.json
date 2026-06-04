@@ -28,7 +28,7 @@
       }
     },
     "android": {
-      "package": "com.fieldview.app",
+      "package": "com.fieldview.mobile",
       "icon": "./assets/images/icon.png",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/icon.png",
