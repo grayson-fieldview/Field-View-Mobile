@@ -21,17 +21,18 @@ const PLACES_API_KEY =
 // API_KEY_IOS_APP_BLOCKED unless we explicitly send the bundle id /
 // package as a header on every request. Fall back to the production
 // bundle id if the runtime config is missing (e.g. some dev clients).
-const FALLBACK_BUNDLE_ID = "com.fieldview.app";
+const FALLBACK_IOS_BUNDLE_ID = "com.fieldview.app";
+const FALLBACK_ANDROID_PACKAGE = "com.fieldview.mobile";
 function placesAuthHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
     "X-Goog-Api-Key": PLACES_API_KEY,
   };
   if (Platform.OS === "ios") {
     headers["X-Ios-Bundle-Identifier"] =
-      Constants.expoConfig?.ios?.bundleIdentifier ?? FALLBACK_BUNDLE_ID;
+      Constants.expoConfig?.ios?.bundleIdentifier ?? FALLBACK_IOS_BUNDLE_ID;
   } else if (Platform.OS === "android") {
     headers["X-Android-Package"] =
-      Constants.expoConfig?.android?.package ?? FALLBACK_BUNDLE_ID;
+      Constants.expoConfig?.android?.package ?? FALLBACK_ANDROID_PACKAGE;
   }
   return headers;
 }
