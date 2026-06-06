@@ -211,6 +211,15 @@ export async function startHeartbeat(): Promise<void> {
     console.log("[heartbeat] start skipped: iOS (background mode disabled)");
     return;
   }
+  if (Platform.OS === "android") {
+    // Android v1: manual clock-in only. No background-location
+    // foreground service — ACCESS_BACKGROUND_LOCATION / FOREGROUND_SERVICE*
+    // were removed from app.json and added to blockedPermissions, so
+    // startLocationUpdatesAsync would SecurityException here anyway.
+    // iOS region-monitoring/geofencing is a separate path and unaffected.
+    console.log("[heartbeat] start skipped: Android (manual clock-in only)");
+    return;
+  }
   try {
     // Open the persisted gate FIRST. If the OS dispatches the
     // task body between this write and startLocationUpdatesAsync

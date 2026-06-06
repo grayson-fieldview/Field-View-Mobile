@@ -13,8 +13,18 @@ import {
 import { Input } from "@/components/Input";
 import { useColors } from "@/hooks/useColors";
 
+// Platform-split key: Android-restricted and iOS-restricted Google
+// Cloud keys are distinct credentials, so each platform reads its own
+// env var. iOS keeps the original var; Android reads the *_ANDROID var.
+// (The *_ANDROID reference is statically present so Expo's build-time
+// env inlining picks it up; the ternary selects at runtime.)
 const PLACES_API_KEY =
-  (process.env.EXPO_PUBLIC_GOOGLE_PLACES_API_KEY as string | undefined) ?? "";
+  (Platform.OS === "android"
+    ? (process.env.EXPO_PUBLIC_GOOGLE_PLACES_API_KEY_ANDROID as
+        | string
+        | undefined)
+    : (process.env.EXPO_PUBLIC_GOOGLE_PLACES_API_KEY as string | undefined)) ??
+  "";
 
 // Places API (New) does not auto-infer the calling app's bundle id
 // the way the legacy SDK did. iOS- / Android-restricted keys 403 with

@@ -254,6 +254,13 @@ export function useLocationPermission(): UseLocationPermissionResult {
   }, [refresh]);
 
   const requestBackgroundPermission = useCallback(async () => {
+    // Android v1 is foreground/manual only — never request background
+    // ("Allow all the time") location. Defense-in-depth: even if a
+    // caller reaches this on Android, skip the OS request and just
+    // re-read current status. iOS keeps the real request.
+    if (Platform.OS === "android") {
+      return refresh();
+    }
     try {
       await Location.requestBackgroundPermissionsAsync();
     } catch {

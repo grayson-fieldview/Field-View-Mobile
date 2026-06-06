@@ -1,7 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "@/components/Button";
@@ -133,7 +133,13 @@ export default function LocationOnboardingScreen() {
       // both location phases; still surface the notifications step.
       setPhase("notifications");
     } else if (status === "foreground-granted") {
-      setPhase(upgradeShown ? "notifications" : "alwaysUpgrade");
+      // Android v1 has no background/auto-clock path — never enter the
+      // always-upgrade step. iOS keeps the one-shot Always prompt.
+      setPhase(
+        Platform.OS === "android" || upgradeShown
+          ? "notifications"
+          : "alwaysUpgrade",
+      );
     } else if (status === "restricted") {
       // Nothing actionable for location; still ask about notifications.
       setPhase("notifications");
@@ -155,10 +161,11 @@ export default function LocationOnboardingScreen() {
       endPermissionRequest();
       setBusy(false);
       // Advance regardless of grant/deny per the strict-serial spec.
-      // If denied, the subsequent alwaysUpgrade request will be a
-      // no-op at the OS level (no dialog), and we'll fall through
-      // to the notifications step.
-      setPhase("alwaysUpgrade");
+      // iOS proceeds to the always-upgrade prompt; Android v1 has no
+      // background step, so it goes straight to notifications. (On iOS
+      // if denied, the alwaysUpgrade request is a no-op at the OS level
+      // and we still fall through to notifications.)
+      setPhase(Platform.OS === "android" ? "notifications" : "alwaysUpgrade");
     }
   }, [requestForegroundPermission]);
 
@@ -167,7 +174,11 @@ export default function LocationOnboardingScreen() {
   // granted in iOS Settings, then returned). Advances explicitly;
   // does not call request*.
   const handleForegroundContinue = useCallback(() => {
-    setPhase(upgradeShown ? "notifications" : "alwaysUpgrade");
+    setPhase(
+      Platform.OS === "android" || upgradeShown
+        ? "notifications"
+        : "alwaysUpgrade",
+    );
   }, [upgradeShown]);
 
   // For the foreground phase under `restricted` — terminal, no
