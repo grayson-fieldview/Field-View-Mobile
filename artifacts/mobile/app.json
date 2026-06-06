@@ -51,7 +51,12 @@
         "android.permission.ACCESS_BACKGROUND_LOCATION",
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_LOCATION"
-      ]
+      ],
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyDXRU2jGyuGU2RDAcdjis_ySI0sDjSoZ-A"
+        }
+      }
     },
     "web": {
       "favicon": "./assets/images/favicon.png"
