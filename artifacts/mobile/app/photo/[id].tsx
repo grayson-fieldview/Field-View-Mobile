@@ -365,7 +365,9 @@ export default function PhotoViewerScreen() {
       return;
     }
     try {
-      const perm = await MediaLibrary.requestPermissionsAsync();
+      // writeOnly: request save-only access. Broad media-read perms were
+      // stripped for Play policy; saveToLibraryAsync needs only write.
+      const perm = await MediaLibrary.requestPermissionsAsync(true);
       if (perm.status !== "granted") {
         Alert.alert("Photos permission needed", "Allow access to save photos.");
         return;

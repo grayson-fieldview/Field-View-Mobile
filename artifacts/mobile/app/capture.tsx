@@ -460,7 +460,10 @@ export default function CaptureScreen() {
       if (result?.uri) {
         // Save to camera roll if available (best-effort, independent of upload).
         try {
-          const perm = await MediaLibrary.requestPermissionsAsync();
+          // writeOnly: request save-only access. Broad media-read perms
+          // were stripped for Play policy; saveToLibraryAsync needs only
+          // write access.
+          const perm = await MediaLibrary.requestPermissionsAsync(true);
           if (perm.granted) {
             await MediaLibrary.saveToLibraryAsync(result.uri);
             setStatusMsg("Video saved to camera roll");
@@ -516,11 +519,11 @@ export default function CaptureScreen() {
     setImporting(true);
     setErrorMsg(null);
     try {
-      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!perm.granted) {
-        setErrorMsg("Photo library access denied.");
-        return;
-      }
+      // The Android system Photo Picker (and iOS PHPicker) require NO
+      // runtime media-read permission. With the broad READ_MEDIA_*
+      // permissions stripped for Play policy, gating on
+      // requestMediaLibraryPermissionsAsync would falsely block the
+      // picker, so launch it directly.
       const res = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsMultipleSelection: true,
