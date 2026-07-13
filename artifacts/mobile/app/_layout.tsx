@@ -21,6 +21,7 @@ import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { DataProvider } from "@/contexts/DataContext";
 import { ToastProvider } from "@/contexts/ToastContext";
 import { UploadStatusProvider } from "@/contexts/UploadStatusContext";
+import { cleanupLegacyBackgroundTasks } from "@/services/legacyTaskCleanup";
 import {
   configureNotificationHandler,
   getLastNotificationResponseData,
@@ -291,6 +292,11 @@ export default function RootLayout() {
   useEffect(() => {
     startUploadQueueProcessor();
     configureNotificationHandler();
+    // One-time upgrade cleanup: unregister OS-level background tasks
+    // left behind by the removed geofencing/heartbeat services on
+    // installs that predate the removal. Guarded by an AsyncStorage
+    // flag so it runs once per install; never throws (best-effort).
+    void cleanupLegacyBackgroundTasks();
   }, []);
 
   if (!fontsLoaded && !fontError) return null;
