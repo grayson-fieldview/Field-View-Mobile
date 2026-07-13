@@ -1,4 +1,5 @@
 import { Feather } from "@expo/vector-icons";
+import Constants from "expo-constants";
 import * as Linking from "expo-linking";
 import React, { useEffect, useState } from "react";
 import {
@@ -258,7 +259,11 @@ export default function ProfileScreen() {
       </View>
 
       <View style={styles.section}>
-        <Row icon="info" label="Version" value="1.0.0" />
+        <Row
+          icon="info"
+          label="Version"
+          value={Constants.expoConfig?.version ?? "1.1.0"}
+        />
         <Row
           icon="shield"
           label="Privacy Policy"
