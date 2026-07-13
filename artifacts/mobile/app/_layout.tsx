@@ -37,10 +37,6 @@ import {
   registerPushTokenWithServer,
   subscribeToForegroundNotifications,
 } from "@/services/pushNotifications";
-import {
-  locationOnboardingFlags,
-  useLocationPermission,
-} from "@/services/permissions";
 import { startProcessor as startUploadQueueProcessor } from "@/services/uploadQueue";
 
 SplashScreen.preventAutoHideAsync();
@@ -49,36 +45,8 @@ const queryClient = new QueryClient();
 
 function AuthGate({ children }: { children: React.ReactNode }) {
   const { user, ready } = useAuth();
-  const { status: locationStatus } = useLocationPermission();
   const segments = useSegments();
   const router = useRouter();
-
-  // `null` until we've read AsyncStorage; treated as "still loading" so we
-  // don't bounce a returning user out of (tabs) for one frame on cold start.
-  //
-  // Build 23 follow-up: ALSO subscribe to in-process updates from
-  // `locationOnboardingFlags.setPreprompted`. AsyncStorage on its
-  // own doesn't notify other readers, so the onboarding screen's
-  // mid-session write was invisible here — AuthGate's stale
-  // `preprompted=false` triggered an immediate bounce back to
-  // onboarding right after `exitToApp`'s `router.replace("/(tabs)")`,
-  // which only force-quit cleared. With the subscription, the
-  // listener pushes `true` synchronously when setPreprompted
-  // resolves, and the next routing-effect run sees the truth.
-  const [preprompted, setPreprompted] = useState<boolean | null>(null);
-  useEffect(() => {
-    let alive = true;
-    locationOnboardingFlags.getPreprompted().then((v) => {
-      if (alive) setPreprompted(v);
-    });
-    const unsub = locationOnboardingFlags.subscribePreprompted((v) => {
-      if (alive) setPreprompted(v);
-    });
-    return () => {
-      alive = false;
-      unsub();
-    };
-  }, []);
 
   // `routed` flips to true the first time the routing effect has
   // enough data to make a decision. It is NOT used to gate the
@@ -110,47 +78,28 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // User is authenticated. Decide between onboarding and the app.
-    // Wait until both async signals have resolved.
-    if (preprompted === null || locationStatus === "loading") return;
-
-    // Skip onboarding once the user has been through it once
-    // (preprompted), already on Always, or in a system-restricted state
-    // where the screen has nothing actionable to offer. The in-app banner
-    // handles re-engagement for the denied / undetermined-after-skip cases.
-    // Build 23: closed the asymmetric-flag risk at the WRITE source.
-    // `exitToApp` in app/(onboarding)/location.tsx now sets BOTH
-    // @fv/onboarding/preprompted AND @fv/onboarding/locationUpgradeShown
-    // idempotently on every exit path. AuthGate continues to check
-    // preprompted alone (kept stable to avoid changing routing
-    // semantics); the invariant is enforced at the writer instead.
-    const needsOnboarding =
-      !preprompted &&
-      locationStatus !== "always-granted" &&
-      locationStatus !== "restricted";
-
-    if (needsOnboarding) {
-      if (!inOnboardingGroup) router.replace("/(onboarding)/location");
-    } else if (inAuthGroup || inOnboardingGroup) {
+    // User is authenticated. Time-tracking onboarding has been
+    // removed, so there is no location/notification onboarding gate
+    // to wait on — route straight into the app. The inOnboardingGroup
+    // check stays during the transition: existing installs may
+    // cold-start on the (onboarding) route and must be moved off it.
+    if (inAuthGroup || inOnboardingGroup) {
       router.replace("/(tabs)");
     }
     setRouted(true);
-  }, [user, ready, segments, router, preprompted, locationStatus]);
+  }, [user, ready, segments, router]);
 
-  // Build 23: post-onboarding push token capture. Replaces the
-  // 3-second setTimeout in AuthContext that raced the location
-  // onboarding dialogs. Runs at most ONCE per provider lifetime,
-  // gated on (a) authenticated user, (b) onboarding cleared
-  // (preprompted), (c) not currently on the onboarding/auth
-  // screens. `registerExistingPushTokenIfGranted` is check-only —
-  // it never prompts. If permission isn't granted (user tapped
-  // "Not now" on the notifications onboarding step) we silently
-  // do nothing; receipts degrade gracefully and the profile
-  // screen's settings deep-link remains the recovery path.
+  // Post-auth push token capture. Runs at most ONCE per provider
+  // lifetime, gated on (a) an authenticated user and (b) not
+  // currently on the auth/onboarding screens. This is the sole
+  // trigger now that the onboarding-completion gate is gone — without
+  // it, push registration would never fire.
+  // `registerExistingPushTokenIfGranted` is check-only — it never
+  // prompts. If permission isn't granted we silently do nothing; the
+  // profile screen's settings deep-link remains the recovery path.
   const pushRegisteredRef = useRef(false);
   useEffect(() => {
     if (!user) return;
-    if (preprompted !== true) return;
     if (pushRegisteredRef.current) return;
     const inGate = segments[0] === "(auth)" || segments[0] === "(onboarding)";
     if (inGate) return;
@@ -164,7 +113,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [user, preprompted, segments]);
+  }, [user, segments]);
 
   return <>{children}</>;
 }
@@ -223,29 +172,17 @@ function subscribeAuthGateRouted(cb: (v: boolean) => void): () => void {
  * `pending` is a one-shot — cleared after consume so subsequent auth
  * state changes don't re-fire the same navigation.
  */
-type PendingDeepLink =
-  | { kind: "in"; projectId: number; entryId: string }
-  | { kind: "out"; projectId: number; timeEntryId: number; clockOutAt: string };
+type PendingDeepLink = { projectId: number };
 
+// Generic project deep-link: a notification whose data payload
+// carries a numeric `projectId` routes to /project/<id>. Intentionally
+// decoupled from any clock-receipt shape — the tap bridge only needs
+// the destination project.
 function parseDeepLink(data: unknown): PendingDeepLink | null {
-  const inReceipt = parseClockInReceiptData(data);
-  if (inReceipt) {
-    return {
-      kind: "in",
-      projectId: inReceipt.projectId,
-      entryId: inReceipt.entryId,
-    };
-  }
-  const outReceipt = parseClockOutReceiptData(data);
-  if (outReceipt) {
-    return {
-      kind: "out",
-      projectId: outReceipt.projectId,
-      timeEntryId: outReceipt.timeEntryId,
-      clockOutAt: outReceipt.clockOutAt,
-    };
-  }
-  return null;
+  if (!data || typeof data !== "object") return null;
+  const d = data as Record<string, unknown>;
+  if (typeof d.projectId !== "number") return null;
+  return { projectId: d.projectId };
 }
 
 /**
@@ -303,9 +240,7 @@ function syntheticEntryFromPushIn(payload: {
 
 function NotificationDeepLinkHandler() {
   const router = useRouter();
-  const segments = useSegments();
   const { user, ready } = useAuth();
-  const { setFiredExit } = useTimesheet();
   const [pending, setPending] = useState<PendingDeepLink | null>(null);
 
   useEffect(() => {
@@ -319,7 +254,7 @@ function NotificationDeepLinkHandler() {
       if (!alive) return;
       const link = parseDeepLink(data);
       if (!link) return;
-      console.log(`[notifications] cold-launch tap kind=${link.kind}`);
+      console.log(`[notifications] cold-launch tap project=${link.projectId}`);
       setPending(link);
     });
 
@@ -329,7 +264,7 @@ function NotificationDeepLinkHandler() {
     const unsub = subscribeToNotificationResponses((data) => {
       const link = parseDeepLink(data);
       if (!link) return;
-      console.log(`[notifications] tap received kind=${link.kind}`);
+      console.log(`[notifications] tap received project=${link.projectId}`);
       setPending(link);
     });
 
@@ -341,50 +276,12 @@ function NotificationDeepLinkHandler() {
 
   useEffect(() => {
     if (!pending || !ready || !user) return;
-    // Drop the deep-link if the user is mid-onboarding. A
-    // notification implies geofence registration succeeded (so
-    // first-stage location permission is granted), but they may
-    // not have completed the Always-upgrade interstitial yet.
-    // Skipping that means no Always permission, so geofencing
-    // works in foreground only — AND the
-    // @fv/onboarding/locationUpgradeShown flag stamps on next
-    // launch, permanently locking them out of the prompt. The
-    // entry is already created server-side, so the user loses
-    // nothing by not deep-linking; they'll see it in their
-    // timesheet after onboarding completes.
-    if (segments[0] === "(onboarding)") {
-      console.log(
-        "[notifications] tap suppressed: user mid-onboarding, dropping deep-link",
-      );
-      setPending(null);
-      return;
-    }
-    if (pending.kind === "in") {
-      router.push({
-        pathname: "/project/[id]",
-        params: {
-          id: String(pending.projectId),
-          recentClockIn: pending.entryId,
-        },
-      });
-    } else {
-      // Seed firedExit BEFORE navigating so the kind="out" banner
-      // is visible the moment the project screen mounts.
-      setFiredExit({
-        entry: syntheticEntryFromPush({
-          timeEntryId: pending.timeEntryId,
-          projectId: pending.projectId,
-          clockOutAt: pending.clockOutAt,
-        }),
-        firedAt: pending.clockOutAt,
-      });
-      router.push({
-        pathname: "/project/[id]",
-        params: { id: String(pending.projectId) },
-      });
-    }
+    router.push({
+      pathname: "/project/[id]",
+      params: { id: String(pending.projectId) },
+    });
     setPending(null);
-  }, [pending, ready, user, router, segments, setFiredExit]);
+  }, [pending, ready, user, router]);
 
   return null;
 }
