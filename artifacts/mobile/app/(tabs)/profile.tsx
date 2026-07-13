@@ -21,7 +21,6 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useData } from "@/contexts/DataContext";
 import { useToast } from "@/contexts/ToastContext";
 import { useColors } from "@/hooks/useColors";
-import { useGeofenceSync } from "@/hooks/useGeofenceSync";
 import { ApiError, api } from "@/services/api";
 import {
   DEFAULT_PHOTO_ASPECT_RATIO,
@@ -29,16 +28,9 @@ import {
   type PhotoAspectRatio,
 } from "@/services/imageProcessing";
 import {
-  getRegisteredGeofences,
-  triggerSyntheticEnterForTesting,
-  triggerSyntheticExitForTesting,
-} from "@/services/geofencing";
-import {
   getNotificationPermission,
   type NotificationPermissionStatus,
 } from "@/services/notifications";
-import { listPendingExits } from "@/services/pendingExits";
-import { useLocationPermission } from "@/services/permissions";
 
 export default function ProfileScreen() {
   const colors = useColors();
@@ -46,7 +38,6 @@ export default function ProfileScreen() {
   const {
     user,
     signOut,
-    updatePreferences,
     accountSettings,
     updateAccountSettings,
   } = useAuth();
@@ -122,33 +113,6 @@ export default function ProfileScreen() {
       showToast(msg);
     } finally {
       setPendingAspectRatio(null);
-    }
-  };
-
-  const handleAutoTrackingToggle = async (next: boolean) => {
-    // On toggle-OFF, warn about in-flight server-scheduled clock-outs.
-    // The toggle governs *new* OS events; pending exits already
-    // accepted by the server still fire as planned via cron.
-    if (!next) {
-      try {
-        const pending = await listPendingExits();
-        if (pending.length > 0) {
-          showToast(
-            "You have a pending auto clock-out. It'll still fire as planned.",
-          );
-        }
-      } catch {
-        /* best-effort warning — toggle still proceeds */
-      }
-    }
-    try {
-      await updatePreferences({ autoTrackingEnabled: next });
-    } catch (err) {
-      // AuthContext rolled back local state; surface the failure here
-      // because AuthProvider is mounted outside ToastProvider.
-      const msg =
-        err instanceof Error ? err.message : "Couldn't update setting.";
-      showToast(msg);
     }
   };
 
@@ -329,22 +293,6 @@ export default function ProfileScreen() {
         </View>
       ) : null}
 
-      <View style={styles.section}>
-        <Text style={[styles.debugHeader, { color: colors.mutedForeground }]}>
-          Tracking
-        </Text>
-        <Text style={[styles.debugCaption, { color: colors.mutedForeground }]}>
-          Field View detects when you arrive at or leave a job site and updates
-          your timesheet automatically.
-        </Text>
-        <Row
-          icon="map-pin"
-          label="Auto clock-in/out (Geofencing)"
-          value={user?.autoTrackingEnabled ?? true}
-          onValueChange={handleAutoTrackingToggle}
-        />
-      </View>
-
       {showNotifSettingsRow ? (
         <View style={styles.section}>
           <Text style={[styles.debugHeader, { color: colors.mutedForeground }]}>
@@ -354,8 +302,8 @@ export default function ProfileScreen() {
             style={[styles.debugCaption, { color: colors.mutedForeground }]}
           >
             {notifPermission === "denied"
-              ? "Notifications are turned off, so you won't see receipts when the app auto-clocks you in. Open Settings to re-enable them."
-              : "Get a quick receipt with an Undo option whenever the app auto-clocks you in at a job site."}
+              ? "Notifications are turned off. Open Settings to re-enable them so Field View can notify you."
+              : "Turn on notifications to get important updates from Field View."}
           </Text>
           <Row
             icon="bell"
@@ -364,8 +312,6 @@ export default function ProfileScreen() {
           />
         </View>
       ) : null}
-
-      <GeofenceDebugSection />
 
       <View style={{ paddingHorizontal: 20, marginTop: 24 }}>
         <Button title="Sign out" variant="secondary" onPress={onSignOut} />
@@ -419,136 +365,6 @@ export default function ProfileScreen() {
         onConfirm={handleDeleteAccountConfirm}
       />
     </ScrollView>
-  );
-}
-
-// Dev-only diagnostics for the iOS geofence lifecycle. Gated on
-// __DEV__ so it's dead-code-eliminated in release builds — no manual
-// cleanup needed before paid marketing launch. Reads from the shared
-// GeofenceSyncProvider mounted in (tabs)/_layout.tsx, so tapping
-// "Force Resync" drives the same state the rest of the app sees.
-function GeofenceDebugSection() {
-  if (!__DEV__) return null;
-  return <GeofenceDebugSectionBody />;
-}
-
-function GeofenceDebugSectionBody() {
-  const colors = useColors();
-  const { status } = useLocationPermission();
-  const { lastSync, registeredCount, syncing, forceResync } = useGeofenceSync();
-  const [triggering, setTriggering] = useState<
-    "none" | "full" | "force" | "exit"
-  >("none");
-
-  const lastSyncLabel = lastSync ? lastSync.toLocaleTimeString() : "Never";
-
-  // Dev-only manual triggers. All pick the FIRST registered region.
-  // Enter modes:
-  //   - "full" runs the entire filter chain (incl. real GPS + proximity).
-  //     Expects rejection when far from the chosen project — validates
-  //     the filter is restrictive.
-  //   - "force" bypasses proximity + GPS filters (debounce and
-  //     activeTimesheet still run). Expects the banner to appear so
-  //     the tester can validate banner → tap → API → DB persistence
-  //     without physically standing at a job site.
-  // Exit mode (S32a):
-  //   - "exit" runs the full Exit filter chain (B5 → B2 → B3 → B4 → B1).
-  //     Expects: if currently clocked in to the picked project, debounce
-  //     POST fires and a pendingExit row appears in storage. Cron will
-  //     then auto-clock-out after the server-side window expires;
-  //     subsequent foreground refresh surfaces the kind="out" receipt
-  //     banner. No bypass variant — the Exit filter chain is
-  //     deliberately less restrictive than Enter (no proximity check,
-  //     just GPS uncertainty + debounce + active-session gates), so
-  //     the "full" path is testable under realistic field conditions
-  //     without a force escape hatch. If the filter chain rejects in
-  //     a way you didn't expect, that's the bug to investigate, not
-  //     a hurdle to bypass.
-  const triggerWith = async (mode: "full" | "force" | "exit") => {
-    const registered = getRegisteredGeofences();
-    const regionId = registered[0];
-    if (!regionId) {
-      console.log("[geofence] DEBUG: no registered regions; skipping trigger");
-      return;
-    }
-    setTriggering(mode);
-    try {
-      if (mode === "exit") {
-        await triggerSyntheticExitForTesting(regionId);
-      } else {
-        await triggerSyntheticEnterForTesting(regionId, {
-          bypassFilters: mode === "force",
-        });
-      }
-    } finally {
-      setTriggering("none");
-    }
-  };
-
-  return (
-    <View style={styles.section}>
-      <Text style={[styles.debugHeader, { color: colors.mutedForeground }]}>
-        Geofence Debug
-      </Text>
-      <Text style={[styles.debugCaption, { color: colors.mutedForeground }]}>
-        Visible only in development builds.
-      </Text>
-      <Row icon="map-pin" label="Permission" value={status} />
-      <Row icon="clock" label="Last sync" value={lastSyncLabel} />
-      <Row
-        icon="layers"
-        label="Registered regions"
-        value={String(registeredCount)}
-      />
-      <View style={{ marginTop: 12 }}>
-        <Button
-          title={syncing ? "Syncing…" : "Force Resync"}
-          variant="secondary"
-          onPress={forceResync}
-          disabled={syncing}
-        />
-      </View>
-      {registeredCount > 0 ? (
-        <>
-          <View style={{ marginTop: 8 }}>
-            <Button
-              title={
-                triggering === "full"
-                  ? "Triggering…"
-                  : "Trigger Test Enter (DEV)"
-              }
-              variant="secondary"
-              onPress={() => triggerWith("full")}
-              disabled={triggering !== "none"}
-            />
-          </View>
-          <View style={{ marginTop: 8 }}>
-            <Button
-              title={
-                triggering === "force"
-                  ? "Triggering…"
-                  : "Trigger Test Enter — Force (DEV)"
-              }
-              variant="secondary"
-              onPress={() => triggerWith("force")}
-              disabled={triggering !== "none"}
-            />
-          </View>
-          <View style={{ marginTop: 8 }}>
-            <Button
-              title={
-                triggering === "exit"
-                  ? "Triggering…"
-                  : "Trigger Test Exit (DEV)"
-              }
-              variant="secondary"
-              onPress={() => triggerWith("exit")}
-              disabled={triggering !== "none"}
-            />
-          </View>
-        </>
-      ) : null}
-    </View>
   );
 }
 

@@ -17,13 +17,6 @@ import {
   Text,
   View,
 } from "react-native";
-import Animated, {
-  useAnimatedScrollHandler,
-  useAnimatedStyle,
-  useSharedValue,
-  withTiming,
-  type SharedValue,
-} from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AssigneePickerSheet, type AssigneeSelection } from "@/components/AssigneePickerSheet";
@@ -31,7 +24,6 @@ import { TaskStatusPill } from "@/components/TaskStatusPill";
 import { buildDuePresets } from "@/services/dueDate";
 import { AssignUserToProjectModal } from "@/components/AssignUserToProjectModal";
 import { Button } from "@/components/Button";
-import { ClockReceiptBanner } from "@/components/ClockReceiptBanner";
 import { EmptyState } from "@/components/EmptyState";
 import KebabIcon from "@/components/KebabIcon";
 import { Input } from "@/components/Input";
@@ -41,7 +33,6 @@ import { ReportListItem } from "@/components/ReportListItem";
 import { TemplatePickerModal } from "@/components/TemplatePickerModal";
 import { useAuth } from "@/contexts/AuthContext";
 import { useData } from "@/contexts/DataContext";
-import { useTimesheet, type TimesheetState } from "@/contexts/TimesheetContext";
 import { useToast } from "@/contexts/ToastContext";
 import { useUploadStatus } from "@/contexts/UploadStatusContext";
 import { useColors } from "@/hooks/useColors";
@@ -64,23 +55,10 @@ export default function ProjectDetailScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { id, recentClockIn } = useLocalSearchParams<{
+  const { id } = useLocalSearchParams<{
     id: string;
-    /** Set by the notification deep-link handler (app/_layout.tsx). */
-    recentClockIn?: string;
   }>();
   const { showToast } = useToast();
-  const {
-    active: activeTimesheet,
-    refresh: refreshTimesheet,
-    firedExit,
-    dismissFiredExit,
-    firedEnter,
-    dismissFiredEnter,
-    clockIn: timesheetClockIn,
-    clockOut: timesheetClockOut,
-    loading: timesheetLoading,
-  } = useTimesheet() as TimesheetState;
   const {
     projects,
     photos,
@@ -168,13 +146,6 @@ export default function ProjectDetailScreen() {
   // True while the share-token POST is in flight. Used to disable
   // the share button so impatient double-taps don't fire two POSTs.
   const [sharingProject, setSharingProject] = useState(false);
-  // True while the manual kebab-menu "Clock In" call is in flight.
-  // The menu closes before the API call fires (matches the Clock out
-  // pattern), so this primarily protects against the user reopening
-  // the menu and double-tapping during the brief window.
-  const [clockingIn, setClockingIn] = useState(false);
-  const isClockedInToThisProject =
-    !!activeTimesheet && String(activeTimesheet.projectId) === String(id);
 
   const refreshAssignments = useCallback(async () => {
     if (!id) return;
@@ -226,306 +197,6 @@ export default function ProjectDetailScreen() {
     },
     [id, refreshAssignments, showToast],
   );
-
-  // ----- Clock-in receipt banner (S31b) -----
-  // Visible iff (a) the screen was deep-linked from a notification
-  // tap (recentClockIn param present) AND (b) the corresponding
-  // entry is still the active timesheet entry. The second clause
-  // gracefully degrades the "user already clocked out manually
-  // before tapping the receipt" race to a silent no-op.
-  //
-  // Dismissal vectors (in priority order):
-  //   - Explicit X tap                       — always dismisses, even with error
-  //   - 30s auto-timer                       — gated on no error
-  //   - First user-initiated scroll          — gated on no error (onScrollBeginDrag)
-  //   - Successful undo                      — programmatic, also clears server-side
-  // Once `receiptError` is non-null, the banner sticks until X. The
-  // user can still clock out manually from the ClockBar.
-  const [receiptVisible, setReceiptVisible] = useState(true);
-  const [receiptError, setReceiptError] = useState<string | null>(null);
-  const [undoing, setUndoing] = useState(false);
-
-  const receiptEntry =
-    recentClockIn &&
-    activeTimesheet &&
-    String(activeTimesheet.id) === recentClockIn
-      ? activeTimesheet
-      : null;
-  const showReceipt = !!recentClockIn && !!receiptEntry && receiptVisible;
-
-  // Log the rare race once per mount so we can spot it in field reports.
-  useEffect(() => {
-    if (recentClockIn && !receiptEntry) {
-      console.log(
-        `[receipt] suppressing banner: entry ${recentClockIn} not active (user already clocked out, or stale deep-link)`,
-      );
-    }
-  }, [recentClockIn, receiptEntry]);
-
-  // 30-second auto-dismiss. Resets if recentClockIn changes (e.g.
-  // user taps a fresh receipt while still on this screen). Skipped
-  // while error is sticky.
-  useEffect(() => {
-    if (!showReceipt || receiptError) return;
-    const t = setTimeout(() => setReceiptVisible(false), 30_000);
-    return () => clearTimeout(t);
-  }, [showReceipt, receiptError, recentClockIn]);
-
-  // ----- Clock-out receipt banner (S32a) -----
-  // Visible iff (a) the TimesheetContext has a firedExit (i.e. the
-  // foreground refresh discovered a server-fired auto-clock-out) AND
-  // (b) the fired entry's projectId matches the screen we're on.
-  // Cross-screen scoping means a fire for project X waits in context
-  // until the user navigates to project X; on other screens it's
-  // invisible.
-  //
-  // No clockOut-null gate; the prev snapshot has clockOut=null by
-  // definition, and firedAt carries the actual server-fire time
-  // within 60s of cron polling interval.
-  //
-  // Dismissal vectors (priority order, mirroring kind="in"):
-  //   - Explicit X tap                  — clears context unconditionally
-  //   - 30s auto-timer                  — gated on no error
-  //   - First user-initiated scroll     — gated on no error
-  //   - Successful undo                 — programmatic, also clears context + refreshes
-  // On error, the banner sticks (locally) until X. Unlike kind="in"
-  // there's no local visibility flag — context.firedExit IS the
-  // visibility, which means navigating away with sticky error loses
-  // the error on return (fresh retry available). Acceptable.
-  const [outReceiptError, setOutReceiptError] = useState<string | null>(null);
-  const [outUndoing, setOutUndoing] = useState(false);
-
-  // Reset error state when a NEW firedExit surfaces (different entry
-  // id), so a stale error from a prior fire doesn't poison the next
-  // banner. Same pattern as kind="in" resetting on recentClockIn
-  // change, but keyed on the entry id since firedExit is an object
-  // reference and we want stable diff semantics.
-  const firedEntryId = firedExit ? String(firedExit.entry.id) : null;
-  useEffect(() => {
-    setOutReceiptError(null);
-  }, [firedEntryId]);
-
-  const outShowReceipt =
-    firedExit !== null &&
-    String(firedExit.entry.projectId) === String(id);
-
-  // 30-second auto-dismiss for kind="out". Re-arms on entry-id
-  // change. Skipped while error is sticky.
-  useEffect(() => {
-    if (!outShowReceipt || outReceiptError) return;
-    const t = setTimeout(() => dismissFiredExit(), 30_000);
-    return () => clearTimeout(t);
-  }, [outShowReceipt, outReceiptError, firedEntryId, dismissFiredExit]);
-
-  const dismissOutReceipt = useCallback(() => {
-    setOutReceiptError(null);
-    dismissFiredExit();
-  }, [dismissFiredExit]);
-
-  const handleUndoOutReceipt = useCallback(async () => {
-    if (!firedExit) return;
-    setOutUndoing(true);
-    setOutReceiptError(null);
-    try {
-      // Same /auto-undo endpoint as kind="in" — server routes
-      // internally based on entry state (open vs closed). For a
-      // closed entry from auto-clock-out, the server clears
-      // clock_out and re-opens the session.
-      await api.autoUndoTimeEntry(firedExit.entry.id);
-      // Refresh to pull the now-reopened entry as the active
-      // session. Refresh observes prev=null → next=entry transition,
-      // which is non-fatal for discovery (no pending exit matches a
-      // freshly-reopened entry id, and we already cleaned up the
-      // pending row at fire-discovery time).
-      await refreshTimesheet();
-      dismissFiredExit();
-      showToast("Clock-out undone");
-    } catch (err) {
-      const msg =
-        err instanceof ApiError
-          ? err.message
-          : err instanceof Error
-            ? err.message
-            : "Network error";
-      console.log(`[receipt] auto-clock-out undo failed: ${msg}`);
-      setOutReceiptError(msg);
-    } finally {
-      setOutUndoing(false);
-    }
-  }, [firedExit, refreshTimesheet, dismissFiredExit, showToast]);
-
-  // ----- Auto clock-in receipt banner (S3x-mobile, fired-path) -----
-  // Sibling of the kind="out" firedExit banner for the dwell-time
-  // auto-clock-IN path. Source is TimesheetContext.firedEnter, set
-  // from EITHER the foreground push handler in app/_layout.tsx
-  // (clock_in_receipt arrived while the app was foregrounded) OR
-  // post-fact discovery in TimesheetContext (foreground refresh
-  // observed a fresh auto_geofence session matching a local
-  // pending-enter row).
-  //
-  // The OTHER kind="in" banner above (driven by `recentClockIn`
-  // URL param) covers the deep-link tap path — user backgrounded,
-  // notification fired, user tapped. Both are kind="in" and could
-  // in theory be set for the SAME entry (push arrived foreground,
-  // user backgrounded, tapped same notification). Gate below
-  // suppresses the firedEnter banner when recentClockIn already
-  // covers the same entry, so the user never sees two stacked
-  // copies of the same receipt.
-  //
-  // Dismissal vectors mirror firedExit (kind="out"):
-  //   - Explicit X tap                  — clears context unconditionally
-  //   - 30s auto-timer                  — gated on no error
-  //   - First user-initiated scroll     — gated on no error
-  //   - Successful undo                 — programmatic, also clears + refreshes
-  const [enterReceiptError, setEnterReceiptError] = useState<string | null>(
-    null,
-  );
-  const [enterUndoing, setEnterUndoing] = useState(false);
-
-  const firedEnterEntryId = firedEnter ? String(firedEnter.entry.id) : null;
-  useEffect(() => {
-    setEnterReceiptError(null);
-  }, [firedEnterEntryId]);
-
-  const enterShowReceipt =
-    firedEnter !== null &&
-    String(firedEnter.entry.projectId) === String(id) &&
-    // Suppress when the recentClockIn deep-link banner is already
-    // showing the same entry — avoid double-banner for one fire.
-    firedEnterEntryId !== recentClockIn;
-
-  useEffect(() => {
-    if (!enterShowReceipt || enterReceiptError) return;
-    const t = setTimeout(() => dismissFiredEnter(), 30_000);
-    return () => clearTimeout(t);
-  }, [
-    enterShowReceipt,
-    enterReceiptError,
-    firedEnterEntryId,
-    dismissFiredEnter,
-  ]);
-
-  const dismissEnterReceipt = useCallback(() => {
-    setEnterReceiptError(null);
-    dismissFiredEnter();
-  }, [dismissFiredEnter]);
-
-  const handleUndoEnterReceipt = useCallback(async () => {
-    if (!firedEnter) return;
-    setEnterUndoing(true);
-    setEnterReceiptError(null);
-    try {
-      // Same /auto-undo endpoint as the deep-link kind="in" handler
-      // and the firedExit kind="out" handler — server routes
-      // internally based on entry state. For an open auto-clock-in
-      // entry, the server deletes the time entry row.
-      await api.autoUndoTimeEntry(firedEnter.entry.id);
-      // Refresh to clear the now-deleted active session. Refresh
-      // observes prev=entry → next=null transition, which the
-      // post-fact exit-discovery branch handles cleanly (no
-      // pending-exit match, so no spurious kind="out" banner).
-      await refreshTimesheet();
-      dismissFiredEnter();
-      showToast("Clock-in undone");
-    } catch (err) {
-      const msg =
-        err instanceof ApiError
-          ? err.message
-          : err instanceof Error
-            ? err.message
-            : "Network error";
-      console.log(`[receipt] auto-clock-in undo failed: ${msg}`);
-      setEnterReceiptError(msg);
-    } finally {
-      setEnterUndoing(false);
-    }
-  }, [firedEnter, refreshTimesheet, dismissFiredEnter, showToast]);
-
-  const dismissReceiptOnInteraction = useCallback(() => {
-    // Each kind dismisses independently with its own error gate so
-    // a sticky error on one doesn't suppress dismissal of the other.
-    if (!receiptError) setReceiptVisible(false);
-    if (!outReceiptError && firedExit) dismissFiredExit();
-    if (!enterReceiptError && firedEnter) dismissFiredEnter();
-  }, [
-    receiptError,
-    outReceiptError,
-    enterReceiptError,
-    firedExit,
-    firedEnter,
-    dismissFiredExit,
-    dismissFiredEnter,
-  ]);
-
-  const dismissReceipt = useCallback(() => {
-    setReceiptVisible(false);
-    setReceiptError(null);
-  }, []);
-
-  const handleUndoReceipt = useCallback(async () => {
-    if (!receiptEntry) return;
-    setUndoing(true);
-    setReceiptError(null);
-    try {
-      await api.autoUndoTimeEntry(receiptEntry.id);
-      // Server-side delete succeeded → pull fresh active state so the
-      // ClockBar transitions out of "clocked in here" immediately.
-      // We don't optimistically setActive(null) on TimesheetContext
-      // because TimesheetContext owns that state; refresh is the
-      // honest path and the UI lag is sub-second.
-      await refreshTimesheet();
-      setReceiptVisible(false);
-      showToast("Clock-in undone");
-    } catch (err) {
-      // 4xx from backend (window expired, ownership mismatch) carries
-      // a human message. Network errors fall through to a generic.
-      const msg =
-        err instanceof ApiError
-          ? err.message
-          : err instanceof Error
-            ? err.message
-            : "Network error";
-      console.log(`[receipt] undo failed: ${msg}`);
-      setReceiptError(msg);
-    } finally {
-      setUndoing(false);
-    }
-  }, [receiptEntry, refreshTimesheet, showToast]);
-
-  // ---- Clock bar auto-hide on scroll (State 1 only) ----
-  // Shared values live on the UI thread so the scroll handler doesn't
-  // round-trip to JS for every frame. `autoHideEnabled` is flipped from JS
-  // when the timesheet state transitions in/out of State 1; the worklet
-  // reads it directly.
-  const clockBarTranslateY = useSharedValue(0);
-  const lastScrollY = useSharedValue(0);
-  const autoHideEnabled = useSharedValue(0); // 0 = bar pinned, 1 = may hide
-
-  const SCROLL_DELTA_THRESHOLD = 10;
-  const SCROLL_TOP_PIN = 20;
-  const HIDE_OFFSET = 120; // bar height + safe inset, off-screen target
-
-  const scrollHandler = useAnimatedScrollHandler({
-    onScroll: (e) => {
-      "worklet";
-      const y = e.contentOffset.y;
-      // Always pin to visible at the top of the scroll, even in State 1.
-      if (y < SCROLL_TOP_PIN) {
-        clockBarTranslateY.value = withTiming(0, { duration: 180 });
-        lastScrollY.value = y;
-        return;
-      }
-      if (autoHideEnabled.value !== 1) return;
-      const dy = y - lastScrollY.value;
-      if (dy > SCROLL_DELTA_THRESHOLD) {
-        clockBarTranslateY.value = withTiming(HIDE_OFFSET, { duration: 180 });
-        lastScrollY.value = y;
-      } else if (dy < -SCROLL_DELTA_THRESHOLD) {
-        clockBarTranslateY.value = withTiming(0, { duration: 180 });
-        lastScrollY.value = y;
-      }
-    },
-  });
 
   // Photos tab UI state.
   const [gridSize, setGridSize] = useState<1 | 2 | 3>(2);
@@ -867,96 +538,11 @@ export default function ProjectDetailScreen() {
     <View style={[styles.wrap, { backgroundColor: colors.background }]}>
       <Stack.Screen options={{ headerShown: false }} />
 
-      <Animated.ScrollView
+      <ScrollView
         contentContainerStyle={{
-          // Reserve room for the bottom ClockBar only when it
-          // actually renders (States 2/3 — clocked in here, or
-          // clocked into another project). State 1 ("not clocked
-          // in") now returns null from ClockBar, so we tighten
-          // the reserve to the safe-area inset plus a small gutter,
-          // reclaiming ~96px of usable viewport for the photo grid.
-          paddingBottom: insets.bottom + (activeTimesheet ? 120 : 24),
+          paddingBottom: insets.bottom + 24,
         }}
-        onScroll={scrollHandler}
-        // onScrollBeginDrag fires once per user-initiated scroll
-        // gesture (NOT for programmatic scrolls), which is exactly
-        // the "first interaction" semantic we want for receipt
-        // dismissal. The banner unmounts while the user is still
-        // mid-drag — feels responsive, not jarring, because the
-        // banner sits inside the ScrollView so it's already
-        // translating off-screen.
-        onScrollBeginDrag={dismissReceiptOnInteraction}
-        scrollEventThrottle={16}
       >
-        {/* Receipt banner sits above the hero, inside the ScrollView,
-            padded for the status bar. Scrolling pushes it off-screen
-            naturally AND triggers onScrollBeginDrag → state-level
-            dismissal so it doesn't reappear on scroll-back. */}
-        {showReceipt && receiptEntry ? (
-          <View style={{ paddingTop: insets.top }}>
-            <ClockReceiptBanner
-              kind="in"
-              visible={showReceipt}
-              time={new Date(receiptEntry.clockIn)}
-              projectName={project.name}
-              error={receiptError}
-              undoing={undoing}
-              onUndo={() => {
-                void handleUndoReceipt();
-              }}
-              onDismiss={dismissReceipt}
-            />
-          </View>
-        ) : null}
-        {/* Clock-out receipt (S32a). Rendered in parallel with the
-            kind="in" banner — both can theoretically be visible at
-            once (e.g. user taps a fresh clock-in receipt notification
-            while a stale clock-out fire sits in context for the same
-            project). In practice this is vanishingly unlikely; if it
-            happens both stack vertically and the user dismisses each
-            independently. */}
-        {outShowReceipt && firedExit ? (
-          <View style={{ paddingTop: showReceipt ? 0 : insets.top }}>
-            <ClockReceiptBanner
-              kind="out"
-              visible={outShowReceipt}
-              time={new Date(firedExit.firedAt)}
-              projectName={project.name}
-              error={outReceiptError}
-              undoing={outUndoing}
-              onUndo={() => {
-                void handleUndoOutReceipt();
-              }}
-              onDismiss={dismissOutReceipt}
-            />
-          </View>
-        ) : null}
-        {/* Auto-clock-in receipt (S3x-mobile, fired-path). Only
-            renders when the deep-link kind="in" banner above ISN'T
-            already covering the same entry (gated in
-            enterShowReceipt). Same insets.top compensation as
-            kind="out" — top padding only when no banner is rendered
-            above us. */}
-        {enterShowReceipt && firedEnter ? (
-          <View
-            style={{
-              paddingTop: showReceipt || outShowReceipt ? 0 : insets.top,
-            }}
-          >
-            <ClockReceiptBanner
-              kind="in"
-              visible={enterShowReceipt}
-              time={new Date(firedEnter.firedAt)}
-              projectName={project.name}
-              error={enterReceiptError}
-              undoing={enterUndoing}
-              onUndo={() => {
-                void handleUndoEnterReceipt();
-              }}
-              onDismiss={dismissEnterReceipt}
-            />
-          </View>
-        ) : null}
         <View style={styles.heroWrap}>
           {heroPhoto ? (
             <Image
@@ -1775,16 +1361,7 @@ export default function ProjectDetailScreen() {
             )}
           </View>
         ) : null}
-      </Animated.ScrollView>
-
-      <ClockBar
-        thisProjectId={String(project.id)}
-        colors={colors}
-        bottomInset={insets.bottom}
-        translateY={clockBarTranslateY}
-        lastScrollY={lastScrollY}
-        autoHideEnabled={autoHideEnabled}
-      />
+      </ScrollView>
 
       <TaskModal
         visible={showTaskModal}
@@ -1862,12 +1439,7 @@ export default function ProjectDetailScreen() {
         }}
       />
       {/* Top-right kebab overflow menu. Lightweight Modal-as-popover
-          (matches the rest of this screen's modal patterns). Items:
-          - Clock out (only when clocked into THIS project) — the
-            manual fallback for auto-exit; calls the same timesheet
-            action the old prominent button used.
-          - Delete project — destructive, was the kebab's single
-            action before. */}
+          (matches the rest of this screen's modal patterns). */}
       <Modal
         visible={showProjectMenu}
         transparent
@@ -1889,108 +1461,6 @@ export default function ProjectDetailScreen() {
             ]}
             onPress={(e) => e.stopPropagation()}
           >
-            {!activeTimesheet ? (
-              <Pressable
-                onPress={() => {
-                  if (!project) return;
-                  setShowProjectMenu(false);
-                  const projectName = project.name;
-                  const projectId = project.id;
-                  const doClockIn = async () => {
-                    setClockingIn(true);
-                    // Context toasts the error itself on failure
-                    // ("Couldn't clock in: …") and returns null;
-                    // we only toast the success case here.
-                    const entry = await timesheetClockIn(projectId);
-                    setClockingIn(false);
-                    if (entry) showToast("Clocked in.");
-                  };
-                  if (Platform.OS === "web") {
-                    void doClockIn();
-                    return;
-                  }
-                  Alert.alert(`Clock in to ${projectName}?`, undefined, [
-                    { text: "Cancel", style: "cancel" },
-                    {
-                      text: "Clock in",
-                      onPress: () => {
-                        void doClockIn();
-                      },
-                    },
-                  ]);
-                }}
-                disabled={clockingIn || timesheetLoading}
-                style={({ pressed }) => [
-                  styles.menuItem,
-                  {
-                    opacity:
-                      clockingIn || timesheetLoading ? 0.5 : pressed ? 0.6 : 1,
-                  },
-                ]}
-              >
-                <Feather
-                  name="play-circle"
-                  size={16}
-                  color={colors.foreground}
-                />
-                <Text
-                  style={[styles.menuItemTxt, { color: colors.foreground }]}
-                >
-                  Clock In
-                </Text>
-                {clockingIn ? (
-                  <ActivityIndicator
-                    size="small"
-                    color={colors.mutedForeground}
-                    style={{ marginLeft: "auto" }}
-                  />
-                ) : null}
-              </Pressable>
-            ) : null}
-            {isClockedInToThisProject ? (
-              <Pressable
-                onPress={() => {
-                  setShowProjectMenu(false);
-                  const doClockOut = () => {
-                    void timesheetClockOut().then((entry) => {
-                      // Context returns null on failure (and toasts the
-                      // error itself), so guard the success toast to
-                      // avoid the "Couldn't clock out: …" + "Clocked
-                      // out." double-toast. Mirrors the Clock In guard.
-                      if (entry) showToast("Clocked out.");
-                    });
-                  };
-                  if (Platform.OS === "web") {
-                    doClockOut();
-                    return;
-                  }
-                  Alert.alert("Clock out?", undefined, [
-                    { text: "Cancel", style: "cancel" },
-                    {
-                      text: "Clock out",
-                      style: "destructive",
-                      onPress: doClockOut,
-                    },
-                  ]);
-                }}
-                disabled={timesheetLoading}
-                style={({ pressed }) => [
-                  styles.menuItem,
-                  { opacity: timesheetLoading ? 0.5 : pressed ? 0.6 : 1 },
-                ]}
-              >
-                <Feather
-                  name="stop-circle"
-                  size={16}
-                  color={colors.foreground}
-                />
-                <Text
-                  style={[styles.menuItemTxt, { color: colors.foreground }]}
-                >
-                  Clock out
-                </Text>
-              </Pressable>
-            ) : null}
             {currentUser?.role !== "restricted" ? (
               <Pressable
                 onPress={() => {
@@ -2014,206 +1484,6 @@ export default function ProjectDetailScreen() {
         </Pressable>
       </Modal>
     </View>
-  );
-}
-
-function formatElapsed(startIso: string, nowMs: number): string {
-  const start = Date.parse(startIso);
-  if (!Number.isFinite(start)) return "0h 0m";
-  const ms = Math.max(0, nowMs - start);
-  const totalMins = Math.floor(ms / 60000);
-  const h = Math.floor(totalMins / 60);
-  const m = totalMins % 60;
-  return `${h}h ${m}m`;
-}
-
-/** "3:15 PM" style local-time label for the clock-in moment. Returns
- *  empty string on unparseable input so the caller can fall back. */
-function formatClockInTime(startIso: string): string {
-  const t = Date.parse(startIso);
-  if (!Number.isFinite(t)) return "";
-  return new Date(t).toLocaleTimeString(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
-function ClockBar({
-  thisProjectId,
-  colors,
-  bottomInset,
-  translateY,
-  lastScrollY,
-  autoHideEnabled,
-}: {
-  thisProjectId: string;
-  colors: ReturnType<typeof useColors>;
-  bottomInset: number;
-  translateY: SharedValue<number>;
-  lastScrollY: SharedValue<number>;
-  autoHideEnabled: SharedValue<number>;
-}) {
-  const { active, ready, loading, clockOut } =
-    useTimesheet() as TimesheetState;
-  const { projects } = useData();
-  const [now, setNow] = useState(() => Date.now());
-
-  const isClockedInHere =
-    !!active && String(active.projectId) === thisProjectId;
-  // Auto-hide is enabled ONLY in State 1 (no active entry). State 2 and 3
-  // keep the bar pinned regardless of scroll.
-  const shouldAutoHide = ready && !active;
-
-  // Sync the worklet-side autoHideEnabled flag whenever the JS-side state
-  // transitions, and reset position so the bar never appears stuck off-screen
-  // after a transition (e.g. user clocks out after scrolling deep).
-  useEffect(() => {
-    if (shouldAutoHide) {
-      // Just entered State 1 — clear stale scroll-direction memory and snap
-      // the bar back into view.
-      lastScrollY.value = 0;
-      translateY.value = withTiming(0, { duration: 180 });
-      autoHideEnabled.value = 1;
-    } else {
-      // State 2 or 3 — pin visible.
-      autoHideEnabled.value = 0;
-      translateY.value = withTiming(0, { duration: 180 });
-    }
-  }, [shouldAutoHide, translateY, lastScrollY, autoHideEnabled]);
-
-  const animatedBarStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: translateY.value }],
-  }));
-
-  // Live-update the elapsed timer every 60s while clocked into THIS project.
-  useEffect(() => {
-    if (!isClockedInHere || !active) return;
-    setNow(Date.now()); // immediate refresh on mount/transition
-    const t = setInterval(() => setNow(Date.now()), 60_000);
-    return () => clearInterval(t);
-  }, [isClockedInHere, active?.id, active]);
-
-  const confirmClockOut = (otherName?: string) => {
-    const title = otherName
-      ? `Clock out of ${otherName}?`
-      : "Clock out?";
-    if (Platform.OS === "web") {
-      void clockOut();
-      return;
-    }
-    Alert.alert(title, undefined, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Clock out",
-        style: "destructive",
-        onPress: () => {
-          void clockOut();
-        },
-      },
-    ]);
-  };
-
-  // Render a stable-height container even before first fetch so the bar
-  // doesn't pop in suddenly.
-  const containerStyle = [
-    styles.clockBar,
-    {
-      backgroundColor: colors.card,
-      borderTopColor: colors.border,
-      paddingBottom: bottomInset + 10,
-    },
-  ];
-
-  if (!ready) {
-    return (
-      <Animated.View style={[containerStyle, animatedBarStyle]}>
-        <ActivityIndicator color={colors.mutedForeground} />
-      </Animated.View>
-    );
-  }
-
-  // State 1: not clocked in anywhere → render nothing.
-  // Auto-clock-in via geofencing is the default happy path
-  // (S29/30/30.5/31a); manual clock-in is discoverable via the
-  // top-right kebab menu's "Clock In" item, so the previous
-  // "Not clocked in to this project. Use ⋯ menu to clock in"
-  // pill is redundant and was covering the photo grid.
-  // ScrollView paddingBottom above is conditional on
-  // `activeTimesheet`, so reclaiming the bar's footprint is
-  // automatic when this branch fires.
-  if (!active) {
-    return null;
-  }
-
-  // State 2: clocked into THIS project.
-  // The manual "Clock Out" button used to live here. It moved into
-  // the project's top-right kebab menu so the bottom CTA stays a
-  // single, predictable affordance: it's only ever a Clock-In path
-  // (or, while clocked in, ambient feedback). The kebab is the
-  // manual fallback for when auto-exit (geofence cron) doesn't fire.
-  if (isClockedInHere) {
-    const sinceLabel = formatClockInTime(active.clockIn);
-    return (
-      <Animated.View style={[containerStyle, animatedBarStyle]}>
-        <View
-          style={[
-            styles.clockStatusPill,
-            {
-              backgroundColor: "#ef9003" + "1A",
-              borderColor: "#ef9003" + "55",
-            },
-          ]}
-        >
-          <Feather name="clock" size={14} color="#ef9003" />
-          <Text
-            style={[styles.clockStatusPillTxt, { color: "#ef9003" }]}
-            numberOfLines={1}
-          >
-            {sinceLabel
-              ? `Clocked in since ${sinceLabel} · ${formatElapsed(active.clockIn, now)}`
-              : `Clocked in · ${formatElapsed(active.clockIn, now)}`}
-          </Text>
-          {loading ? (
-            <ActivityIndicator size="small" color="#ef9003" />
-          ) : null}
-        </View>
-      </Animated.View>
-    );
-  }
-
-  // State 3: clocked into ANOTHER project.
-  const otherProject = projects.find(
-    (p) => String(p.id) === String(active.projectId),
-  );
-  const otherName = otherProject?.name ?? "another project";
-  return (
-    <Animated.View style={[containerStyle, animatedBarStyle]}>
-      <View style={styles.clockStatusCol}>
-        <Text style={[styles.clockStatusLbl, { color: colors.mutedForeground }]}>
-          CLOCKED IN TO
-        </Text>
-        <Text
-          style={[styles.clockStatusVal, { color: colors.foreground }]}
-          numberOfLines={1}
-        >
-          {otherName}
-        </Text>
-        <Pressable
-          onPress={() => confirmClockOut(otherName)}
-          disabled={loading}
-          hitSlop={14}
-          accessibilityRole="button"
-          accessibilityLabel={`Clock out of ${otherName} first`}
-        >
-          <Text style={[styles.clockLink, { color: colors.primary }]}>
-            Clock out of {otherName} first
-          </Text>
-        </Pressable>
-      </View>
-      {loading ? (
-        <ActivityIndicator color={colors.mutedForeground} />
-      ) : null}
-    </Animated.View>
   );
 }
 
@@ -2931,94 +2201,6 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   statDivider: { width: StyleSheet.hairlineWidth, height: 32 },
-  clockBar: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    minHeight: 64,
-    paddingTop: 10,
-    paddingHorizontal: 16,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    shadowColor: "#000",
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: -2 },
-    elevation: 8,
-  },
-  clockBtn: {
-    flex: 1,
-    minHeight: 48,
-    borderRadius: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-    paddingHorizontal: 16,
-  },
-  clockBtnInline: {
-    flex: 0,
-    paddingHorizontal: 18,
-  },
-  clockBtnTxt: {
-    color: "#fff",
-    fontSize: 15,
-    fontFamily: "Inter_700Bold",
-    letterSpacing: 0.2,
-  },
-  clockStatusCol: {
-    flex: 1,
-    gap: 2,
-  },
-  clockStatusLbl: {
-    fontSize: 10,
-    fontFamily: "Inter_600SemiBold",
-    letterSpacing: 1,
-  },
-  clockStatusVal: {
-    fontSize: 16,
-    fontFamily: "Inter_700Bold",
-    letterSpacing: -0.2,
-  },
-  clockLink: {
-    fontSize: 12,
-    fontFamily: "Inter_600SemiBold",
-    marginTop: 2,
-  },
-  // State 2 status pill — replaces the old "Clock Out" button. Tinted
-  // orange so it reads as ambient feedback (project is on the clock)
-  // without acting as a CTA. Manual clock-out lives in the kebab.
-  clockStatusPill: {
-    flex: 1,
-    minHeight: 44,
-    borderRadius: 999,
-    borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  clockStatusPillTxt: {
-    flex: 1,
-    fontSize: 13,
-    fontFamily: "Inter_600SemiBold",
-  },
-  // State 1 neutral pill — two-line column (primary label + hint
-  // pointing the user at the kebab menu). Sized to fit inside the
-  // same pill shape as State 2 without changing the bar's overall
-  // vertical rhythm.
-  clockNeutralCol: {
-    flex: 1,
-  },
-  clockNeutralHint: {
-    fontSize: 11,
-    fontFamily: "Inter_500Medium",
-    opacity: 0.8,
-    marginTop: 1,
-  },
   // Kebab popover (top-right overflow menu).
   menuBackdrop: {
     flex: 1,

@@ -15,10 +15,6 @@ const KEYS = {
   // the server. Safe to delete the cleanup below after a release or two.
   projects: "@fv/projects/v2",
   photos: "@fv/photos",
-  // Preferences. Read/written directly by services/preferences.ts
-  // (tri-state, can't use the binary getFlag/setFlag wrappers below).
-  // Listed here to keep the @fv/ namespace registry in one place.
-  prefs_autoTracking: "@fv/prefs/autoTracking",
 } as const;
 
 // Orphaned cache keys to remove on every app start. `@fv/shares` is the

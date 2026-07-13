@@ -163,9 +163,7 @@ export default function ProjectsScreen() {
   );
 
   // AppState → "active" → re-fetch (covers app foregrounded after
-  // backgrounded; the user driving with the app off-screen). Does
-  // NOT touch services/geofencing.ts; the background geofence task
-  // is event-driven and managed independently.
+  // backgrounded; the user driving with the app off-screen).
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
       if (state === "active") void refreshUserLoc();

@@ -190,8 +190,8 @@ interface FetchOpts {
    * endpoints that are expected to return data — silent
    * `undefined` would mask a server-side regression.
    *
-   * Current callers: api.autoUndoTimeEntry. Future: any S32+
-   * endpoint that returns 204 (cancel pending exit, etc.).
+   * Use for endpoints that return 204 (e.g. push-token
+   * unregister) where a body is intentionally absent.
    */
   allowEmptyBody?: boolean;
 }
@@ -384,13 +384,6 @@ export interface BackendUser {
    * deactivated and should be filtered out of any "pick a teammate" UI.
    */
   deletedAt?: string | null;
-  /**
-   * Auto clock-in/out master switch (S33). Server is authoritative.
-   * Mobile mirrors to AsyncStorage via services/preferences so the
-   * geofence background task (which has no React context) can read it.
-   * Default true on null/missing — see toAuthUser() in AuthContext.
-   */
-  autoTrackingEnabled?: boolean;
   [key: string]: unknown;
 }
 
@@ -568,20 +561,6 @@ export interface BackendTask {
   createdAt: string;
   updatedAt?: string;
   project?: { name?: string };
-}
-
-export interface BackendTimesheetEntry {
-  id: number | string;
-  userId: string;
-  projectId: number | string;
-  accountId?: string;
-  clockIn: string;
-  clockOut: string | null;
-  source?: string | null;
-  notes?: string | null;
-  createdAt?: string;
-  updatedAt?: string;
-  [key: string]: unknown;
 }
 
 // ----- Checklists v2 (field-MVP, 2026-05) -----
@@ -764,23 +743,6 @@ export type BackendReportTreeResponse = BackendReport & {
   >;
 };
 
-/**
- * Geofence-eligible project (server-side filtered + sorted + capped).
- * Server guarantees: accountId match, !archived, lat/lng non-null,
- * lastActivityAt within last 14 days, sorted DESC by lastActivityAt,
- * limit 20. Restricted-role users see only assigned projects.
- *
- * `lastActivityAt` is treated as opaque on mobile (sort key only,
- * already sorted server-side).
- */
-export interface BackendGeofenceEligibleProject {
-  id: number;
-  name: string;
-  latitude: number;
-  longitude: number;
-  lastActivityAt: string;
-}
-
 // ----- Photo upload (3-step presigned-URL flow) -----
 
 export interface SignUploadFile {
@@ -897,11 +859,6 @@ export const api = {
       json: patch,
     }),
 
-  geofenceEligibleProjects: () =>
-    apiFetch<BackendGeofenceEligibleProject[]>(
-      "/api/projects/geofence-eligible",
-    ),
-
   tasks: () => apiFetch<BackendTask[]>("/api/tasks"),
 
   /**
@@ -986,254 +943,6 @@ export const api = {
       allowEmptyBody: true,
     }),
 
-  // ----- Timesheets (manual clock-in/out) -----
-  activeTimesheet: () =>
-    apiFetch<BackendTimesheetEntry | null>("/api/timesheets/active"),
-
-  /**
-   * Clock the user in to a project.
-   *
-   * `source` is optional and only added to the request body when
-   * explicitly provided. Existing manual call sites pass undefined →
-   * field is omitted → backend treats as default "manual". The S31a
-   * geofence-confirmation banner passes "auto_geofence" to flag the
-   * entry as automatically triggered.
-   *
-   * Wire-contract note: the literal MUST match the postgres
-   * `time_entries.source` enum exactly. As of web commit dbc5b35,
-   * the enum is `[manual, auto_geofence, edited]` and the server
-   * 400s on any other value (no coercion, no "auto" alias).
-   */
-  clockIn: (
-    projectId: string | number,
-    notes?: string,
-    source?: "auto_geofence" | "manual",
-  ) => {
-    const body: Record<string, unknown> = { projectId };
-    if (notes !== undefined) body.notes = notes;
-    if (source !== undefined) body.source = source;
-    return apiFetch<BackendTimesheetEntry>("/api/timesheets/clock-in", {
-      method: "POST",
-      json: body,
-    });
-  },
-
-  clockOut: (notes?: string) =>
-    apiFetch<BackendTimesheetEntry>("/api/timesheets/clock-out", {
-      method: "POST",
-      json: notes !== undefined ? { notes } : {},
-    }),
-
-  /**
-   * Tap-Undo on a clock-in receipt notification → DELETE the entry.
-   *
-   * Distinct path from a hypothetical generic DELETE /api/timesheets/:id
-   * to make the wire-contract intent explicit server-side: this is
-   * specifically the "user tapped Undo on the receipt for an
-   * auto_geofence entry within ~60 min of clock-in" flow. The
-   * backend enforces:
-   *   - ownership (entry.userId === session.userId)
-   *   - source restriction (entry.source === "auto_geofence")
-   *   - 60-min window from entry.clockIn
-   * Any of those failing returns 4xx with an explanatory message that
-   * the receipt banner surfaces inline.
-   *
-   * Backend collision note: an existing /api/timesheets/:id route was
-   * already in use for other semantics (per Web Agent's diagnosis),
-   * which is why the path is `:id/auto-undo` rather than the bare id.
-   */
-  autoUndoTimeEntry: (entryId: string | number) =>
-    apiFetch<void>(`/api/timesheets/${entryId}/auto-undo`, {
-      method: "DELETE",
-      // Web endpoint returns 204 No Content on success per the
-      // standard Express delete pattern. Without this opt, apiFetch
-      // would throw "Unexpected non-JSON response" because 204
-      // responses have no Content-Type header.
-      //
-      // S32a-web extension: same endpoint, same method — but for
-      // entries that have ALREADY been auto-clocked-out by the
-      // server's pending-exit cron, the backend re-opens the entry
-      // (clears clock_out) instead of deleting. The wire contract
-      // is unchanged from mobile's perspective; the receipt banner's
-      // kind="out" Undo path simply calls this method on the same
-      // entryId. Server handles routing internally.
-      allowEmptyBody: true,
-    }),
-
-  // ----- Geofence exit debounce (S32a-mobile) -----
-
-  /**
-   * Notify the server that the OS observed a geofence Exit for the
-   * user's currently-active auto_geofence session. The server creates
-   * a pending exit row and schedules an auto-clock-out 5 minutes from
-   * now (server time). Mobile persists the returned `id` + `firesAt`
-   * locally via services/pendingExits.ts.
-   *
-   * Idempotency: server has a partial unique index on
-   * pending_geofence_exits WHERE status='pending', so a duplicate
-   * POST for the same (timeEntryId, projectId) returns the existing
-   * row's id rather than creating a second one. Safe to retry.
-   *
-   * `detectedAt` is mobile's observation time, NOT the firesAt the
-   * server returns. Server uses its own clock for firesAt to avoid
-   * clock-skew issues between device and database.
-   */
-  geofenceExitDetected: (params: {
-    projectId: number;
-    timeEntryId: string | number;
-    detectedAt: string;
-  }) =>
-    apiFetch<{
-      /** Server-issued pending exit row UUID. Becomes pendingExitId locally. */
-      id: string;
-      /** ISO timestamp when the server cron will fire the auto-clock-out. */
-      firesAt: string;
-      /** Server-side status; expected "pending" on a successful POST. */
-      status: string;
-    }>("/api/geofence/exit-detected", {
-      method: "POST",
-      json: {
-        projectId: params.projectId,
-        timeEntryId: params.timeEntryId,
-        detectedAt: params.detectedAt,
-      },
-    }),
-
-  /**
-   * Cancel a pending exit row before the server cron fires it. Used
-   * when the user re-enters the same region within the 5-minute
-   * debounce window (i.e. they briefly stepped outside, came back).
-   *
-   * Mobile only uses the pendingExitId path. The server also accepts
-   * a timeEntryId variant per S32a-web spec, but exposing both here
-   * with no caller is YAGNI — add the alternate signature only if a
-   * future flow needs it.
-   *
-   * Returns either 204 No Content or a small JSON ack depending on
-   * server implementation; allowEmptyBody tolerates either. Caller
-   * does not consume the response body — the only signal that
-   * matters is "did it throw".
-   */
-  geofenceExitCancelled: (pendingExitId: string) =>
-    apiFetch<void>("/api/geofence/exit-cancelled", {
-      method: "POST",
-      json: { pendingExitId },
-      allowEmptyBody: true,
-    }),
-
-  // ----- Geofence enter dwell-time (S3x-mobile) -----
-
-  /**
-   * Notify the server that the OS observed a geofence Enter for a
-   * region the user is *not* yet clocked into. The server creates
-   * a pending enter row and schedules an auto-clock-in N seconds
-   * from now (server-side AUTO_CLOCK_IN_DWELL_MS, currently 60s
-   * but mobile never reads or hardcodes the value — `firesAt` in
-   * the response is the source of truth).
-   *
-   * Idempotency: server has a partial unique index on
-   * pending_geofence_enters WHERE status='pending', so a duplicate
-   * POST for the same (userId, projectId) returns the existing
-   * row's id rather than creating a second one (response 200 with
-   * status="pending"). Safe to retry.
-   *
-   * Already-clocked-in short-circuit: server returns
-   * { status: "skipped", reason: "already_clocked_in" } when the
-   * user already has an active session. Mobile must NOT persist a
-   * local row in that case — there's nothing to cancel and nothing
-   * to discover post-facto.
-   *
-   * `detectedAt` is mobile's observation time, NOT the firesAt the
-   * server returns. Server uses its own clock for firesAt to avoid
-   * clock-skew issues between device and database.
-   *
-   * `regionId` is optional per the wire contract but mobile always
-   * sends it (we always know it from the OS event) — helps server-
-   * side observability and matches how the rest of geofencing.ts
-   * threads regionId through every step.
-   */
-  geofenceEnterDetected: (params: {
-    projectId: number;
-    regionId?: string;
-    detectedAt: string;
-  }) =>
-    apiFetch<
-      | {
-          /** Server-issued pending enter row UUID. Becomes pendingEnterId locally. */
-          id: string;
-          /** ISO timestamp when the server cron will fire the auto-clock-in. */
-          firesAt: string;
-          status: "pending";
-        }
-      | {
-          status: "skipped";
-          reason: string;
-        }
-    >("/api/geofence/enter-detected", {
-      method: "POST",
-      json: {
-        projectId: params.projectId,
-        regionId: params.regionId,
-        detectedAt: params.detectedAt,
-      },
-    }),
-
-  /**
-   * Cancel a pending enter row before the server cron fires it. Used
-   * when the user steps off the site within the dwell window
-   * (i.e. the OS fires Exit for a region we have a pending enter for).
-   *
-   * Mobile only uses the pendingEnterId path. Server returns a small
-   * JSON ack `{ id, status: "cancelled" }`; mobile does not consume
-   * the response body — the only signal that matters is "did it
-   * throw". Mirror of geofenceExitCancelled.
-   */
-  geofenceEnterCancelled: (pendingEnterId: string) =>
-    apiFetch<{ id: string; status: "cancelled" }>(
-      "/api/geofence/enter-cancelled",
-      {
-        method: "POST",
-        json: { pendingEnterId },
-      },
-    ),
-
-  /**
-   * BUILD 13 / Diff 2: client-driven dwell-expiry fire.
-   *
-   * The cron that processes pending enter rows runs every minute,
-   * so even after dwell elapses (default 60s) the actual clock-in
-   * fires after a further 0–60s wait. Mobile drives the dwell timer
-   * locally and POSTs here at expiry to short-circuit the cron and
-   * cut latency from ~120s worst-case to <60s.
-   *
-   * Behavioral contract (server side, implemented in the web backend
-   * by the parallel Web Agent task; this client ships graceful-
-   * degraded until it lands):
-   *   201 — fired now; response includes the created time entry.
-   *         Mobile clears local pending row and refreshes timesheet.
-   *   404 — pending row not found / doesn't belong to caller.
-   *         Either cron already swept it or it was cancelled.
-   *   409 — user already has an active session (race vs cron or
-   *         manual clock-in). Mobile clears local pending row.
-   *   410 — pending was already fired or cancelled. Same handling
-   *         as 404 — clear local row.
-   *
-   * Mobile's banner caller handles every failure path identically
-   * (silent — let cron fallback continue). The response body isn't
-   * consumed because TimesheetContext.refresh() re-fetches the
-   * canonical active session post-fire.
-   */
-  geofenceFireNow: (pendingEnterId: string) =>
-    apiFetch<{
-      timeEntryId: number;
-      projectId: number;
-      clockInAt: string;
-      status: "fired";
-    }>("/api/geofence/fire-now", {
-      method: "POST",
-      json: { pendingEnterId },
-    }),
-
   // ----- Account / membership -----
 
   /**
@@ -1248,9 +957,9 @@ export const api = {
 
   /**
    * Register the current device's Expo push token with the server so
-   * the geofence-exit cron can deliver clock_out_receipt pushes.
-   * Server returns 204 on success. Wire-only — caller is responsible
-   * for capturing the token via expo-notifications first.
+   * it can deliver push notifications to this device. Server returns
+   * 204 on success. Wire-only — caller is responsible for capturing
+   * the token via expo-notifications first.
    */
   registerPushToken: (token: string) =>
     apiFetch<void>("/api/users/push-token", {
@@ -1268,34 +977,6 @@ export const api = {
     apiFetch<void>("/api/users/push-token", {
       method: "DELETE",
       allowEmptyBody: true,
-    }),
-
-  /**
-   * Heartbeat — server-side exit-detection backup (BUILD 12).
-   * Posted by services/heartbeat.ts on background-location updates
-   * while a timesheet is active. Server compares lat/lng against
-   * the active project and decides whether to fire an auto-clock-
-   * out. Mobile is a dumb relay: no decision logic, no queueing on
-   * failure (next location update retries naturally).
-   * Server returns 204 on success.
-   */
-  postHeartbeat: (payload: { lat: number; lng: number; timestamp: string }) =>
-    apiFetch<void>("/api/heartbeat", {
-      method: "POST",
-      json: payload,
-      allowEmptyBody: true,
-    }),
-
-  /**
-   * Update one or more user preferences. Currently only autoTrackingEnabled
-   * (S33 master switch for OS-driven clock in/out). Server returns the
-   * full updated BackendUser so callers can replace their local copy in
-   * one shot rather than reconciling fields.
-   */
-  updatePreferences: (input: { autoTrackingEnabled?: boolean }) =>
-    apiFetch<BackendUser>("/api/users/me/preferences", {
-      method: "PATCH",
-      json: input,
     }),
 
   // ----- Account-level settings (admin-managed, all users read) -----
@@ -1319,8 +1000,7 @@ export const api = {
    * Update one or more account-level settings. Admin-only — server
    * returns 403 for non-admin callers. Server returns the full
    * updated settings object so the caller can replace its local copy
-   * in one shot. Mirror of `updatePreferences` for the per-user
-   * endpoint.
+   * in one shot.
    */
   updateAccountSettings: (input: { defaultPhotoAspectRatio?: string }) =>
     apiFetch<{ defaultPhotoAspectRatio: string }>("/api/account/settings", {

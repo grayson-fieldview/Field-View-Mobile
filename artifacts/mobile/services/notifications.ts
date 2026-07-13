@@ -1,32 +1,20 @@
 import { Platform } from "react-native";
 
-import { storage } from "./storage";
-
 /**
  * Notifications service.
  *
  * Wraps expo-notifications behind a defensive `require()` so the
- * absence of the native binding (e.g. running in a Dev Build that
- * predates the S31b EAS rebuild, or on web where the package is a
- * no-op) doesn't crash on launch. Mirrors the
- * `taskManagerAvailable`/`require()`-in-try-catch pattern used by
- * services/geofencing.ts — same reasoning, same shape.
+ * absence of the native binding (e.g. running on web where the
+ * package is a no-op) doesn't crash on launch.
  *
  * Public surface:
  *   - configureNotificationHandler() — call ONCE at app boot. Tells
- *     iOS to show banners + sound for foreground notifications too,
- *     so the receipt UX is symmetric across foreground/background.
- *   - requestNotificationPermission() — prompts user. Idempotent if
- *     already granted/denied (the OS returns the existing status
- *     without re-prompting after the first time).
- *   - getNotificationPermission() — read-only check.
- *   - fireClockInReceipt(...) — schedule an immediate local
- *     notification announcing a successful auto clock-in. Carries
- *     the `{ projectId, entryId }` payload that the deep-link tap
- *     handler in app/_layout.tsx unpacks for navigation.
- *   - notificationOnboardingFlags — AsyncStorage-backed "have we
- *     prompted for permission yet?" flag, mirrored on
- *     `locationOnboardingFlags` in services/permissions.ts.
+ *     iOS to show banners + sound for foreground notifications too.
+ *   - getNotificationPermission() — read-only permission check.
+ *   - subscribeToNotificationResponses(...) — listen for taps on
+ *     delivered notifications; hands the raw payload to the caller.
+ *   - getLastNotificationResponseData() — read the cold-launch tap
+ *     payload, if the app was booted by tapping a notification.
  */
 
 export type NotificationPermissionStatus =
@@ -34,75 +22,18 @@ export type NotificationPermissionStatus =
   | "denied"
   | "undetermined";
 
-/**
- * Notification payload schema. Carried in
- * `Notifications.NotificationContentInput.data` so the tap handler
- * (app/_layout.tsx) can route to the right project detail screen
- * with the entry id surfaced as a query param for the undo banner.
- *
- * `type` is a discriminator — future notification types (S32 exit
- * receipts, etc.) should use a different literal so the tap handler
- * can branch cleanly without inferring intent from data shape.
- */
-/**
- * Server-pushed payload announcing that the geofence-exit cron
- * fired an auto-clock-out for the user. Wire shape is owned by the
- * web server; mobile narrows incoming push `data` through
- * `parseClockOutReceiptData` before doing anything with it.
- *
- * The mobile-side ClockReceiptBanner (kind="out") is driven by
- * TimesheetContext.firedExit. The push handler in app/_layout.tsx
- * synthesizes a FiredExit from this payload (we don't have the full
- * BackendTimesheetEntry over the wire — only enough to identify it
- * + render the banner copy).
- */
-export interface ClockOutReceiptData {
-  type: "clock_out_receipt";
-  timeEntryId: number;
-  projectId: number;
-  clockOutAt: string;
-}
-
-/**
- * Normalized clock-in receipt payload. Two wire shapes are accepted
- * by `parseClockInReceiptData`:
- *
- *   1. **Local (legacy)** — produced by `fireClockInReceipt` for the
- *      DEV test-button path:
- *        { type, projectId, projectName, entryId, clockInTime }
- *
- *   2. **Server-pushed** — produced by the dwell-time cron when it
- *      fires an auto-clock-in (S3x-web):
- *        { type, projectId, timeEntryId, clockInAt }
- *
- * The parser normalizes both into this shape: `entryId` is always a
- * string (cast from `timeEntryId: number` for server payloads),
- * `clockInTime` is always an ISO string (aliased from `clockInAt` for
- * server payloads), and `projectName` is `string | undefined` —
- * populated only by the local shape since the server doesn't carry
- * it. Consumers must NOT rely on `projectName` for display; look it
- * up from DataContext by `projectId` if a name is needed.
- */
-export interface ClockInReceiptData {
-  type: "clock_in_receipt";
-  projectId: number;
-  projectName: string | undefined;
-  entryId: string;
-  clockInTime: string;
-}
-
 // ---------------------------------------------------------------------------
 // Module-top-level expo-notifications bootstrap
 // ---------------------------------------------------------------------------
 //
-// `require()` inside try/catch matches the geofencing.ts pattern:
+// `require()` inside try/catch:
 //   - Native binding present → `Notifications` is the real module
 //     and notificationsAvailable=true. All public functions delegate
 //     to it.
-//   - Native binding absent (pre-S31b Dev Build, web) → require()
-//     throws → caught → notificationsAvailable stays false. Public
-//     functions early-return with safe defaults so the rest of the
-//     app keeps working without notifications.
+//   - Native binding absent (web) → require() throws → caught →
+//     notificationsAvailable stays false. Public functions
+//     early-return with safe defaults so the rest of the app keeps
+//     working without notifications.
 //
 // We do NOT call configureNotificationHandler() at module load —
 // the handler must be set up exactly once from the React tree's
@@ -118,26 +49,10 @@ try {
   notificationsAvailable = true;
 } catch (err) {
   console.log(
-    "[notifications] expo-notifications unavailable on this build; receipts disabled",
+    "[notifications] expo-notifications unavailable on this build",
     err,
   );
 }
-
-// ---------------------------------------------------------------------------
-// AsyncStorage flag — first-time permission prompt gating
-// ---------------------------------------------------------------------------
-//
-// Mirrors locationOnboardingFlags in services/permissions.ts. Set
-// once after the first geofence sync triggers a permission prompt
-// (regardless of grant/deny outcome) so we don't re-prompt on every
-// subsequent sync.
-
-const NOTIFICATIONS_PROMPTED_KEY = "@fv/onboarding/notificationsPrompted";
-
-export const notificationOnboardingFlags = {
-  getPrompted: () => storage.getFlag(NOTIFICATIONS_PROMPTED_KEY),
-  setPrompted: () => storage.setFlag(NOTIFICATIONS_PROMPTED_KEY, true),
-};
 
 // ---------------------------------------------------------------------------
 // Permission API
@@ -164,33 +79,6 @@ export async function getNotificationPermission(): Promise<NotificationPermissio
   }
 }
 
-/**
- * Prompt the user for notification permission. The OS only shows
- * the system dialog the first time per install; subsequent calls
- * return the existing grant/deny status without re-prompting.
- *
- * Caller is responsible for stamping
- * `notificationOnboardingFlags.setPrompted()` so we don't invoke
- * this on every geofence sync.
- */
-export async function requestNotificationPermission(): Promise<NotificationPermissionStatus> {
-  if (!notificationsAvailable || !Notifications) return "undetermined";
-  if (Platform.OS === "web") return "undetermined";
-  try {
-    const res = await Notifications.requestPermissionsAsync({
-      ios: {
-        allowAlert: true,
-        allowBadge: false,
-        allowSound: true,
-      },
-    });
-    return mapPermissionStatus(res.status);
-  } catch (err) {
-    console.log("[notifications] requestPermissionsAsync failed:", err);
-    return "undetermined";
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Foreground presentation handler
 // ---------------------------------------------------------------------------
@@ -198,9 +86,9 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
 /**
  * Configure how notifications are presented while the app is in the
  * foreground. Default iOS behavior is to suppress the banner when
- * the app is open — we override so the receipt UX is identical
+ * the app is open — we override so the notification UX is identical
  * whether the user is on the app, on the home screen, or has the
- * phone locked. Symmetry per S31b spec.
+ * phone locked.
  *
  * SDK 54+: `shouldShowAlert` is deprecated in favor of the explicit
  * `shouldShowBanner` (top-of-screen banner) + `shouldShowList`
@@ -222,95 +110,13 @@ export function configureNotificationHandler(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Clock-in receipt
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Tap response handling
 // ---------------------------------------------------------------------------
 
 /**
- * Type-narrow an unknown notification payload into a clock-in
- * receipt. Returns null on any shape mismatch — defensive against
- * future S32+ receipt types reusing the same listener channel.
- *
- * Owned here because the payload schema is owned here. Consumers
- * (app/_layout.tsx) should NOT inline their own type-guards; route
- * any new payload narrowing through this module.
- */
-export function parseClockInReceiptData(
-  raw: unknown,
-): ClockInReceiptData | null {
-  if (!raw || typeof raw !== "object") return null;
-  const d = raw as Record<string, unknown>;
-  if (d.type !== "clock_in_receipt") return null;
-  if (typeof d.projectId !== "number") return null;
-
-  // Discriminate by field presence: server-pushed payloads carry
-  // `timeEntryId: number` + `clockInAt: string`, while the legacy
-  // local-fired payloads (fireClockInReceipt — DEV test path) carry
-  // `entryId: string` + `clockInTime: string` + `projectName`. We
-  // accept either and normalize to a single output type so the
-  // deep-link handler in app/_layout.tsx and the foreground push
-  // handler don't need to branch on wire shape.
-  if (typeof d.timeEntryId === "number" && typeof d.clockInAt === "string") {
-    // Server-pushed shape. projectName is not on the wire — caller
-    // looks it up from DataContext by projectId if needed.
-    return {
-      type: "clock_in_receipt",
-      projectId: d.projectId,
-      projectName: undefined,
-      entryId: String(d.timeEntryId),
-      clockInTime: d.clockInAt,
-    };
-  }
-  if (typeof d.entryId === "string" && typeof d.clockInTime === "string") {
-    // Local DEV-fire shape.
-    return {
-      type: "clock_in_receipt",
-      projectId: d.projectId,
-      projectName:
-        typeof d.projectName === "string" ? d.projectName : undefined,
-      entryId: d.entryId,
-      clockInTime: d.clockInTime,
-    };
-  }
-  return null;
-}
-
-/**
- * Type-narrow an unknown notification payload into a clock-out
- * receipt. Sibling to `parseClockInReceiptData` — same defensive
- * shape, different `type` discriminator. Server wire contract:
- *   { type: "clock_out_receipt", timeEntryId: number,
- *     projectId: number, clockOutAt: ISO string }
- */
-export function parseClockOutReceiptData(
-  raw: unknown,
-): ClockOutReceiptData | null {
-  if (!raw || typeof raw !== "object") return null;
-  const d = raw as Record<string, unknown>;
-  if (d.type !== "clock_out_receipt") return null;
-  if (
-    typeof d.timeEntryId !== "number" ||
-    typeof d.projectId !== "number" ||
-    typeof d.clockOutAt !== "string"
-  ) {
-    return null;
-  }
-  return {
-    type: "clock_out_receipt",
-    timeEntryId: d.timeEntryId,
-    projectId: d.projectId,
-    clockOutAt: d.clockOutAt,
-  };
-}
-
-/**
  * Subscribe to notification tap events ("response received"). The
  * handler receives the raw `data` payload — caller is responsible
- * for narrowing it via `parseClockInReceiptData` (or future
- * equivalents for new receipt types).
+ * for narrowing it before use.
  *
  * No-op on web / missing native binding — returns a no-op
  * unsubscribe so the caller's useEffect cleanup is still safe to
@@ -354,72 +160,5 @@ export async function getLastNotificationResponseData(): Promise<unknown | null>
       err,
     );
     return null;
-  }
-}
-
-/**
- * Format the clock-in time for the notification body in the user's
- * locale. US contractors (the bulk of the user base) get
- * 12-hour AM/PM with no leading zero on the hour, no seconds:
- * "3:15 PM". Locales that prefer 24h get 24h via the OS — we don't
- * force `hour12`.
- */
-function formatClockInTime(date: Date): string {
-  return date.toLocaleTimeString(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
-/**
- * Schedule an immediate local notification announcing a successful
- * auto clock-in. Called from the geofence task body's silent-auto
- * sequence AFTER `api.clockIn()` resolves successfully — never
- * before, because a "you've been clocked in" notification with no
- * matching DB row would be a worse UX than a missed receipt.
- *
- * Body uses a middle dot (U+00B7) separator: "[Project] · 3:15 PM".
- * Title is the constant "Clocked in" so the front-load on the lock
- * screen is the action verb; project/time live in the body.
- *
- * No-op if expo-notifications isn't loaded OR the user has denied
- * permission. Permission state is checked by the OS at delivery
- * time, so we don't need to gate on it here — the OS just silently
- * drops the notification, which is the correct degradation.
- */
-export async function fireClockInReceipt(
-  projectName: string,
-  projectId: number,
-  entryId: string,
-  clockInTime: Date,
-): Promise<void> {
-  if (!notificationsAvailable || !Notifications) {
-    console.log(
-      "[notifications] fireClockInReceipt skipped: notifications unavailable",
-    );
-    return;
-  }
-  const data: ClockInReceiptData = {
-    type: "clock_in_receipt",
-    projectId,
-    projectName,
-    entryId,
-    clockInTime: clockInTime.toISOString(),
-  };
-  try {
-    await Notifications.scheduleNotificationAsync({
-      content: {
-        title: "Clocked in",
-        body: `${projectName} \u00B7 ${formatClockInTime(clockInTime)}`,
-        data: data as unknown as Record<string, unknown>,
-        sound: "default",
-      },
-      trigger: null,
-    });
-    console.log(
-      `[notifications] receipt fired for ${projectName} (entry ${entryId})`,
-    );
-  } catch (err) {
-    console.log("[notifications] scheduleNotificationAsync failed:", err);
   }
 }

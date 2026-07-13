@@ -17,25 +17,18 @@ import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { PendingEnterBanner } from "@/components/PendingEnterBanner";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { DataProvider } from "@/contexts/DataContext";
-import { TimesheetProvider } from "@/contexts/TimesheetContext";
 import { ToastProvider } from "@/contexts/ToastContext";
 import { UploadStatusProvider } from "@/contexts/UploadStatusContext";
-import { useTimesheet } from "@/contexts/TimesheetContext";
-import type { BackendTimesheetEntry } from "@/services/api";
 import {
   configureNotificationHandler,
   getLastNotificationResponseData,
-  parseClockInReceiptData,
-  parseClockOutReceiptData,
   subscribeToNotificationResponses,
 } from "@/services/notifications";
 import {
   registerExistingPushTokenIfGranted,
   registerPushTokenWithServer,
-  subscribeToForegroundNotifications,
 } from "@/services/pushNotifications";
 import { startProcessor as startUploadQueueProcessor } from "@/services/uploadQueue";
 
@@ -70,7 +63,6 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!ready) return;
     const inAuthGroup = segments[0] === "(auth)";
-    const inOnboardingGroup = segments[0] === "(onboarding)";
 
     if (!user) {
       if (!inAuthGroup) router.replace("/(auth)/login");
@@ -80,10 +72,8 @@ function AuthGate({ children }: { children: React.ReactNode }) {
 
     // User is authenticated. Time-tracking onboarding has been
     // removed, so there is no location/notification onboarding gate
-    // to wait on — route straight into the app. The inOnboardingGroup
-    // check stays during the transition: existing installs may
-    // cold-start on the (onboarding) route and must be moved off it.
-    if (inAuthGroup || inOnboardingGroup) {
+    // to wait on — route straight into the app.
+    if (inAuthGroup) {
       router.replace("/(tabs)");
     }
     setRouted(true);
@@ -101,7 +91,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!user) return;
     if (pushRegisteredRef.current) return;
-    const inGate = segments[0] === "(auth)" || segments[0] === "(onboarding)";
+    const inGate = segments[0] === "(auth)";
     if (inGate) return;
     pushRegisteredRef.current = true;
     let cancelled = false;
@@ -185,59 +175,6 @@ function parseDeepLink(data: unknown): PendingDeepLink | null {
   return { projectId: d.projectId };
 }
 
-/**
- * Build a synthetic BackendTimesheetEntry from a clock_out_receipt
- * push payload. ClockReceiptBanner kind="out" reads only `entry.id`,
- * `entry.projectId`, and the sibling `firedAt` field — all other
- * BackendTimesheetEntry fields are placeholders. We set `clockIn`
- * to clockOutAt because the wire payload doesn't carry the original
- * clock-in time and the banner doesn't display it. `clockOut` is
- * set to clockOutAt for correctness (the entry IS closed at this
- * point, server-side).
- */
-function syntheticEntryFromPush(payload: {
-  timeEntryId: number;
-  projectId: number;
-  clockOutAt: string;
-}): BackendTimesheetEntry {
-  return {
-    id: payload.timeEntryId,
-    projectId: payload.projectId,
-    clockIn: payload.clockOutAt,
-    clockOut: payload.clockOutAt,
-    source: "auto_geofence",
-    notes: null,
-  } as unknown as BackendTimesheetEntry;
-}
-
-/**
- * Sibling of `syntheticEntryFromPush` for the dwell-time auto-clock-
- * IN path (S3x-mobile). Builds a minimal BackendTimesheetEntry from
- * a clock_in_receipt push payload. ClockReceiptBanner kind="in"
- * reads only `entry.id`, `entry.projectId`, and the sibling
- * `firedAt` field — clockOut is null by definition (the entry is
- * still open at this point, server-side).
- *
- * `entryId` is wire-typed as `string` after parser normalization
- * (server sends `timeEntryId: number`, parser casts via String()).
- * BackendTimesheetEntry's `id` field is typed `number | string`, so
- * the string is accepted directly without coercion.
- */
-function syntheticEntryFromPushIn(payload: {
-  entryId: string;
-  projectId: number;
-  clockInTime: string;
-}): BackendTimesheetEntry {
-  return {
-    id: payload.entryId,
-    projectId: payload.projectId,
-    clockIn: payload.clockInTime,
-    clockOut: null,
-    source: "auto_geofence",
-    notes: null,
-  } as unknown as BackendTimesheetEntry;
-}
-
 function NotificationDeepLinkHandler() {
   const router = useRouter();
   const { user, ready } = useAuth();
@@ -286,73 +223,10 @@ function NotificationDeepLinkHandler() {
   return null;
 }
 
-/**
- * Foreground-received handler for server-pushed clock_out_receipt.
- * Distinct from NotificationDeepLinkHandler (which handles TAP
- * events): this fires when the push arrives while the JS runtime
- * is foregrounded, BEFORE any user interaction. We don't navigate
- * (intrusive), only seed `firedExit` so that:
- *   - if the user is already on /project/[id] for the matching
- *     project, the kind="out" banner appears immediately
- *   - if the user is elsewhere, the OS banner (rendered by
- *     setNotificationHandler's shouldShowBanner: true) is the
- *     foreground signal; on subsequent navigation to the project,
- *     the in-app banner is also there
- *
- * Other notification types are ignored (forward-compat for future
- * S3x receipt kinds reusing the same channel).
- */
-function ForegroundPushHandler() {
-  const { setFiredExit, setFiredEnter } = useTimesheet();
-  useEffect(() => {
-    const unsub = subscribeToForegroundNotifications((data) => {
-      // Try clock_out_receipt first, then clock_in_receipt. Each
-      // parser is its own type guard and returns null on shape
-      // mismatch, so the order is purely a small perf detail (most
-      // foreground pushes today are still exit receipts; enters are
-      // newer). If neither matches, fall through silently — forward-
-      // compat for future receipt types reusing the same channel.
-      const out = parseClockOutReceiptData(data);
-      if (out) {
-        console.log(
-          `[push] foreground clock_out_receipt: project ${out.projectId}, entry ${out.timeEntryId}`,
-        );
-        setFiredExit({
-          entry: syntheticEntryFromPush({
-            timeEntryId: out.timeEntryId,
-            projectId: out.projectId,
-            clockOutAt: out.clockOutAt,
-          }),
-          firedAt: out.clockOutAt,
-        });
-        return;
-      }
-      const inReceipt = parseClockInReceiptData(data);
-      if (inReceipt) {
-        console.log(
-          `[push] foreground clock_in_receipt: project ${inReceipt.projectId}, entry ${inReceipt.entryId}`,
-        );
-        setFiredEnter({
-          entry: syntheticEntryFromPushIn({
-            entryId: inReceipt.entryId,
-            projectId: inReceipt.projectId,
-            clockInTime: inReceipt.clockInTime,
-          }),
-          firedAt: inReceipt.clockInTime,
-        });
-        return;
-      }
-    });
-    return unsub;
-  }, [setFiredExit, setFiredEnter]);
-  return null;
-}
-
 function RootLayoutNav() {
   return (
     <Stack screenOptions={{ headerBackTitle: "Back" }}>
       <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-      <Stack.Screen name="(onboarding)" options={{ headerShown: false }} />
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen
         name="project/[id]"
@@ -430,16 +304,12 @@ export default function RootLayout() {
               <AuthProvider>
                 <DataProvider>
                   <ToastProvider>
-                    <TimesheetProvider>
-                      <UploadStatusProvider>
-                        <AuthGate>
-                          <NotificationDeepLinkHandler />
-                          <ForegroundPushHandler />
-                          <PendingEnterBanner />
-                          <RootLayoutNav />
-                        </AuthGate>
-                      </UploadStatusProvider>
-                    </TimesheetProvider>
+                    <UploadStatusProvider>
+                      <AuthGate>
+                        <NotificationDeepLinkHandler />
+                        <RootLayoutNav />
+                      </AuthGate>
+                    </UploadStatusProvider>
                   </ToastProvider>
                 </DataProvider>
               </AuthProvider>

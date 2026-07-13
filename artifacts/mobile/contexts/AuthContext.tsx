@@ -25,7 +25,6 @@ import {
   isPhotoAspectRatio,
   type PhotoAspectRatio,
 } from "@/services/imageProcessing";
-import { autoTrackingPref } from "@/services/preferences";
 import {
   registerPushTokenWithServer,
   subscribeToPushTokenRotation,
@@ -58,12 +57,6 @@ export interface AuthUser {
    * UI must treat `null` as non-admin.
    */
   role: UserRole | null;
-  /**
-   * Auto clock-in/out master switch (S33). Default true on null/missing
-   * from the server. Mirrored to AsyncStorage via autoTrackingPref so
-   * the background geofence task can read it without React context.
-   */
-  autoTrackingEnabled: boolean;
 }
 
 interface AuthState {
@@ -73,7 +66,6 @@ interface AuthState {
   signOut: () => Promise<void>;
   requestPasswordReset: (email: string) => Promise<void>;
   refreshUser: () => Promise<void>;
-  updatePreferences: (input: { autoTrackingEnabled?: boolean }) => Promise<void>;
   /**
    * Account-level settings (admin-managed). `null` until first
    * successful fetch; capture.tsx falls back to
@@ -113,7 +105,6 @@ function toAuthUser(raw: BackendUser | null): AuthUser | null {
     name: raw.name ? String(raw.name) : combined || String(raw.email),
     isOwner: raw.isOwner === true,
     role,
-    autoTrackingEnabled: raw.autoTrackingEnabled !== false,
   };
 }
 
@@ -125,7 +116,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Mirror of `user` for callbacks that need fresh state without
   // re-binding on every render (AppState listener, optimistic
-  // updatePreferences rollback).
+  // update rollback).
   const userRef = useRef<AuthUser | null>(null);
   // Same mirror for accountSettings so the optimistic-update
   // rollback in updateAccountSettings() can read fresh state without
@@ -178,10 +169,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
   useEffect(() => {
     userRef.current = user;
-    // Keep the AsyncStorage mirror in lockstep with the in-memory
-    // user object. The geofence background task reads this on every
-    // OS Enter/Exit dispatch (services/geofencing.ts).
-    if (user) void autoTrackingPref.set(user.autoTrackingEnabled);
   }, [user]);
 
   const bootstrap = useCallback(async () => {
@@ -293,11 +280,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [fetchAccountSettings]);
 
-  // Refresh user on every foreground transition. Mirrors the
-  // useGeofenceSync.tsx AppState pattern. Single network call,
-  // single-row response — keeps mobile within ~30s of server truth
-  // for fields like autoTrackingEnabled that may be flipped from
-  // the web app or another device.
+  // Refresh user on every foreground transition. Single network
+  // call, single-row response — keeps mobile within ~30s of server
+  // truth for fields that may be flipped from the web app or another
+  // device.
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
       if (state !== "active") return;
@@ -308,10 +294,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [refreshUser]);
 
   /**
-   * Optimistic update for account-level settings. Mirror of
-   * updatePreferences but for the admin-only PATCH endpoint and the
-   * separate accountSettings slice rather than the per-user
-   * AuthUser. UI gates the call on `user?.role === "admin"`; this
+   * Optimistic update for account-level settings. Targets the
+   * admin-only PATCH endpoint and the separate accountSettings slice
+   * rather than the per-user AuthUser. UI gates the call on
+   * `user?.role === "admin"`; this
    * helper does NOT re-check role — the server returns 403 if a
    * non-admin somehow invokes it, the catch below rolls back.
    */
@@ -355,36 +341,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } catch (err) {
         // Roll back. Re-throw so the caller (settings UI) can
         // surface a toast — AuthProvider mounts outside Toast
-        // Provider so we cannot useToast() here. Same constraint as
-        // updatePreferences below.
+        // Provider so we cannot useToast() here.
         setAccountSettings(prev);
-        throw err;
-      }
-    },
-    [],
-  );
-
-  const updatePreferences = useCallback(
-    async (input: { autoTrackingEnabled?: boolean }): Promise<void> => {
-      const prev = userRef.current;
-      if (!prev) return;
-
-      // Optimistic: flip local state immediately so the toggle is
-      // instant-on. The userRef mirroring effect persists the new
-      // value to AsyncStorage as a side-effect of setUser.
-      const optimistic: AuthUser = { ...prev, ...input };
-      setUser(optimistic);
-
-      try {
-        const updated = await api.updatePreferences(input);
-        const mapped = toAuthUser(normalizeUser(updated));
-        if (mapped) setUser(mapped);
-      } catch (err) {
-        // Roll back local state. The mirroring effect will rewrite
-        // AsyncStorage from the restored prev. Re-throw so the caller
-        // (profile screen) can surface the toast — AuthProvider mounts
-        // OUTSIDE ToastProvider so we cannot useToast() here.
-        setUser(prev);
         throw err;
       }
     },
@@ -431,17 +389,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // we re-POST so the server's record stays fresh. Subscription is
   // created once and torn down on unmount.
   //
-  // Build 23: the prior capture-on-login effect (3s setTimeout
-  // calling registerForPushNotificationsAsync) was removed. That
-  // wallclock timer raced the iPad onboarding location dialogs,
-  // stacking the notification permission modal on top of the
-  // foreground/always location prompts — the chaotic ordering App
-  // Review rejected Build 22 for. The notification permission
-  // request is now owned exclusively by the onboarding controller
-  // (app/(onboarding)/location.tsx). Token capture is handled by
-  // AuthGate calling registerExistingPushTokenIfGranted ONCE the
-  // user has cleared onboarding (preprompted flag set), so the
-  // capture never prompts and never races location.
+  // Token capture itself is handled by AuthGate calling
+  // registerExistingPushTokenIfGranted once the user is
+  // authenticated — it's check-only and never prompts.
   useEffect(() => {
     const unsub = subscribeToPushTokenRotation((token) => {
       console.log("[push] token rotated, re-registering");
@@ -467,7 +417,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signOut,
       requestPasswordReset,
       refreshUser,
-      updatePreferences,
       accountSettings,
       updateAccountSettings,
     }),
@@ -478,7 +427,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signOut,
       requestPasswordReset,
       refreshUser,
-      updatePreferences,
       accountSettings,
       updateAccountSettings,
     ],
