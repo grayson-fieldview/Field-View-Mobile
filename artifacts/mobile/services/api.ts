@@ -1,4 +1,5 @@
 import { Platform } from "react-native";
+import { Sentry } from "./sentry";
 import { secureStorage } from "./secureStorage";
 import type { CanonicalStroke, StoredStroke } from "./types";
 
@@ -93,10 +94,13 @@ export async function loadSession(): Promise<string | null> {
     console.log("[boot] keychain read fv_session_cookies = MISSING");
   } else {
     console.log(
-      `[boot] keychain read fv_session_cookies = "${raw.slice(0, 30)}…" (len=${raw.length})`,
+      `[boot] keychain read fv_session_cookies = PRESENT (len=${raw.length})`,
     );
   }
-  console.log("[cookie-migration] loaded from storage:", raw);
+  console.log(
+    "[cookie-migration] loaded from storage:",
+    raw ? `(len=${raw.length})` : "(empty)",
+  );
   if (!raw) {
     console.log("[cookie-migration] after dedup: (empty)");
     console.log("[cookie-migration] differs:", false);
@@ -109,7 +113,7 @@ export async function loadSession(): Promise<string | null> {
   cookieJar.clear();
   ingestSerializedJar(raw);
   const cleaned = serializeCookieJar();
-  console.log("[cookie-migration] after dedup:", cleaned);
+  console.log("[cookie-migration] after dedup:", `(len=${cleaned.length})`);
   console.log("[cookie-migration] differs:", raw !== cleaned);
   const snap = debugCookieSnapshot();
   console.log(
@@ -161,6 +165,19 @@ function parseAndPersistSetCookie(raw: string | null): void {
       const msg = e instanceof Error ? e.message : String(e);
       console.log(`[login] keychain write = FAILED: ${msg}`);
     });
+}
+
+/**
+ * Sentry breadcrumb for every ApiError throw. Deliberately limited to
+ * method + path + status — NEVER request bodies, NEVER cookie values.
+ */
+function breadcrumbApiError(method: string, path: string, status: number): void {
+  Sentry.addBreadcrumb({
+    category: "api",
+    level: "error",
+    message: `ApiError ${status} ${method} ${path}`,
+    data: { method, path, status },
+  });
 }
 
 export class ApiError extends Error {
@@ -237,7 +254,11 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
   if (Platform.OS === "ios" || Platform.OS === "android") {
     headers["X-FieldView-Client"] = "mobile-1";
   }
-  console.log("[cookie-outgoing]", headers["Cookie"]);
+  // Never log raw cookie values — length + presence only.
+  console.log(
+    "[cookie-outgoing]",
+    headers["Cookie"] ? `(present, len=${headers["Cookie"].length})` : "(none)",
+  );
 
   // Path-aware tagged tracing for the two auth endpoints we're
   // diagnosing (cold-start instant-logout investigation). These
@@ -252,7 +273,7 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
   if (traceTag === "[boot]") {
     console.log("[boot] me() about to fetch");
     console.log(
-      `[boot] me() Cookie header being sent = "${(headers["Cookie"] ?? "").slice(0, 60)}…" (len=${(headers["Cookie"] ?? "").length})`,
+      `[boot] me() Cookie header being sent = ${headers["Cookie"] ? "yes" : "no"} (len=${(headers["Cookie"] ?? "").length})`,
     );
     console.log(
       "[boot] me() X-FieldView-Client header =",
@@ -263,7 +284,10 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
   let res: Response;
   try {
     console.log("[api] →", opts.method ?? "GET", API_BASE_URL + path);
-    console.log("[api] Cookie being sent:", headers["Cookie"] || "(none)");
+    console.log(
+      "[api] Cookie being sent:",
+      headers["Cookie"] ? `(present, len=${headers["Cookie"].length})` : "(none)",
+    );
     res = await fetch(`${API_BASE_URL}${path}`, {
       method: opts.method ?? "GET",
       headers,
@@ -272,7 +296,11 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
     });
     console.log("[api] ←", res.status, path);
     const setCookieHeader = res.headers.get("set-cookie");
-    if (setCookieHeader) console.log("[api] Set-Cookie received:", setCookieHeader);
+    if (setCookieHeader)
+      console.log(
+        "[api] Set-Cookie received:",
+        `(present, len=${setCookieHeader.length})`,
+      );
     if (traceTag === "[boot]") {
       console.log("[boot] me() response status =", res.status);
       console.log(
@@ -282,7 +310,7 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
     }
     if (traceTag === "[login]") {
       console.log(
-        `[login] response Set-Cookie raw = ${setCookieHeader ? `"${setCookieHeader.slice(0, 120)}…"` : "(none)"}`,
+        `[login] response Set-Cookie = ${setCookieHeader ? `(present, len=${setCookieHeader.length})` : "(none)"}`,
       );
       // Peek the jar AFTER parseAndPersistSetCookie runs below.
       // We can't snapshot here (parsing happens after this block);
@@ -290,15 +318,45 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
       // call.
     }
   } catch (e) {
+    breadcrumbApiError(opts.method ?? "GET", path, 0);
     throw new ApiError(
       0,
       `Network request failed: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
 
-  // Capture any new/rotated session cookies.
+  // Capture any new/rotated session cookies — but ONLY from success
+  // responses. A 401/403/5xx must never be allowed to overwrite the
+  // authenticated cookie: if the server attaches a fresh anonymous
+  // session cookie to an error response (e.g. express-session
+  // re-issuing a sid on an unauthenticated request), ingesting it
+  // would silently clobber the good session in the jar + Keychain
+  // and log the user out on the next foreground refresh.
+  //
+  // Logout does NOT rely on this path — signOut() calls
+  // clearSession() explicitly, which wipes the jar and Keychain.
   const setCookie = res.headers.get("set-cookie");
-  if (setCookie) parseAndPersistSetCookie(setCookie);
+  if (setCookie) {
+    if (res.ok) {
+      parseAndPersistSetCookie(setCookie);
+    } else {
+      // Visibility hook: if this fires in production, the server IS
+      // sending Set-Cookie on error responses — correlate with the
+      // instant-logout reports. Never log cookie values.
+      const discardMsg = `[api] DISCARDED Set-Cookie on error response: ${opts.method ?? "GET"} ${path} status=${res.status}`;
+      console.warn(discardMsg);
+      Sentry.addBreadcrumb({
+        category: "session",
+        level: "warning",
+        message: "Set-Cookie discarded on error response",
+        data: { method: opts.method ?? "GET", path, status: res.status },
+      });
+      Sentry.captureMessage("Set-Cookie discarded on error response", {
+        level: "warning",
+        extra: { method: opts.method ?? "GET", path, status: res.status },
+      });
+    }
+  }
   if (traceTag === "[login]") {
     const snap = debugCookieSnapshot();
     console.log(
@@ -336,6 +394,7 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
     } catch {
       /* ignore */
     }
+    breadcrumbApiError(opts.method ?? "GET", path, res.status);
     throw new ApiError(res.status, message, parsed);
   }
 
@@ -349,6 +408,7 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
       return null as T;
     }
     const text = await res.text().catch(() => "");
+    breadcrumbApiError(opts.method ?? "GET", path, res.status);
     throw new ApiError(
       res.status,
       "Unexpected non-JSON response from API — the endpoint may not exist or you may be logged out.",
@@ -1573,13 +1633,34 @@ export const api = {
         credentials: Platform.OS === "web" ? "include" : "omit",
       });
     } catch (e) {
+      breadcrumbApiError("POST", `/api/reports/${reportId}/pdf`, 0);
       throw new ApiError(
         0,
         `Network request failed: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
+    // Same rule as apiFetch: never ingest Set-Cookie from an error
+    // response — it could clobber the authenticated session cookie.
     const setCookie = res.headers.get("set-cookie");
-    if (setCookie) parseAndPersistSetCookie(setCookie);
+    if (setCookie) {
+      if (res.ok) {
+        parseAndPersistSetCookie(setCookie);
+      } else {
+        console.warn(
+          `[api] DISCARDED Set-Cookie on error response: POST /api/reports/${reportId}/pdf status=${res.status}`,
+        );
+        Sentry.addBreadcrumb({
+          category: "session",
+          level: "warning",
+          message: "Set-Cookie discarded on error response",
+          data: { method: "POST", path: `/api/reports/${reportId}/pdf`, status: res.status },
+        });
+        Sentry.captureMessage("Set-Cookie discarded on error response", {
+          level: "warning",
+          extra: { method: "POST", path: `/api/reports/${reportId}/pdf`, status: res.status },
+        });
+      }
+    }
     if (!res.ok) {
       let message = `PDF request failed (${res.status})`;
       try {
@@ -1591,6 +1672,7 @@ export const api = {
       } catch {
         /* ignore — fall back to generic message */
       }
+      breadcrumbApiError("POST", `/api/reports/${reportId}/pdf`, res.status);
       throw new ApiError(res.status, message);
     }
     return await res.blob();
