@@ -91,7 +91,13 @@
         }
       ],
       "expo-task-manager",
-      "@sentry/react-native/expo",
+      [
+        "@sentry/react-native/expo",
+        {
+          "organization": "fv",
+          "project": "field-view-mobile"
+        }
+      ],
       [
         "expo-notifications",
         {

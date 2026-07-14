@@ -10,7 +10,12 @@ export function initSentry() {
   Sentry.init({
     dsn: DSN,
     environment: __DEV__ ? "development" : "production",
+    // Dev (Metro/Replit preview) reporting is disabled so the
+    // dashboard isn't flooded with compile-time noise. All SDK calls
+    // (breadcrumbs, captureException) become safe no-ops in dev.
+    enabled: !__DEV__,
     tracesSampleRate: 0.1,
+    // Session tracking on so Crash Free Sessions populates.
     enableAutoSessionTracking: true,
     // Native crash handling (iOS/Android crash reporters). This is
     // the SDK default but pinned explicitly so a future SDK default
