@@ -3,15 +3,17 @@ import { Image } from "expo-image";
 import * as MediaLibrary from "expo-media-library";
 import { VideoView, useVideoPlayer } from "expo-video";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import Gallery from "react-native-awesome-gallery";
@@ -22,6 +24,7 @@ import { useData } from "@/contexts/DataContext";
 import { useToast } from "@/contexts/ToastContext";
 import { rawToCanonical, toPixels } from "@/services/annotations";
 import { ApiError, api, buildMediaReferencesMessage } from "@/services/api";
+import type { BackendCommentResponse } from "@/services/api";
 import { isRenderablePencilStroke } from "@/services/types";
 import type { AnnotationStroke, Photo, StoredStroke } from "@/services/types";
 
@@ -206,6 +209,77 @@ export default function PhotoViewerScreen() {
     }
   };
   useEffect(() => () => flushRef.current(), []);
+
+  // ----- Photo comments (display + create; no delete endpoint exists) -----
+  // Keyed off the CURRENT photo's backend mediaId. Local-only photos
+  // (pending/failed uploads, mediaId undefined) get no comments UI at all.
+  const currentMediaId = currentPhoto?.mediaId;
+  const [comments, setComments] = useState<BackendCommentResponse[] | null>(
+    null, // null = loading (or not yet requested)
+  );
+  const [commentsError, setCommentsError] = useState(false);
+  const [commentDraft, setCommentDraft] = useState("");
+  const [postingComment, setPostingComment] = useState(false);
+  // Monotonic sequence guards against a slow response for photo A landing
+  // after the user swiped to photo B (no stale comments from the previous
+  // photo). Any newer request or photo change bumps the sequence and the
+  // stale response is dropped.
+  const commentsFetchSeq = useRef(0);
+  // Ref mirror so async handlers can check "am I still on this photo?"
+  // after an await without capturing a stale render value.
+  const currentMediaIdRef = useRef(currentMediaId);
+  currentMediaIdRef.current = currentMediaId;
+
+  const loadComments = useCallback(async (mid: number) => {
+    const seq = ++commentsFetchSeq.current;
+    try {
+      const rows = await api.getMediaComments(mid);
+      if (commentsFetchSeq.current !== seq) return;
+      setComments(rows);
+      setCommentsError(false);
+    } catch {
+      if (commentsFetchSeq.current !== seq) return;
+      setComments([]);
+      setCommentsError(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Swiped to a different photo: drop everything from the previous one
+    // (list, draft, in-flight markers) and fetch fresh.
+    commentsFetchSeq.current++;
+    setComments(null);
+    setCommentsError(false);
+    setCommentDraft("");
+    setPostingComment(false);
+    if (currentMediaId !== undefined) void loadComments(currentMediaId);
+  }, [currentMediaId, loadComments]);
+
+  const onPostComment = async () => {
+    if (currentMediaId === undefined) return;
+    const content = commentDraft.trim();
+    if (!content || postingComment) return;
+    const mid = currentMediaId;
+    setPostingComment(true);
+    try {
+      await api.createMediaComment(mid, content);
+    } catch (e) {
+      setPostingComment(false);
+      if (e instanceof ApiError && e.status === 401) return;
+      // Keep the typed text so the user can retry.
+      showToast("Couldn't post comment");
+      return;
+    }
+    setPostingComment(false);
+    // Server contract: POST returns the bare row without the joined user
+    // object, so re-fetch the list instead of appending locally. Only
+    // clear the draft (and refetch) if we're still on the same photo —
+    // if the user swiped away mid-post the effect already reset state.
+    if (currentMediaIdRef.current === mid) {
+      setCommentDraft("");
+      void loadComments(mid);
+    }
+  };
 
   if (!startPhoto || !currentPhoto) {
     return (
@@ -667,33 +741,149 @@ export default function PhotoViewerScreen() {
         ) : null}
       </View>
 
-      {/* Caption / metadata — only when not editing (preserved behavior). */}
+      {/* Caption / metadata + comments — only when not editing (preserved
+          behavior). KeyboardAvoidingView lifts the whole bottom sheet so
+          the comment input stays visible above the keyboard on iOS. */}
       {!editing ? (
-        <ScrollView
-          style={[
-            styles.metaWrap,
-            { paddingBottom: insets.bottom + 16 },
-          ]}
-          contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 10 }}
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          style={styles.metaWrap}
         >
-          {currentPhoto.note ? (
-            <Text style={styles.metaCaption}>{currentPhoto.note}</Text>
-          ) : null}
-          {currentPhoto.takenAt ? (
-            <Text style={styles.metaSub}>
-              {new Date(currentPhoto.takenAt).toLocaleString()}
-            </Text>
-          ) : null}
-          {currentPhoto.latitude != null && currentPhoto.longitude != null ? (
-            <Text style={styles.metaSub}>
-              {currentPhoto.latitude.toFixed(5)},{" "}
-              {currentPhoto.longitude.toFixed(5)}
-            </Text>
-          ) : null}
-        </ScrollView>
+          <ScrollView
+            style={styles.metaScroll}
+            contentContainerStyle={{
+              paddingHorizontal: 16,
+              paddingVertical: 10,
+            }}
+            keyboardShouldPersistTaps="handled"
+          >
+            {currentPhoto.note ? (
+              <Text style={styles.metaCaption}>{currentPhoto.note}</Text>
+            ) : null}
+            {currentPhoto.takenAt ? (
+              <Text style={styles.metaSub}>
+                {new Date(currentPhoto.takenAt).toLocaleString()}
+              </Text>
+            ) : null}
+            {currentPhoto.latitude != null && currentPhoto.longitude != null ? (
+              <Text style={styles.metaSub}>
+                {currentPhoto.latitude.toFixed(5)},{" "}
+                {currentPhoto.longitude.toFixed(5)}
+              </Text>
+            ) : null}
+
+            {/* Comments — hidden entirely for local-only photos (no
+                backend media row yet, so there's nothing to comment on). */}
+            {currentMediaId !== undefined ? (
+              <View style={styles.commentsBlock}>
+                <Text style={styles.commentsHeader}>Comments</Text>
+                {comments === null ? (
+                  <ActivityIndicator
+                    size="small"
+                    color="#f09004"
+                    style={{ alignSelf: "flex-start", marginVertical: 6 }}
+                  />
+                ) : commentsError ? (
+                  <Text style={styles.commentEmpty}>
+                    Couldn't load comments.
+                  </Text>
+                ) : comments.length === 0 ? (
+                  <Text style={styles.commentEmpty}>No comments yet.</Text>
+                ) : (
+                  comments.map((c) => (
+                    <View key={c.id} style={styles.commentItem}>
+                      <View style={styles.commentTopRow}>
+                        <Text style={styles.commentAuthor}>
+                          {commentAuthorName(c)}
+                        </Text>
+                        <Text style={styles.commentDate}>
+                          {formatCommentDate(c.createdAt)}
+                        </Text>
+                      </View>
+                      <Text style={styles.commentText}>{c.content}</Text>
+                    </View>
+                  ))
+                )}
+              </View>
+            ) : null}
+          </ScrollView>
+
+          {currentMediaId !== undefined ? (
+            <View
+              style={[
+                styles.commentInputRow,
+                { paddingBottom: insets.bottom + 8 },
+              ]}
+            >
+              <TextInput
+                value={commentDraft}
+                onChangeText={setCommentDraft}
+                placeholder="Add Comment"
+                placeholderTextColor="rgba(255,255,255,0.45)"
+                style={styles.commentInput}
+                multiline
+                editable={!postingComment}
+                accessibilityLabel="Add Comment"
+              />
+              <Pressable
+                onPress={() => void onPostComment()}
+                disabled={postingComment || commentDraft.trim().length === 0}
+                accessibilityRole="button"
+                accessibilityLabel="Post comment"
+                accessibilityState={{
+                  disabled:
+                    postingComment || commentDraft.trim().length === 0,
+                  busy: postingComment,
+                }}
+                style={[
+                  styles.commentPostBtn,
+                  {
+                    opacity:
+                      postingComment || commentDraft.trim().length === 0
+                        ? 0.5
+                        : 1,
+                  },
+                ]}
+              >
+                {postingComment ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Feather name="send" size={16} color="#fff" />
+                )}
+              </Pressable>
+            </View>
+          ) : (
+            <View style={{ height: insets.bottom + 8 }} />
+          )}
+        </KeyboardAvoidingView>
       ) : null}
     </View>
   );
+}
+
+/** Author display name; the `user` join is absent for deleted authors. */
+function commentAuthorName(c: BackendCommentResponse): string {
+  const name = [c.user?.firstName, c.user?.lastName]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+  return name || "Deleted user";
+}
+
+/**
+ * "Jul 23, 2026, 5:29 PM" in device-local time — matches the format the
+ * web comments UI uses.
+ */
+function formatCommentDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 function pointsToPath(pts: { x: number; y: number }[]): string {
@@ -856,8 +1046,85 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    maxHeight: 140,
     backgroundColor: "rgba(0,0,0,0.5)",
+  },
+  // Height cap moved off metaWrap onto the inner scroller so the comment
+  // input row below it is never clipped by the old maxHeight.
+  metaScroll: {
+    maxHeight: 240,
+  },
+  commentsBlock: {
+    marginTop: 10,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "rgba(255,255,255,0.25)",
+    paddingTop: 8,
+  },
+  commentsHeader: {
+    color: "#fff",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 13,
+    marginBottom: 4,
+  },
+  commentEmpty: {
+    color: "rgba(255,255,255,0.6)",
+    fontFamily: "Inter_400Regular",
+    fontSize: 12,
+    marginVertical: 4,
+  },
+  commentItem: {
+    marginBottom: 8,
+  },
+  commentTopRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+    gap: 8,
+  },
+  commentAuthor: {
+    color: "#f09004",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 12,
+    flexShrink: 1,
+  },
+  commentDate: {
+    color: "rgba(255,255,255,0.55)",
+    fontFamily: "Inter_400Regular",
+    fontSize: 11,
+  },
+  commentText: {
+    color: "#fff",
+    fontFamily: "Inter_400Regular",
+    fontSize: 13,
+    marginTop: 2,
+  },
+  commentInputRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "rgba(255,255,255,0.25)",
+  },
+  commentInput: {
+    flex: 1,
+    color: "#fff",
+    fontFamily: "Inter_400Regular",
+    fontSize: 13,
+    backgroundColor: "rgba(255,255,255,0.12)",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 8,
+    maxHeight: 90,
+  },
+  commentPostBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#f09004",
+    alignItems: "center",
+    justifyContent: "center",
   },
   metaCaption: {
     color: "#fff",

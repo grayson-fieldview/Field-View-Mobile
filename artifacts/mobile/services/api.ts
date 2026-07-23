@@ -875,6 +875,24 @@ export interface BackendSharedGalleryResponse {
   createdAt?: string;
 }
 
+/**
+ * A media comment row from GET/POST /api/media/:id/comments.
+ * `user` is optional: the list join omits it for deleted authors, and
+ * the POST response never includes it.
+ */
+export interface BackendCommentResponse {
+  id: number;
+  mediaId: number;
+  userId: string | null;
+  content: string;
+  createdAt: string;
+  user?: {
+    firstName: string | null;
+    lastName: string | null;
+    profileImageUrl: string | null;
+  };
+}
+
 // ----- Endpoint wrappers -----
 export const api = {
   base: API_BASE_URL,
@@ -1467,6 +1485,25 @@ export const api = {
    */
   getMediaReferences: (mediaId: string | number) =>
     apiFetch<MediaReferences>(`/api/media/${mediaId}/references`),
+
+  /**
+   * List a photo's comments, newest-first. `user` is ABSENT when the
+   * comment's author was deleted — callers render a fallback name.
+   */
+  getMediaComments: (mediaId: number) =>
+    apiFetch<BackendCommentResponse[]>(`/api/media/${mediaId}/comments`),
+
+  /**
+   * Create a comment. Server returns 201 with the BARE comment row —
+   * no joined `user` object — so callers must RE-FETCH the list after
+   * a successful post instead of appending the response locally.
+   * 400 on empty content (callers should trim + guard first).
+   */
+  createMediaComment: (mediaId: number, content: string) =>
+    apiFetch<BackendCommentResponse>(`/api/media/${mediaId}/comments`, {
+      method: "POST",
+      json: { content },
+    }),
 
   // ----- Media annotations (cross-platform sync, 2026-06) -----
   //
