@@ -94,7 +94,7 @@
       [
         "@sentry/react-native/expo",
         {
-          "organization": "fv",
+          "organization": "field-view",
           "project": "field-view-mobile"
         }
       ],
