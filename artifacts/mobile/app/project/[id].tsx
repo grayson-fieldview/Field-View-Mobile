@@ -253,6 +253,56 @@ export default function ProjectDetailScreen() {
     setSelected(new Set());
   };
 
+  // True while the POST /api/galleries call for a selected-photos
+  // share is in flight. Disables the selection-bar Share button so a
+  // double-tap can't mint two gallery tokens.
+  const [sharingSelection, setSharingSelection] = useState(false);
+
+  const onShareSelected = async () => {
+    if (!project) return;
+    if (sharingSelection) return;
+    if (selected.size === 0) return;
+    // The selection set holds local photo ids (strings). The server
+    // wants numeric media ids, and local-only photos (pending/failed
+    // uploads) have no mediaId yet — they can't be in a share link.
+    const photosById = new Map(photos.map((p) => [p.id, p]));
+    const mediaIds: number[] = [];
+    for (const pid of Array.from(selected)) {
+      const mid = Number(photosById.get(pid)?.mediaId);
+      if (Number.isFinite(mid)) mediaIds.push(mid);
+    }
+    if (mediaIds.length === 0) {
+      showToast("Selected photos haven't finished uploading yet");
+      return;
+    }
+    setSharingSelection(true);
+    let token: string;
+    try {
+      const res = await api.createSharedGallery({
+        projectId: Number(project.id),
+        mediaIds,
+      });
+      token = res.token;
+    } catch {
+      // Stay in selection mode so the user can retry.
+      showToast("Couldn't generate share link");
+      setSharingSelection(false);
+      return;
+    }
+    setSharingSelection(false);
+    // Same hard-coded public web origin rationale as onShareProject:
+    // recipients open this in Safari, so it must always point at the
+    // public web host. NOTE: /gallery/<token>, not /p/<token>.
+    const shareUrl = `https://app.field-view.com/gallery/${token}`;
+    showToast("Share link ready");
+    try {
+      await Share.share({ url: shareUrl });
+    } catch {
+      /* user cancelled */
+    }
+    exitSelectMode();
+  };
+
   const onShareProject = async () => {
     if (!project) return;
     if (sharingProject) return;
@@ -582,13 +632,23 @@ export default function ProjectDetailScreen() {
               <Pressable
                 onPress={onShareProject}
                 hitSlop={10}
-                disabled={sharingProject}
+                // Disabled during selection mode: this button shares the
+                // WHOLE project, and leaving it tappable while photos are
+                // selected made users believe it shared the selection
+                // (the original selective-share bug report).
+                disabled={sharingProject || selectMode}
                 accessibilityRole="button"
                 accessibilityLabel="Share project"
-                accessibilityState={{ disabled: sharingProject, busy: sharingProject }}
+                accessibilityState={{
+                  disabled: sharingProject || selectMode,
+                  busy: sharingProject,
+                }}
                 style={({ pressed }) => [
                   styles.heroIconBtn,
-                  { opacity: sharingProject ? 0.5 : pressed ? 0.7 : 1 },
+                  {
+                    opacity:
+                      sharingProject || selectMode ? 0.5 : pressed ? 0.7 : 1,
+                  },
                 ]}
               >
                 {sharingProject ? (
@@ -917,6 +977,31 @@ export default function ProjectDetailScreen() {
                 >
                   {selected.size} selected
                 </Text>
+                <Pressable
+                  onPress={onShareSelected}
+                  hitSlop={6}
+                  disabled={sharingSelection || selected.size === 0}
+                  accessibilityRole="button"
+                  accessibilityLabel="Share selected photos"
+                  accessibilityState={{
+                    disabled: sharingSelection || selected.size === 0,
+                    busy: sharingSelection,
+                  }}
+                >
+                  {sharingSelection ? (
+                    <ActivityIndicator size="small" color={colors.primary} />
+                  ) : (
+                    <Text
+                      style={{
+                        color: colors.primary,
+                        fontFamily: "Inter_700Bold",
+                        fontSize: 14,
+                      }}
+                    >
+                      Share
+                    </Text>
+                  )}
+                </Pressable>
                 <Pressable onPress={deleteSelected} hitSlop={6}>
                   <Text
                     style={{

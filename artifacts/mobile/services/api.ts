@@ -862,6 +862,19 @@ export interface BackendShareTokenResponse {
   shareToken: string;
 }
 
+/**
+ * Response from POST /api/galleries. Server creates a NEW shared
+ * gallery row scoped to the given mediaIds (every POST mints a fresh
+ * token; old links keep working; no expiry). Recipient-facing URL is
+ * `https://app.field-view.com/gallery/<token>`.
+ */
+export interface BackendSharedGalleryResponse {
+  token: string;
+  id?: number | string;
+  projectId?: number;
+  createdAt?: string;
+}
+
 // ----- Endpoint wrappers -----
 export const api = {
   base: API_BASE_URL,
@@ -983,6 +996,23 @@ export const api = {
       `/api/projects/${projectId}/share`,
       { method: "POST" },
     ),
+
+  /**
+   * Create a share link scoped to a SUBSET of a project's media.
+   * Server contract: mediaIds required + non-empty, every id must
+   * belong to the project. Returns 201 with the SharedGallery row —
+   * use `response.token` to build the /gallery/<token> URL.
+   */
+  createSharedGallery: (payload: {
+    projectId: number;
+    mediaIds: number[];
+    includeMetadata?: boolean;
+    includeDescriptions?: boolean;
+  }) =>
+    apiFetch<BackendSharedGalleryResponse>("/api/galleries", {
+      method: "POST",
+      json: payload,
+    }),
 
   /** Revoke the current public share token. Server returns 204. */
   unshareProject: (projectId: string | number) =>
