@@ -6,14 +6,20 @@ import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
 import * as MediaLibrary from "expo-media-library";
+import { Image } from "expo-image";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
+  KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -25,6 +31,11 @@ import { LetterboxOverlay } from "@/components/LetterboxOverlay";
 import { useAuth } from "@/contexts/AuthContext";
 import { useData } from "@/contexts/DataContext";
 import { useColors } from "@/hooks/useColors";
+import {
+  api,
+  ApiError,
+  type BackendCommentResponse,
+} from "@/services/api";
 import {
   cropToAspectRatio,
   DEFAULT_PHOTO_ASPECT_RATIO,
@@ -70,7 +81,7 @@ export default function CaptureScreen() {
      */
     checklistItemId?: string;
   }>();
-  const { projects, addPhoto, addPhotosBatch } = useData();
+  const { projects, photos, addPhoto, addPhotosBatch } = useData();
   const { accountSettings } = useAuth();
   const project = projects.find((p) => p.id === projectId);
 
@@ -103,6 +114,48 @@ export default function CaptureScreen() {
   const [cameraReady, setCameraReady] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+
+  // ---- Photo tray (session-scoped) ----
+  // Local photo ids captured/imported since this screen mounted, newest
+  // first. The ids point into DataContext.photos, so tray tiles re-render
+  // reactively as uploads finish (uploaded flag flips, mediaId arrives).
+  // State dies with the screen — the photos themselves are already saved
+  // to the project through the untouched capture pipeline.
+  const [trayIds, setTrayIds] = useState<string[]>([]);
+  const [trayOpen, setTrayOpen] = useState(false);
+  // Pulse on the tray button when new photos land. A fly-to-tray animation
+  // would have to overlay the CameraView's native hierarchy (position
+  // tracking across the preview frame), so per the fallback in the spec we
+  // pulse the tray itself: scale 1 → 1.22 → 1, native driver, ~320ms.
+  const trayScale = useRef(new Animated.Value(1)).current;
+  const pulseTray = useCallback(() => {
+    Animated.sequence([
+      Animated.timing(trayScale, {
+        toValue: 1.22,
+        duration: 140,
+        useNativeDriver: true,
+      }),
+      Animated.timing(trayScale, {
+        toValue: 1,
+        duration: 180,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [trayScale]);
+  const addToTray = useCallback(
+    (saved: Photo[]) => {
+      if (saved.length === 0) return;
+      setTrayIds((ids) => [...saved.map((p) => p.id).reverse(), ...ids]);
+      pulseTray();
+    },
+    [pulseTray],
+  );
+
+  // Live photo objects for the tray, newest first. Falls back over gaps
+  // (e.g. a photo deleted elsewhere) by simply omitting it.
+  const trayPhotos = trayIds
+    .map((id) => photos.find((p) => p.id === id))
+    .filter((p): p is Photo => !!p);
 
   const cameraRef = useRef<CameraView | null>(null);
   const burstActive = useRef(false);
@@ -288,7 +341,7 @@ export default function CaptureScreen() {
       const entry = await captureOnce();
       if (entry) {
         const prepared = await prepareForUpload(entry.uri);
-        await addPhoto({
+        const saved = await addPhoto({
           projectId: project.id,
           uri: prepared?.localUri ?? entry.uri,
           takenAt: entry.takenAt,
@@ -300,6 +353,7 @@ export default function CaptureScreen() {
           fileSize: prepared?.fileSize,
           checklistItemId,
         });
+        addToTray([saved]);
         setSessionCount((s) => s + 1);
         Haptics.notificationAsync(
           Haptics.NotificationFeedbackType.Success,
@@ -341,7 +395,7 @@ export default function CaptureScreen() {
           p: await prepareForUpload(b.uri),
         })),
       );
-      await addPhotosBatch(
+      const savedBatch = await addPhotosBatch(
         prepared.map(({ b, p }) => ({
           projectId: project.id,
           uri: p?.localUri ?? b.uri,
@@ -355,6 +409,7 @@ export default function CaptureScreen() {
           checklistItemId,
         })),
       );
+      addToTray(savedBatch);
       setSessionCount((s) => s + buffer.current.length);
       buffer.current = [];
       Haptics.notificationAsync(
@@ -474,7 +529,7 @@ export default function CaptureScreen() {
           p: await prepareForUpload(a.uri, a.mimeType ?? "image/jpeg"),
         })),
       );
-      await addPhotosBatch(
+      const savedImports = await addPhotosBatch(
         prepared.map(({ a, p }) => ({
           projectId: project.id,
           uri: p?.localUri ?? a.uri,
@@ -488,6 +543,8 @@ export default function CaptureScreen() {
           checklistItemId,
         })),
       );
+      // Imports count toward the session pill, so they join the tray too.
+      addToTray(savedImports);
       setSessionCount((s) => s + res.assets.length);
       setStatusMsg(
         `Added ${res.assets.length} photo${res.assets.length === 1 ? "" : "s"} from library`,
@@ -755,25 +812,59 @@ export default function CaptureScreen() {
           </BlurView>
         </View>
 
-        {/* Bottom main row: gallery, shutter, done */}
+        {/* Bottom main row: tray + gallery (left), shutter, done */}
         <View style={styles.bottomBar}>
-          <Pressable
-            onPress={pickFromGallery}
-            disabled={importing || recording}
-            accessibilityLabel="Import from gallery"
-            style={({ pressed }) => [
-              styles.sideBtn,
-              {
-                opacity: importing || recording ? 0.4 : pressed ? 0.7 : 1,
-              },
-            ]}
-          >
-            {importing ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Feather name="image" size={22} color="#fff" />
-            )}
-          </Pressable>
+          <View style={styles.leftCluster}>
+            {/* Photo tray — appears with the first capture this session. */}
+            {trayPhotos.length > 0 ? (
+              <Animated.View style={{ transform: [{ scale: trayScale }] }}>
+                <Pressable
+                  onPress={() => setTrayOpen(true)}
+                  disabled={recording}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open photo tray, ${trayPhotos.length} photo${trayPhotos.length === 1 ? "" : "s"} this session`}
+                  style={({ pressed }) => [
+                    styles.trayBtn,
+                    { opacity: recording ? 0.4 : pressed ? 0.8 : 1 },
+                  ]}
+                >
+                  <Image
+                    source={{ uri: trayPhotos[0].uri }}
+                    style={styles.trayThumb}
+                    contentFit="cover"
+                    transition={100}
+                  />
+                  <View
+                    style={[
+                      styles.trayBadge,
+                      { backgroundColor: colors.primary },
+                    ]}
+                  >
+                    <Text style={styles.trayBadgeText}>
+                      {trayPhotos.length > 99 ? "99+" : trayPhotos.length}
+                    </Text>
+                  </View>
+                </Pressable>
+              </Animated.View>
+            ) : null}
+            <Pressable
+              onPress={pickFromGallery}
+              disabled={importing || recording}
+              accessibilityLabel="Import from gallery"
+              style={({ pressed }) => [
+                styles.sideBtn,
+                {
+                  opacity: importing || recording ? 0.4 : pressed ? 0.7 : 1,
+                },
+              ]}
+            >
+              {importing ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Feather name="image" size={22} color="#fff" />
+              )}
+            </Pressable>
+          </View>
 
           <Pressable
             onPressIn={onShutterPressIn}
@@ -886,7 +977,304 @@ export default function CaptureScreen() {
               : "Tap for one photo · Hold for burst"}
         </Text>
       </View>
+
+      {/* Photo tray sheet — Modal over the camera; CameraView stays
+          mounted underneath, so closing returns instantly with state
+          intact. */}
+      <TraySheet
+        visible={trayOpen}
+        photos={trayPhotos}
+        onClose={() => setTrayOpen(false)}
+        primary={colors.primary}
+      />
     </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Photo tray sheet: this session's photos (newest first, rendered from
+// local URIs so they appear before upload finishes), with per-photo
+// upload state and — once a backend mediaId exists — the same comments
+// flow as the photo viewer (api.getMediaComments / api.createMediaComment,
+// re-fetch after post).
+// ---------------------------------------------------------------------------
+
+/** Author display name; the `user` join is absent for deleted authors.
+ *  (Mirrors the private helper in app/photo/[id].tsx.) */
+function commentAuthorName(c: BackendCommentResponse): string {
+  const name = [c.user?.firstName, c.user?.lastName]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+  return name || "Deleted user";
+}
+
+/** "Jul 23, 2026, 5:29 PM" in device-local time — same format as the
+ *  photo viewer / web comments UI. */
+function formatCommentDate(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function TraySheet({
+  visible,
+  photos,
+  onClose,
+  primary,
+}: {
+  visible: boolean;
+  photos: Photo[];
+  onClose: () => void;
+  primary: string;
+}) {
+  const insets = useSafeAreaInsets();
+  // Expanded photo (comment view), by local photo id. Resolved against the
+  // live `photos` prop so upload completion (mediaId arriving) re-renders
+  // the comment area from the "Uploading…" note to the real input.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const expanded = expandedId
+    ? (photos.find((p) => p.id === expandedId) ?? null)
+    : null;
+
+  // Comments state for the expanded photo (photo viewer pattern:
+  // null = loading, re-fetch after post, sequence guard against stale
+  // responses landing after the user switched photos).
+  const [comments, setComments] = useState<BackendCommentResponse[] | null>(
+    null,
+  );
+  const [commentsError, setCommentsError] = useState(false);
+  const [commentDraft, setCommentDraft] = useState("");
+  const [postingComment, setPostingComment] = useState(false);
+  const fetchSeq = useRef(0);
+  const expandedMediaId = expanded?.mediaId;
+  const expandedMediaIdRef = useRef(expandedMediaId);
+  expandedMediaIdRef.current = expandedMediaId;
+
+  const loadComments = useCallback(async (mid: number) => {
+    const seq = ++fetchSeq.current;
+    try {
+      const rows = await api.getMediaComments(mid);
+      if (fetchSeq.current !== seq) return;
+      setComments(rows);
+      setCommentsError(false);
+    } catch {
+      if (fetchSeq.current !== seq) return;
+      setComments([]);
+      setCommentsError(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSeq.current++;
+    setComments(null);
+    setCommentsError(false);
+    setCommentDraft("");
+    setPostingComment(false);
+    if (expandedMediaId !== undefined) void loadComments(expandedMediaId);
+  }, [expandedMediaId, loadComments]);
+
+  // Reset the expanded state whenever the sheet closes.
+  useEffect(() => {
+    if (!visible) setExpandedId(null);
+  }, [visible]);
+
+  const onPostComment = async () => {
+    if (expandedMediaId === undefined) return;
+    const content = commentDraft.trim();
+    if (!content || postingComment) return;
+    const mid = expandedMediaId;
+    setPostingComment(true);
+    try {
+      await api.createMediaComment(mid, content);
+    } catch (e) {
+      setPostingComment(false);
+      if (e instanceof ApiError && e.status === 401) return;
+      setCommentsError(true);
+      return;
+    }
+    setPostingComment(false);
+    // POST returns the bare row without the joined user — re-fetch the
+    // list instead of appending locally (photo viewer contract).
+    if (expandedMediaIdRef.current === mid) {
+      setCommentDraft("");
+      void loadComments(mid);
+    }
+  };
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+    >
+      <Pressable style={styles.traySheetBackdrop} onPress={onClose} />
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <View
+          style={[styles.traySheet, { paddingBottom: insets.bottom + 12 }]}
+        >
+          <View style={styles.traySheetHandleRow}>
+            <View style={styles.traySheetHandle} />
+          </View>
+          <View style={styles.traySheetHeader}>
+            {expanded ? (
+              <Pressable
+                onPress={() => setExpandedId(null)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Back to tray"
+                style={{ flexDirection: "row", alignItems: "center", gap: 4 }}
+              >
+                <Feather name="chevron-left" size={18} color="#fff" />
+                <Text style={styles.traySheetTitle}>All photos</Text>
+              </Pressable>
+            ) : (
+              <Text style={styles.traySheetTitle}>
+                This session · {photos.length} photo
+                {photos.length === 1 ? "" : "s"}
+              </Text>
+            )}
+            <Pressable
+              onPress={onClose}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="Close tray"
+            >
+              <Feather name="x" size={20} color="#fff" />
+            </Pressable>
+          </View>
+
+          {expanded ? (
+            <ScrollView
+              style={{ flexGrow: 0 }}
+              contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}
+              keyboardShouldPersistTaps="handled"
+            >
+              <Image
+                source={{ uri: expanded.uri }}
+                style={styles.trayExpandedImg}
+                contentFit="contain"
+                transition={100}
+              />
+              {expanded.mediaId == null ? (
+                <View style={styles.trayUploadingNote}>
+                  <ActivityIndicator size="small" color="#fff" />
+                  <Text style={styles.trayUploadingNoteText}>
+                    Uploading… comments available shortly
+                  </Text>
+                </View>
+              ) : (
+                <View style={{ gap: 10 }}>
+                  {comments === null ? (
+                    <ActivityIndicator
+                      size="small"
+                      color="#fff"
+                      style={{ marginVertical: 8 }}
+                    />
+                  ) : comments.length === 0 && !commentsError ? (
+                    <Text style={styles.trayCommentMeta}>No comments yet</Text>
+                  ) : (
+                    comments.map((c) => (
+                      <View key={c.id} style={styles.trayCommentRow}>
+                        <Text style={styles.trayCommentAuthor}>
+                          {commentAuthorName(c)}
+                          <Text style={styles.trayCommentMeta}>
+                            {"  "}
+                            {formatCommentDate(c.createdAt)}
+                          </Text>
+                        </Text>
+                        <Text style={styles.trayCommentBody}>{c.content}</Text>
+                      </View>
+                    ))
+                  )}
+                  {commentsError ? (
+                    <Text style={[styles.trayCommentMeta, { color: "#fca5a5" }]}>
+                      Couldn't load comments
+                    </Text>
+                  ) : null}
+                  <View style={styles.trayCommentInputRow}>
+                    <TextInput
+                      value={commentDraft}
+                      onChangeText={setCommentDraft}
+                      placeholder="Add a comment…"
+                      placeholderTextColor="rgba(255,255,255,0.45)"
+                      style={styles.trayCommentInput}
+                      multiline
+                      editable={!postingComment}
+                    />
+                    <Pressable
+                      onPress={() => void onPostComment()}
+                      disabled={
+                        postingComment || commentDraft.trim().length === 0
+                      }
+                      accessibilityRole="button"
+                      accessibilityLabel="Post comment"
+                      style={[
+                        styles.trayCommentSend,
+                        {
+                          backgroundColor: primary,
+                          opacity:
+                            postingComment ||
+                            commentDraft.trim().length === 0
+                              ? 0.5
+                              : 1,
+                        },
+                      ]}
+                    >
+                      {postingComment ? (
+                        <ActivityIndicator size="small" color="#fff" />
+                      ) : (
+                        <Feather name="send" size={16} color="#fff" />
+                      )}
+                    </Pressable>
+                  </View>
+                </View>
+              )}
+            </ScrollView>
+          ) : (
+            <ScrollView
+              style={{ flexGrow: 0 }}
+              contentContainerStyle={styles.trayGrid}
+            >
+              {photos.map((p) => (
+                <Pressable
+                  key={p.id}
+                  onPress={() => setExpandedId(p.id)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Review photo and add a comment"
+                  style={styles.trayTile}
+                >
+                  <Image
+                    source={{ uri: p.uri }}
+                    style={StyleSheet.absoluteFill}
+                    contentFit="cover"
+                    transition={100}
+                  />
+                  {!p.uploaded ? (
+                    <View style={styles.trayTileUploading}>
+                      <ActivityIndicator size="small" color="#fff" />
+                    </View>
+                  ) : (
+                    <View style={styles.trayTileDone}>
+                      <Feather name="check" size={10} color="#fff" />
+                    </View>
+                  )}
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
   );
 }
 
@@ -1058,6 +1446,167 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(0,0,0,0.45)",
+  },
+  leftCluster: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  trayBtn: {
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    overflow: "visible",
+    backgroundColor: "rgba(0,0,0,0.45)",
+  },
+  trayThumb: {
+    width: 56,
+    height: 56,
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.85)",
+  },
+  trayBadge: {
+    position: "absolute",
+    top: -6,
+    right: -6,
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    paddingHorizontal: 5,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  trayBadgeText: {
+    color: "#fff",
+    fontFamily: "Inter_700Bold",
+    fontSize: 11,
+  },
+  traySheetBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.4)",
+  },
+  traySheet: {
+    backgroundColor: "#161616",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: "100%",
+  },
+  traySheetHandleRow: {
+    alignItems: "center",
+    paddingTop: 10,
+    paddingBottom: 4,
+  },
+  traySheetHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "rgba(255,255,255,0.25)",
+  },
+  traySheetHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  traySheetTitle: {
+    color: "#fff",
+    fontFamily: "Inter_700Bold",
+    fontSize: 16,
+  },
+  trayGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
+  trayTile: {
+    width: "31.5%",
+    aspectRatio: 1,
+    borderRadius: 10,
+    overflow: "hidden",
+    backgroundColor: "#262626",
+  },
+  trayTileUploading: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.35)",
+  },
+  trayTileDone: {
+    position: "absolute",
+    top: 6,
+    right: 6,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "rgba(22,163,74,0.9)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  trayExpandedImg: {
+    width: "100%",
+    aspectRatio: 4 / 3,
+    borderRadius: 12,
+    backgroundColor: "#262626",
+  },
+  trayUploadingNote: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 12,
+    borderRadius: 10,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  trayUploadingNoteText: {
+    color: "rgba(255,255,255,0.75)",
+    fontFamily: "Inter_500Medium",
+    fontSize: 13,
+  },
+  trayCommentRow: {
+    gap: 2,
+  },
+  trayCommentAuthor: {
+    color: "#fff",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 13,
+  },
+  trayCommentMeta: {
+    color: "rgba(255,255,255,0.5)",
+    fontFamily: "Inter_500Medium",
+    fontSize: 12,
+  },
+  trayCommentBody: {
+    color: "rgba(255,255,255,0.85)",
+    fontFamily: "Inter_400Regular",
+    fontSize: 14,
+  },
+  trayCommentInputRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 8,
+    marginTop: 4,
+  },
+  trayCommentInput: {
+    flex: 1,
+    minHeight: 40,
+    maxHeight: 100,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    color: "#fff",
+    fontFamily: "Inter_400Regular",
+    fontSize: 14,
+  },
+  trayCommentSend: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
   },
   shutter: {
     width: 84,
