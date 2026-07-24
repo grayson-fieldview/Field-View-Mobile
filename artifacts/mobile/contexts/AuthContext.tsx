@@ -1,3 +1,4 @@
+import NetInfo from "@react-native-community/netinfo";
 import * as Sentry from "@sentry/react-native";
 import React, {
   createContext,
@@ -15,11 +16,13 @@ import {
   api,
   clearSession,
   debugCookieSnapshot,
+  hasSession,
   loadSession,
   normalizeUser,
   type BackendUser,
   type UserRole,
 } from "@/services/api";
+import { secureStorage } from "@/services/secureStorage";
 import {
   DEFAULT_PHOTO_ASPECT_RATIO,
   isPhotoAspectRatio,
@@ -61,6 +64,15 @@ export interface AuthUser {
 
 interface AuthState {
   user: AuthUser | null;
+  /**
+   * Whether the current `user` has been confirmed by a live me() call
+   * this session. "unverified" = restored from the cached snapshot
+   * after an ambiguous boot-time failure (network blip, 5xx, malformed
+   * response); the re-verification loop keeps retrying silently until
+   * the server gives a definitive answer. UI may ignore this — an
+   * unverified user is still signed in per product policy.
+   */
+  authState: "verified" | "unverified";
   ready: boolean;
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
@@ -108,11 +120,134 @@ function toAuthUser(raw: BackendUser | null): AuthUser | null {
   };
 }
 
+// ---- Cached user snapshot ---------------------------------------------
+// Minimal persisted copy of the last me()-confirmed user, stored in the
+// Keychain alongside the session cookie. Lets a cold start that can't
+// reach the server land in the app (authState "unverified") instead of
+// on the login screen. Cleared on explicit sign-out and confirmed 401.
+
+const CACHED_USER_KEY = "fv_cached_user_v1";
+
+async function persistUserSnapshot(u: AuthUser): Promise<void> {
+  try {
+    await secureStorage.setItem(CACHED_USER_KEY, JSON.stringify(u));
+  } catch {
+    // Best-effort — a failed write only means the next ambiguous boot
+    // falls back to the no-snapshot path.
+  }
+}
+
+async function loadUserSnapshot(): Promise<AuthUser | null> {
+  try {
+    const raw = await secureStorage.getItem(CACHED_USER_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<AuthUser>;
+    if (typeof parsed.id !== "string" || typeof parsed.email !== "string") {
+      return null;
+    }
+    return {
+      id: parsed.id,
+      email: parsed.email,
+      firstName: parsed.firstName,
+      lastName: parsed.lastName,
+      name: typeof parsed.name === "string" ? parsed.name : parsed.email,
+      isOwner: parsed.isOwner === true,
+      role: parsed.role ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function clearUserSnapshot(): Promise<void> {
+  await secureStorage.removeItem(CACHED_USER_KEY).catch(() => {});
+}
+
+function breadcrumbAuthState(
+  state: "verified" | "unverified" | "signed-out",
+  trigger: string,
+): void {
+  console.log(`[auth] authState → ${state} (${trigger})`);
+  Sentry.addBreadcrumb({
+    category: "auth",
+    level: "info",
+    message: `authState → ${state}`,
+    data: { trigger },
+  });
+}
+
+// ---- me() outcome classification ---------------------------------------
+// PRODUCT POLICY: the user is signed out ONLY by explicit Sign Out or a
+// CONFIRMED 401 from an authenticated endpoint. Everything ambiguous —
+// network failure, 5xx, non-JSON, malformed 200 body, or a 401 on a
+// request that never carried the session cookie — preserves the session
+// and retries silently.
+
+type MeOutcome =
+  | { kind: "user"; user: AuthUser }
+  | { kind: "unauthenticated" }
+  | { kind: "ambiguous"; detail: string };
+
+async function checkMe(): Promise<MeOutcome> {
+  // Capture jar state BEFORE the request: a 401 on a request that went
+  // out without the session cookie proves nothing about the session.
+  const hadCookie = hasSession();
+  let raw: BackendUser | null;
+  try {
+    raw = await api.me();
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 401) {
+      if (!hadCookie) {
+        return { kind: "ambiguous", detail: "401-without-cookie" };
+      }
+      return { kind: "unauthenticated" };
+    }
+    const status = e instanceof ApiError ? e.status : "n/a";
+    const msg = e instanceof Error ? e.message : String(e);
+    return { kind: "ambiguous", detail: `status=${status} ${msg}` };
+  }
+  const next = toAuthUser(normalizeUser(raw));
+  if (next) return { kind: "user", user: next };
+  // 200 whose body isn't a user (JSON null, {}, error-shaped object).
+  // NOT a logout — a proxy/gateway can mangle a body without the
+  // session being dead. Log the shape (key names only, no PII).
+  const keys = raw && typeof raw === "object" ? Object.keys(raw) : [];
+  Sentry.captureMessage("auth: me() 200 body failed normalizeUser", {
+    level: "warning",
+    extra: { bodyType: raw === null ? "null" : typeof raw, keys },
+  });
+  return { kind: "ambiguous", detail: "malformed-200-body" };
+}
+
+/** Re-verification backoff while authState is "unverified". */
+const REVERIFY_BACKOFF_MS = [15_000, 30_000, 60_000];
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [authState, setAuthState] = useState<"verified" | "unverified">(
+    "verified",
+  );
   const [ready, setReady] = useState(false);
   const [accountSettings, setAccountSettings] =
     useState<AccountSettings | null>(null);
+
+  // Mirror of authState for listeners (AppState / NetInfo) that need
+  // fresh values without re-binding.
+  const authStateRef = useRef<"verified" | "unverified">("verified");
+  useEffect(() => {
+    authStateRef.current = authState;
+  }, [authState]);
+  // Serialize re-verification attempts (foreground + reconnect + timer
+  // can race).
+  const reverifyInFlightRef = useRef(false);
+  // Session epoch: bumped on explicit sign-out and confirmed-401
+  // sign-out. A reverify whose checkMe() was already in flight when the
+  // epoch changed discards its result — otherwise a slow me() response
+  // could repopulate the user right after sign-out.
+  const sessionEpochRef = useRef(0);
+  // captureMessage exactly once per app run the first time a boot lands
+  // in "unverified" — production frequency data for the snapshot path.
+  const bootUnverifiedReportedRef = useRef(false);
 
   // Mirror of `user` for callbacks that need fresh state without
   // re-binding on every render (AppState listener, optimistic
@@ -171,14 +306,84 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     userRef.current = user;
   }, [user]);
 
+  /**
+   * Apply a verified user: set state, mark verified, refresh the
+   * persisted snapshot, and pull account settings.
+   */
+  const applyVerifiedUser = useCallback(
+    (next: AuthUser, trigger: string) => {
+      setUser(next);
+      if (authStateRef.current !== "verified") {
+        setAuthState("verified");
+      }
+      breadcrumbAuthState("verified", trigger);
+      void persistUserSnapshot(next);
+      void fetchAccountSettings();
+    },
+    [fetchAccountSettings],
+  );
+
+  /**
+   * Confirmed-401 sign-out (policy-compliant). Local-only: clears the
+   * cookie jar + cached snapshot and drops in-memory state. Does NOT
+   * call api.logout()/push unregister — those belong to the explicit
+   * signOut path, and the server already considers this session dead.
+   */
+  const applyConfirmed401 = useCallback(async (trigger: string) => {
+    sessionEpochRef.current += 1;
+    breadcrumbAuthState("signed-out", trigger);
+    await clearSession().catch(() => {});
+    await clearUserSnapshot();
+    setUser(null);
+    setAuthState("verified");
+    setAccountSettings(null);
+  }, []);
+
+  /**
+   * Single re-verification attempt. Used by bootstrap recovery, the
+   * foreground listener, the NetInfo reconnect listener, and the
+   * unverified backoff timer. Policy:
+   *   user     → verified, snapshot refreshed
+   *   401      → signed out (confirmed, cookie was attached)
+   *   ambiguous → no state change; stay unverified and keep retrying
+   */
+  const reverify = useCallback(
+    async (trigger: string) => {
+      if (reverifyInFlightRef.current) return;
+      reverifyInFlightRef.current = true;
+      try {
+        const epoch = sessionEpochRef.current;
+        const outcome = await checkMe();
+        if (epoch !== sessionEpochRef.current) {
+          // User signed out (or was 401-signed-out) while this check was
+          // in flight — its result is stale, drop it.
+          console.log(`[auth] reverify (${trigger}) discarded: epoch changed`);
+          return;
+        }
+        if (outcome.kind === "user") {
+          applyVerifiedUser(outcome.user, trigger);
+        } else if (outcome.kind === "unauthenticated") {
+          await applyConfirmed401(trigger);
+        } else {
+          console.log(
+            `[auth] reverify (${trigger}) still ambiguous: ${outcome.detail}`,
+          );
+        }
+      } finally {
+        reverifyInFlightRef.current = false;
+      }
+    },
+    [applyVerifiedUser, applyConfirmed401],
+  );
+
   const bootstrap = useCallback(async () => {
     try {
       await loadSession();
     } catch (e) {
       // Keychain unreachable at cold start (rare but real on iOS
       // pre-unlock). Don't treat as logged out — the foreground
-      // refresh effect will re-attempt once the device is in a
-      // usable state. setReady so the app proceeds past splash.
+      // listener re-attempts once the device is in a usable state.
+      // setReady so the app proceeds past splash.
       const msg = e instanceof Error ? e.message : String(e);
       console.warn("[auth] bootstrap loadSession failed:", msg);
       setReady(true);
@@ -192,106 +397,139 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     console.log(
       `[boot] cookieJar right before me(): size=${preMeSnap.size}, ${preMeSnap.preview || "(empty)"}`,
     );
-    let me: BackendUser | null = null;
-    let isNetworkOrCsrfFailure = false;
-    try {
-      me = await api.me();
+    const outcome = await checkMe();
+    if (outcome.kind === "user") {
+      console.log("[boot] bootstrap outcome: verified user", outcome.user.id);
+      applyVerifiedUser(outcome.user, "boot");
+    } else if (outcome.kind === "unauthenticated") {
+      // Confirmed 401 with the cookie attached — the session is dead.
+      // Login screen (unchanged, policy-compliant). Clear the stale
+      // cookie + snapshot so the next boot doesn't re-run this dance.
+      console.log("[boot] bootstrap outcome: confirmed 401 → signed out");
+      await applyConfirmed401("boot-401");
+    } else if (hasSession()) {
+      // Ambiguous failure WITH a session cookie present: per product
+      // policy the user stays signed in. Restore the cached snapshot
+      // and enter "unverified" — the re-verification loop takes over.
       console.log(
-        "[boot] me() returned user =",
-        me && typeof me === "object" && "id" in me ? String(me.id) : "null",
+        `[boot] bootstrap outcome: ambiguous (${outcome.detail}) with cookie`,
       );
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 401) {
-        // Explicit unauthenticated response — stay on null user.
-        console.log("[boot] me() threw error status=401 message=", e.message);
-        me = null;
+      const snapshot = await loadUserSnapshot();
+      if (snapshot) {
+        setUser(snapshot);
+        setAuthState("unverified");
+        breadcrumbAuthState("unverified", `boot-ambiguous:${outcome.detail}`);
+        if (!bootUnverifiedReportedRef.current) {
+          bootUnverifiedReportedRef.current = true;
+          Sentry.captureMessage("auth: boot landed in unverified", {
+            level: "info",
+            extra: { detail: outcome.detail },
+          });
+        }
       } else {
-        // Network blip / 5xx / CSRF block at launch. Mirror the
-        // refreshUser hardening: don't yank the user to the login
-        // screen on a flaky cold start. Leave user at its initial
-        // null and let the AppState foreground listener re-attempt
-        // (services will retry once connectivity returns).
-        isNetworkOrCsrfFailure = true;
-        const status = e instanceof ApiError ? e.status : "n/a";
-        const msg = e instanceof Error ? e.message : String(e);
+        // Upgrade case: cookie exists but no snapshot yet (first launch
+        // on this build). We have no identity to render, so the login
+        // screen shows — but the session is NOT dead: mark unverified so
+        // the backoff timer + NetInfo reconnect keep re-checking, and a
+        // later successful me() signs the user back in automatically
+        // without re-entering credentials.
+        setAuthState("unverified");
+        breadcrumbAuthState(
+          "unverified",
+          `boot-ambiguous-no-snapshot:${outcome.detail}`,
+        );
+        Sentry.addBreadcrumb({
+          category: "auth",
+          level: "warning",
+          message: "boot ambiguous with cookie but no cached snapshot",
+          data: { detail: outcome.detail },
+        });
         console.warn(
-          `[boot] me() threw error status=${status} message=${msg}`,
+          "[boot] ambiguous failure with cookie but no cached snapshot — retrying in background",
         );
       }
-    }
-    if (!isNetworkOrCsrfFailure) {
-      const next = toAuthUser(normalizeUser(me));
-      console.log(
-        "[boot] bootstrap outcome: setUser(",
-        next ? next.id : "null",
-        ")",
-      );
-      setUser(next);
-      // Fetch account settings only when we have a real user — the
-      // settings endpoint requires auth, and there's nothing to
-      // load for a signed-out cold start. Fire-and-forget so it
-      // doesn't extend the splash window: capture.tsx tolerates a
-      // null settings object via DEFAULT_PHOTO_ASPECT_RATIO.
-      if (next) void fetchAccountSettings();
     } else {
-      console.log("[boot] bootstrap outcome: skipped setUser (preserve state)");
+      // Ambiguous failure with NO cookie: nothing to preserve.
+      console.log(
+        `[boot] bootstrap outcome: ambiguous (${outcome.detail}) without cookie → login`,
+      );
     }
     setReady(true);
-  }, [fetchAccountSettings]);
+  }, [applyVerifiedUser, applyConfirmed401]);
 
   useEffect(() => {
     bootstrap();
   }, [bootstrap]);
 
   const refreshUser = useCallback(async () => {
-    // Distinguish "explicitly unauthenticated" (401 → real logout)
-    // from "request couldn't complete" (network blip, 5xx, CSRF
-    // block, transient cookie-jar miss). Only the former should
-    // clear the in-memory user; the latter must preserve state so
-    // the user isn't yanked back to the login screen mid-session.
-    // Root cause of the TestFlight Build 6 instant-logout bug — the
-    // prior `.catch(() => null)` collapsed every failure mode into
-    // null and called setUser(null).
-    let me: BackendUser | null = null;
-    let isNetworkOrCsrfFailure = false;
-    try {
-      me = await api.me();
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 401) {
-        me = null;
-      } else {
-        isNetworkOrCsrfFailure = true;
-        const msg = e instanceof Error ? e.message : String(e);
-        console.warn("[auth] refreshUser failed (non-401):", msg);
-      }
-    }
-    if (!isNetworkOrCsrfFailure) {
-      const next = toAuthUser(normalizeUser(me));
-      setUser(next);
-      // Refetch account settings alongside the user object — admin
-      // could have flipped defaultPhotoAspectRatio from the web app
-      // or another device while we were backgrounded. Skip when the
-      // refresh resolved to a signed-out user (401 → next === null):
-      // the settings endpoint requires auth, so we'd just generate
-      // a guaranteed 401 + Sentry noise on every foreground after
-      // session expiry. Same fire-and-forget discipline as
-      // bootstrap; failure leaves the existing local copy in place.
-      if (next) void fetchAccountSettings();
-    }
-  }, [fetchAccountSettings]);
+    // Same policy as reverify: only a confirmed 401 (cookie attached)
+    // signs the user out; a malformed 200 body or any transport
+    // failure preserves the current user. Root cause of the TestFlight
+    // Build 6 instant-logout bug — the prior `.catch(() => null)`
+    // collapsed every failure mode into null and called setUser(null).
+    await reverify("refresh");
+  }, [reverify]);
 
-  // Refresh user on every foreground transition. Single network
-  // call, single-row response — keeps mobile within ~30s of server
-  // truth for fields that may be flipped from the web app or another
-  // device.
+  // Re-attempt auth on every foreground transition. No user-null guard
+  // anymore: when the boot check was ambiguous (user restored from
+  // snapshot, or null with a cookie in the upgrade case) this is a
+  // recovery path, not just a freshness refresh.
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
       if (state !== "active") return;
-      if (!userRef.current) return;
-      void refreshUser();
+      if (!userRef.current && !hasSession()) return;
+      void reverify("foreground");
     });
     return () => sub.remove();
-  }, [refreshUser]);
+  }, [reverify]);
+
+  // NetInfo reconnect → immediate re-verification while unverified
+  // (same offline→online edge detection as the upload queue).
+  useEffect(() => {
+    let lastConnected: boolean | null = null;
+    const unsub = NetInfo.addEventListener((state) => {
+      const connected =
+        state.isConnected === true && state.isInternetReachable !== false;
+      if (
+        lastConnected === false &&
+        connected &&
+        authStateRef.current === "unverified"
+      ) {
+        void reverify("net-reconnect");
+      }
+      lastConnected = connected;
+    });
+    return () => unsub();
+  }, [reverify]);
+
+  // Modest backoff timer while unverified: 15s → 30s → 60s (capped).
+  // Runs whether or not a snapshot user was restored (the no-snapshot
+  // upgrade case has user === null but still needs recovery). Cleared
+  // automatically when authState flips to "verified" (success or
+  // confirmed 401 both set it back).
+  useEffect(() => {
+    if (authState !== "unverified") return;
+    let cancelled = false;
+    let attempt = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const schedule = () => {
+      const delay =
+        REVERIFY_BACKOFF_MS[
+          Math.min(attempt, REVERIFY_BACKOFF_MS.length - 1)
+        ] ?? 60_000;
+      timer = setTimeout(() => {
+        attempt += 1;
+        void reverify("timer").finally(() => {
+          if (!cancelled && authStateRef.current === "unverified") schedule();
+        });
+      }, delay);
+    };
+    schedule();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [authState, reverify]);
 
   /**
    * Optimistic update for account-level settings. Targets the
@@ -360,7 +598,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (!me) me = normalizeUser(await api.me().catch(() => null));
       if (!me)
         throw new Error("Sign-in succeeded but we couldn't load your account.");
-      setUser(toAuthUser(me));
+      const next = toAuthUser(me);
+      setUser(next);
+      setAuthState("verified");
+      // Persist the snapshot so a future cold start that can't reach
+      // the server can restore this user instead of showing login.
+      if (next) void persistUserSnapshot(next);
       // Pull account settings on the same login transition so
       // capture screens opened immediately after signing in see the
       // admin's configured ratio rather than the "4:3" fallback for
@@ -371,13 +614,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const signOut = useCallback(async () => {
+    // Invalidate any in-flight reverify immediately so a slow me()
+    // response can't repopulate the user after this sign-out.
+    sessionEpochRef.current += 1;
     // Unregister push token BEFORE the session is invalidated so the
     // DELETE request still authenticates. Failure is logged inside
     // the helper and never thrown — sign-out must always proceed.
     await unregisterPushTokenWithServer();
     await api.logout().catch(() => null);
     await clearSession();
+    await clearUserSnapshot();
+    breadcrumbAuthState("signed-out", "explicit-sign-out");
     setUser(null);
+    setAuthState("verified");
     // Drop the cached settings so user-A's account-wide ratio
     // doesn't bleed into user-B's signed-out splash. Next sign-in
     // refetches.
@@ -412,6 +661,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo<AuthState>(
     () => ({
       user,
+      authState,
       ready,
       signIn,
       signOut,
@@ -422,6 +672,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }),
     [
       user,
+      authState,
       ready,
       signIn,
       signOut,

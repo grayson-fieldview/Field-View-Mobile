@@ -22,11 +22,29 @@ export interface PreparedUpload {
 }
 
 /**
+ * Stable on-device directory for photos awaiting upload.
+ *
+ * documentDirectory — NOT cacheDirectory — because iOS is free to purge
+ * Caches under storage pressure (and preferentially purges backgrounded/
+ * killed apps). A purged pending photo is unrecoverable: the camera temp
+ * original is long gone, so every retry fails instantly on the local file
+ * read. Files here are deleted by the upload queue after a successful
+ * createMedia, on Remove-from-queue, and by the startup orphan sweep.
+ *
+ * Returns null on web (no documentDirectory).
+ */
+export function pendingUploadsDir(): string | null {
+  return FileSystem.documentDirectory
+    ? `${FileSystem.documentDirectory}fieldview/pending/`
+    : null;
+}
+
+/**
  * Copies a captured (or imported) file from its temporary location into the
- * app's private cache directory under `fieldview/photos/`. Returns metadata
- * suitable for the upload queue. Returns null on web (no cacheDirectory) or
- * if the copy fails — callers should fall back to using the source uri
- * without enqueueing.
+ * app's stable pending-uploads directory (see pendingUploadsDir). Returns
+ * metadata suitable for the upload queue. Returns null on web (no
+ * documentDirectory) or if the copy fails — callers should fall back to
+ * using the source uri without enqueueing.
  *
  * Shared by the capture screen (camera + its library import) and the
  * project gallery's add-from-camera-roll flow — one pipeline, no forks.
@@ -36,11 +54,11 @@ export async function prepareForUpload(
   fallbackMime = "image/jpeg",
 ): Promise<PreparedUpload | null> {
   try {
-    if (!FileSystem.cacheDirectory) {
-      // Web or sandboxed env — no stable cache dir to copy into.
+    const dir = pendingUploadsDir();
+    if (!dir) {
+      // Web or sandboxed env — no stable dir to copy into.
       return null;
     }
-    const dir = `${FileSystem.cacheDirectory}fieldview/photos/`;
     await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(
       () => {
         /* already exists */

@@ -1,11 +1,16 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import NetInfo from "@react-native-community/netinfo";
+import * as FileSystem from "expo-file-system/legacy";
+
 import {
+  ApiError,
   api,
   UploadExpiredError,
   type BackendChecklistItemPhoto,
 } from "./api";
 import { newId } from "./id";
+import { pendingUploadsDir } from "./imageProcessing";
+import { Sentry } from "./sentry";
 
 const STORAGE_KEY = "@fv/upload_queue";
 const TICK_MS = 2_000;
@@ -38,10 +43,22 @@ export interface QueuedUpload {
    * the upload — the photo still lands on the project.
    */
   checklistItemId?: string;
-  status: "pending" | "uploading" | "uploaded" | "failed";
+  /**
+   * "unrecoverable" = the local file no longer exists on device (iOS
+   * evicted it, or a legacy cache-dir item's bytes were purged before
+   * the documentDirectory migration). Excluded from all retry/backoff
+   * processing — the only valid user action is Remove.
+   */
+  status: "pending" | "uploading" | "uploaded" | "failed" | "unrecoverable";
   attemptCount: number;
   nextRetryAt?: number;
   lastError?: string;
+  /**
+   * HTTP status of the last failure when it was an ApiError (0 = network
+   * / local-file read failure). Used by the failed-upload UIs to
+   * distinguish auth (401) from network failures.
+   */
+  lastErrorStatus?: number;
   createdAt: number;
   uploadedMediaId?: number;
   uploadedUrl?: string;
@@ -91,6 +108,139 @@ function backoffDelay(attemptCount: number): number {
   return BACKOFF_MS[idx] ?? FALLBACK_BACKOFF_MS;
 }
 
+const UNRECOVERABLE_MESSAGE = "Photo no longer on device";
+
+/** True when the uri points at a local file we can inspect/delete. */
+function isLocalFileUri(uri: string): boolean {
+  return uri.startsWith("file:");
+}
+
+/** Best-effort local file existence check. `null` = couldn't determine. */
+async function localFileExists(uri: string): Promise<boolean | null> {
+  if (!isLocalFileUri(uri)) return null;
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    return info.exists === true;
+  } catch {
+    // Can't determine — do NOT treat as missing (never false-positive
+    // an unrecoverable transition on an FS hiccup).
+    return null;
+  }
+}
+
+/** Best-effort delete of a pending local file (post-upload / on remove). */
+async function deleteLocalFile(uri: string): Promise<void> {
+  if (!isLocalFileUri(uri)) return;
+  try {
+    await FileSystem.deleteAsync(uri, { idempotent: true });
+  } catch (e) {
+    console.log(`[upload-queue] failed to delete local file ${uri}:`, e);
+  }
+}
+
+/**
+ * Telemetry for every transition into "unrecoverable" — this is the field
+ * data the eviction diagnosis flagged as missing. `source` says whether the
+ * bytes were already gone at migration time ("migration") or vanished under
+ * a live queue ("eviction").
+ */
+function reportUnrecoverable(
+  item: QueuedUpload,
+  source: "migration" | "eviction",
+): void {
+  console.log(
+    `[upload-queue] item ${item.id} (${item.originalName}) is unrecoverable (${source})`,
+  );
+  Sentry.captureMessage("upload-queue: item unrecoverable (local file gone)", {
+    level: "warning",
+    extra: { source, attemptCount: item.attemptCount },
+  });
+}
+
+/**
+ * One-time per-item migration of legacy cache-directory items into the
+ * stable pending dir, plus an orphan-file sweep. Runs inside ensureLoaded
+ * after the queue is parsed. Native only (no-op when pendingUploadsDir()
+ * is null, i.e. web).
+ */
+async function migrateAndSweep(): Promise<void> {
+  const dir = pendingUploadsDir();
+  if (!dir) return;
+  try {
+    await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(
+      () => {
+        /* already exists */
+      },
+    );
+
+    let changed = false;
+    const migrated: QueuedUpload[] = [];
+    for (const it of queue) {
+      // Terminal states keep their record as-is.
+      if (it.status === "uploaded" || it.status === "unrecoverable") {
+        migrated.push(it);
+        continue;
+      }
+      if (!isLocalFileUri(it.localUri) || it.localUri.startsWith(dir)) {
+        migrated.push(it);
+        continue;
+      }
+      // Legacy item pointing outside pending/ (old cacheDirectory path).
+      const exists = await localFileExists(it.localUri);
+      if (exists === false) {
+        const next: QueuedUpload = {
+          ...it,
+          status: "unrecoverable",
+          lastError: UNRECOVERABLE_MESSAGE,
+          nextRetryAt: undefined,
+        };
+        reportUnrecoverable(next, "migration");
+        migrated.push(next);
+        changed = true;
+        continue;
+      }
+      if (exists === true) {
+        const name = it.localUri.slice(it.localUri.lastIndexOf("/") + 1);
+        const dest = `${dir}${name}`;
+        try {
+          await FileSystem.moveAsync({ from: it.localUri, to: dest });
+          console.log(
+            `[upload-queue] migrated ${it.id} to stable storage: ${dest}`,
+          );
+          migrated.push({ ...it, localUri: dest });
+          changed = true;
+          continue;
+        } catch (e) {
+          console.log(`[upload-queue] migration move failed for ${it.id}:`, e);
+        }
+      }
+      // exists === null (indeterminate) or move failed: leave untouched;
+      // the pre-attempt existence check will settle it later.
+      migrated.push(it);
+    }
+    if (changed) queue = migrated;
+
+    // Orphan sweep: delete files in pending/ that no queue item references
+    // (crash between file copy and enqueue, or persist race on kill).
+    const referenced = new Set(
+      queue.map((it) => it.localUri.slice(it.localUri.lastIndexOf("/") + 1)),
+    );
+    const names = await FileSystem.readDirectoryAsync(dir).catch(
+      () => [] as string[],
+    );
+    for (const name of names) {
+      if (!referenced.has(name)) {
+        console.log(`[upload-queue] sweeping orphan pending file: ${name}`);
+        await deleteLocalFile(`${dir}${name}`);
+      }
+    }
+    if (changed) schedulePersist();
+  } catch (e) {
+    // Never block queue startup on migration/sweep problems.
+    console.log("[upload-queue] migrateAndSweep failed:", e);
+  }
+}
+
 async function ensureLoaded(): Promise<void> {
   if (loaded) return;
   if (loadPromise) return loadPromise;
@@ -113,6 +263,9 @@ async function ensureLoaded(): Promise<void> {
             : it,
         );
       }
+      // Move legacy cache-dir items into stable storage, flag items whose
+      // bytes are already gone, and sweep orphaned pending files.
+      await migrateAndSweep();
     } catch (e) {
       console.log("[upload-queue] failed to load persisted queue:", e);
       queue = [];
@@ -219,6 +372,20 @@ async function processItem(item: QueuedUpload): Promise<void> {
     `[upload-queue] starting ${tag} attempt=${item.attemptCount + 1}`,
   );
   try {
+    // Pre-flight: confirm the local bytes still exist. A missing file is
+    // permanent (the camera temp original is long gone) — flag it
+    // unrecoverable instead of burning retries on an instant read failure.
+    const exists = await localFileExists(item.localUri);
+    if (exists === false) {
+      const next = updateItem(item.id, {
+        status: "unrecoverable",
+        lastError: UNRECOVERABLE_MESSAGE,
+        nextRetryAt: undefined,
+      });
+      if (next) reportUnrecoverable(next, "eviction");
+      return;
+    }
+
     // Step 1: sign
     const signedArr = await api.signUploads([
       {
@@ -295,9 +462,13 @@ async function processItem(item: QueuedUpload): Promise<void> {
       uploadedMediaId: Number.isFinite(mediaId) ? mediaId : undefined,
       uploadedUrl: created.url,
       lastError: undefined,
+      lastErrorStatus: undefined,
       nextRetryAt: undefined,
     });
     console.log(`[upload-queue] ✓ uploaded ${tag} → mediaId=${created.id}`);
+    // The bytes are on S3 and the Media row exists — the pending copy is
+    // no longer needed. Best-effort; the startup sweep catches leftovers.
+    void deleteLocalFile(item.localUri);
 
     // Post-upload tagger: if this upload was scoped to a checklist item,
     // attach the new media to that item. Async-with-retry — the upload
@@ -317,15 +488,29 @@ async function processItem(item: QueuedUpload): Promise<void> {
       return;
     }
     const message = e instanceof Error ? e.message : String(e);
+    const lastErrorStatus = e instanceof ApiError ? e.status : undefined;
     const newAttemptCount = item.attemptCount + 1;
     const delay = backoffDelay(newAttemptCount);
     const nextRetryAt = Date.now() + delay;
-    updateItem(item.id, {
+    const failed = updateItem(item.id, {
       status: "failed",
       attemptCount: newAttemptCount,
       lastError: message,
+      lastErrorStatus,
       nextRetryAt,
     });
+    if (failed) {
+      Sentry.addBreadcrumb({
+        category: "upload-queue",
+        level: "warning",
+        message: "upload attempt failed",
+        data: {
+          classification: classifyUploadFailure(failed),
+          status: lastErrorStatus ?? "n/a",
+          attempt: newAttemptCount,
+        },
+      });
+    }
     console.log(
       `[upload-queue] ✗ failed ${tag}: ${message} — retry in ${delay}ms (attempt ${newAttemptCount})`,
     );
@@ -426,7 +611,14 @@ export async function retryItem(id: string): Promise<void> {
   await ensureLoaded();
   const item = queue.find((it) => it.id === id);
   if (!item) return;
-  if (item.status === "uploaded" || item.status === "uploading") return;
+  // Unrecoverable items must never re-enter the retry loop — the local
+  // file is gone and every attempt would fail instantly.
+  if (
+    item.status === "uploaded" ||
+    item.status === "uploading" ||
+    item.status === "unrecoverable"
+  )
+    return;
   updateItem(id, { nextRetryAt: Date.now() });
   console.log(
     `[upload-queue] manual retry requested for ${id} (${item.originalName})`,
@@ -436,12 +628,15 @@ export async function retryItem(id: string): Promise<void> {
 
 export async function removeItem(id: string): Promise<void> {
   await ensureLoaded();
+  const removed = queue.find((it) => it.id === id);
   const before = queue.length;
   queue = queue.filter((it) => it.id !== id);
   if (queue.length !== before) {
     console.log(`[upload-queue] removed ${id}`);
     schedulePersist();
   }
+  // Free the pending bytes — nothing references them anymore.
+  if (removed) void deleteLocalFile(removed.localUri);
 }
 
 /**
@@ -453,8 +648,27 @@ export async function clearAll(): Promise<void> {
   await ensureLoaded();
   if (queue.length === 0) return;
   console.log(`[upload-queue] clearAll: dropping ${queue.length} item(s)`);
+  const dropped = queue;
   queue = [];
   schedulePersist();
+  for (const it of dropped) void deleteLocalFile(it.localUri);
+}
+
+/**
+ * Classify a non-successful queue item for the failed-upload UIs.
+ *
+ * - "unrecoverable": local file gone — Remove is the only valid action.
+ * - "auth": last attempt died on a 401 from the API (sign/createMedia).
+ *   The queue does NOT touch auth state — it just retries later.
+ * - "network": everything else (status 0, 5xx, S3 errors) — retried
+ *   automatically with backoff.
+ */
+export function classifyUploadFailure(
+  item: QueuedUpload,
+): "unrecoverable" | "auth" | "network" {
+  if (item.status === "unrecoverable") return "unrecoverable";
+  if (item.lastErrorStatus === 401) return "auth";
+  return "network";
 }
 
 export function startProcessor(): void {

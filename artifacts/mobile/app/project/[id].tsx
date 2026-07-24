@@ -48,8 +48,10 @@ import {
   type BackendProjectAssignment,
 } from "@/services/api";
 import {
+  classifyUploadFailure,
   removeItem as removeUploadQueueItem,
   retryItem as retryUploadQueueItem,
+  type QueuedUpload,
 } from "@/services/uploadQueue";
 
 type TabKey = "photos" | "tasks" | "checklists" | "reports" | "team";
@@ -1801,7 +1803,18 @@ export default function ProjectDetailScreen() {
 function showFailedUploadActionSheet(
   uploadQueueId: string,
   onRemoveLocalPhoto: () => void,
+  queueItem: QueuedUpload | null,
 ) {
+  const classification = queueItem
+    ? classifyUploadFailure(queueItem)
+    : "network";
+  const unrecoverable = classification === "unrecoverable";
+  const title = unrecoverable ? "Photo can't be uploaded" : "Upload failed";
+  const message = unrecoverable
+    ? "The photo file is no longer on this device, so it can't be retried."
+    : classification === "auth"
+      ? "We couldn't verify your session. It will retry automatically once you're signed in again."
+      : "This usually means a connection problem. It will retry automatically — or retry now.";
   const confirmRemove = () => {
     Alert.alert(
       "Remove this photo?",
@@ -1819,14 +1832,24 @@ function showFailedUploadActionSheet(
     );
   };
   if (Platform.OS === "ios") {
+    // Unrecoverable items get no "Retry now" — the local file is gone and
+    // a retry is guaranteed to fail.
+    const options = unrecoverable
+      ? ["Cancel", "Remove from queue"]
+      : ["Cancel", "Retry now", "Remove from queue"];
     ActionSheetIOS.showActionSheetWithOptions(
       {
-        title: "Upload failed",
-        options: ["Cancel", "Retry now", "Remove from queue"],
+        title,
+        message,
+        options,
         cancelButtonIndex: 0,
-        destructiveButtonIndex: 2,
+        destructiveButtonIndex: options.length - 1,
       },
       (idx) => {
+        if (unrecoverable) {
+          if (idx === 1) confirmRemove();
+          return;
+        }
         if (idx === 1) {
           void retryUploadQueueItem(uploadQueueId);
         } else if (idx === 2) {
@@ -1835,20 +1858,30 @@ function showFailedUploadActionSheet(
       },
     );
   } else {
-    Alert.alert("Upload failed", undefined, [
-      {
-        text: "Retry now",
-        onPress: () => {
-          void retryUploadQueueItem(uploadQueueId);
-        },
-      },
-      {
-        text: "Remove from queue",
-        style: "destructive",
-        onPress: confirmRemove,
-      },
-      { text: "Cancel", style: "cancel" },
-    ]);
+    const buttons = unrecoverable
+      ? [
+          {
+            text: "Remove from queue",
+            style: "destructive" as const,
+            onPress: confirmRemove,
+          },
+          { text: "Cancel", style: "cancel" as const },
+        ]
+      : [
+          {
+            text: "Retry now",
+            onPress: () => {
+              void retryUploadQueueItem(uploadQueueId);
+            },
+          },
+          {
+            text: "Remove from queue",
+            style: "destructive" as const,
+            onPress: confirmRemove,
+          },
+          { text: "Cancel", style: "cancel" as const },
+        ];
+    Alert.alert(title, message, buttons);
   }
 }
 
@@ -1892,9 +1925,12 @@ function PhotoTile({
   const longPressed = useRef(false);
 
   const queueItem = useUploadStatus(photo.uploadQueueId);
+  // "unrecoverable" renders with the failed badge too — the tap-through
+  // action sheet is what differentiates it (no Retry, explains the file
+  // is gone).
   const uploadStatus: "uploading" | "failed" | null = !queueItem
     ? null
-    : queueItem.status === "failed"
+    : queueItem.status === "failed" || queueItem.status === "unrecoverable"
       ? "failed"
       : queueItem.status === "pending" || queueItem.status === "uploading"
         ? "uploading"
@@ -1947,7 +1983,7 @@ function PhotoTile({
       // Failed-upload "Remove" path: never went to the server, so do
       // local-only cleanup (no refs check, no server DELETE). The
       // action sheet itself handles its own confirmation copy.
-      showFailedUploadActionSheet(photo.uploadQueueId, onRemoveLocal);
+      showFailedUploadActionSheet(photo.uploadQueueId, onRemoveLocal, queueItem);
       return;
     }
     // Uploading photos still open the detail screen — they're viewable

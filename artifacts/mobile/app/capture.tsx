@@ -11,6 +11,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Animated,
   KeyboardAvoidingView,
   Modal,
@@ -36,11 +37,16 @@ import {
   ApiError,
   type BackendCommentResponse,
 } from "@/services/api";
+import { useUploadStatus } from "@/contexts/UploadStatusContext";
 import {
   cropToAspectRatio,
   DEFAULT_PHOTO_ASPECT_RATIO,
   prepareForUpload,
 } from "@/services/imageProcessing";
+import {
+  classifyUploadFailure,
+  retryItem as retryUploadQueueItem,
+} from "@/services/uploadQueue";
 import type { Photo } from "@/services/types";
 
 const HOLD_TO_BURST_MS = 350;
@@ -1023,6 +1029,98 @@ function formatCommentDate(iso: string): string {
   });
 }
 
+/**
+ * One tray thumbnail. Subscribes to the photo's upload-queue item so
+ * failures surface here (previously the tray only showed spinner/check,
+ * so a failed or unrecoverable upload spun forever). Tapping a failed
+ * tile opens a classified alert instead of the comment view.
+ */
+function TrayTile({
+  photo,
+  onExpand,
+}: {
+  photo: Photo;
+  onExpand: () => void;
+}) {
+  const { deletePhoto } = useData();
+  const queueItem = useUploadStatus(photo.uploadQueueId);
+  const failed =
+    queueItem?.status === "failed" || queueItem?.status === "unrecoverable";
+
+  const onPress = () => {
+    if (failed && queueItem && photo.uploadQueueId) {
+      const classification = classifyUploadFailure(queueItem);
+      if (classification === "unrecoverable") {
+        Alert.alert(
+          "Photo can't be uploaded",
+          "The photo file is no longer on this device, so it can't be retried.",
+          [
+            {
+              text: "Remove",
+              style: "destructive",
+              // deletePhoto also removes the queue item.
+              onPress: () => void deletePhoto(photo.id),
+            },
+            { text: "Cancel", style: "cancel" },
+          ],
+        );
+      } else {
+        Alert.alert(
+          "Upload failed",
+          classification === "auth"
+            ? "We couldn't verify your session. It will retry automatically once you're signed in again."
+            : "This usually means a connection problem. It will retry automatically — or retry now.",
+          [
+            {
+              text: "Retry now",
+              onPress: () => {
+                if (photo.uploadQueueId)
+                  void retryUploadQueueItem(photo.uploadQueueId);
+              },
+            },
+            { text: "Cancel", style: "cancel" },
+          ],
+        );
+      }
+      return;
+    }
+    onExpand();
+  };
+
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={
+        failed
+          ? "Photo upload failed. Tap for options."
+          : "Review photo and add a comment"
+      }
+      style={styles.trayTile}
+    >
+      <Image
+        source={{ uri: photo.uri }}
+        style={StyleSheet.absoluteFill}
+        contentFit="cover"
+        transition={100}
+      />
+      {failed ? (
+        <View style={styles.trayTileFailed}>
+          <Feather name="alert-circle" size={10} color="#fff" />
+        </View>
+      ) : !photo.uploaded ? (
+        <View style={styles.trayTileUploading}>
+          <ActivityIndicator size="small" color="#fff" />
+        </View>
+      ) : (
+        <View style={styles.trayTileDone}>
+          <Feather name="check" size={10} color="#fff" />
+        </View>
+      )}
+    </Pressable>
+  );
+}
+
 function TraySheet({
   visible,
   photos,
@@ -1246,29 +1344,11 @@ function TraySheet({
               contentContainerStyle={styles.trayGrid}
             >
               {photos.map((p) => (
-                <Pressable
+                <TrayTile
                   key={p.id}
-                  onPress={() => setExpandedId(p.id)}
-                  accessibilityRole="button"
-                  accessibilityLabel="Review photo and add a comment"
-                  style={styles.trayTile}
-                >
-                  <Image
-                    source={{ uri: p.uri }}
-                    style={StyleSheet.absoluteFill}
-                    contentFit="cover"
-                    transition={100}
-                  />
-                  {!p.uploaded ? (
-                    <View style={styles.trayTileUploading}>
-                      <ActivityIndicator size="small" color="#fff" />
-                    </View>
-                  ) : (
-                    <View style={styles.trayTileDone}>
-                      <Feather name="check" size={10} color="#fff" />
-                    </View>
-                  )}
-                </Pressable>
+                  photo={p}
+                  onExpand={() => setExpandedId(p.id)}
+                />
               ))}
             </ScrollView>
           )}
@@ -1543,6 +1623,17 @@ const styles = StyleSheet.create({
     height: 18,
     borderRadius: 9,
     backgroundColor: "rgba(22,163,74,0.9)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  trayTileFailed: {
+    position: "absolute",
+    top: 6,
+    right: 6,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "rgba(220,38,38,0.9)",
     alignItems: "center",
     justifyContent: "center",
   },
