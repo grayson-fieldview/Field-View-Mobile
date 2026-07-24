@@ -170,6 +170,17 @@ export interface Photo {
    */
   mediaId?: number;
   tags?: string[];
+  /**
+   * Uploading user, from the server's additive `uploader` field on media
+   * rows. Absent when the uploader was deleted (server omits the field)
+   * and for locally-captured photos that haven't come back from a project
+   * refetch. Names may be null — display "Unknown user" in that case.
+   */
+  uploader?: {
+    id: string;
+    firstName: string | null;
+    lastName: string | null;
+  };
   remote?: boolean;
   /**
    * Render set for this photo: the UNION of every user's strokes, in

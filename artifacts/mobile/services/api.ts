@@ -518,6 +518,15 @@ export interface BackendMedia {
   longitude?: number | null;
   tags?: string[] | null;
   createdAt: string;
+  /**
+   * Uploading user (additive server field). ABSENT when the uploader was
+   * deleted; may be present with null names.
+   */
+  uploader?: {
+    id: string;
+    firstName: string | null;
+    lastName: string | null;
+  };
 }
 
 /**

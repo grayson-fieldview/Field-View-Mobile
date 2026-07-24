@@ -57,7 +57,7 @@ type TabKey = "photos" | "tasks" | "checklists" | "reports" | "team";
 // ---------------------------------------------------------------------------
 // Gallery filters (Photos tab). Client-side only — the project detail load
 // returns the full media list, so no server round-trip is needed.
-// Semantics: AND across categories, OR within one (tags).
+// Semantics: AND across categories, OR within one (tags, users).
 // ---------------------------------------------------------------------------
 type GalleryFilters = {
   sort: "newest" | "oldest";
@@ -66,6 +66,9 @@ type GalleryFilters = {
   dateStart: string | null;
   dateEnd: string | null;
   tags: string[];
+  /** Selected uploader ids. Photos with no uploader (deleted users) are
+   *  excluded only when this filter is active. */
+  users: string[];
 };
 
 const DEFAULT_FILTERS: GalleryFilters = {
@@ -74,7 +77,20 @@ const DEFAULT_FILTERS: GalleryFilters = {
   dateStart: null,
   dateEnd: null,
   tags: [],
+  users: [],
 };
+
+/** Chip label for an uploader: trimmed full name, or "Unknown user" when
+ *  both names are null/empty. */
+function uploaderLabel(u: {
+  firstName: string | null;
+  lastName: string | null;
+}): string {
+  return (
+    [u.firstName, u.lastName].filter(Boolean).join(" ").trim() ||
+    "Unknown user"
+  );
+}
 
 /** Local calendar day of an ISO timestamp as "YYYY-MM-DD" (matches the
  *  dateString react-native-calendars emits, so range compares are plain
@@ -250,7 +266,8 @@ export default function ProjectDetailScreen() {
     filters.sort !== "newest" ||
     filters.type !== "all" ||
     filters.dateStart !== null ||
-    filters.tags.length > 0;
+    filters.tags.length > 0 ||
+    filters.users.length > 0;
 
   // All tags present on this project's media, for the filter sheet chips.
   const allTags = useMemo(() => {
@@ -259,7 +276,25 @@ export default function ProjectDetailScreen() {
     return Array.from(s).sort((a, b) => a.localeCompare(b));
   }, [projectPhotos]);
 
-  // AND across filter categories, OR within one (tags).
+  // Distinct uploaders among this project's loaded photos (deduped by
+  // uploader.id), for the filter sheet's Users chips. Photos without an
+  // uploader (deleted users) contribute no chip.
+  const allUsers = useMemo(() => {
+    const byId = new Map<string, { id: string; label: string }>();
+    for (const p of projectPhotos) {
+      if (p.uploader && !byId.has(p.uploader.id)) {
+        byId.set(p.uploader.id, {
+          id: p.uploader.id,
+          label: uploaderLabel(p.uploader),
+        });
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) =>
+      a.label.localeCompare(b.label),
+    );
+  }, [projectPhotos]);
+
+  // AND across filter categories, OR within one (tags, users).
   const filteredPhotos = useMemo(() => {
     return projectPhotos.filter((p) => {
       if (filters.type === "photos" && p.isVideo) return false;
@@ -273,6 +308,12 @@ export default function ProjectDetailScreen() {
       if (filters.tags.length > 0) {
         const tags = p.tags ?? [];
         if (!filters.tags.some((t) => tags.includes(t))) return false;
+      }
+      if (filters.users.length > 0) {
+        // Photos with no uploader (deleted users) are excluded only when
+        // a Users filter is active.
+        if (!p.uploader || !filters.users.includes(p.uploader.id))
+          return false;
       }
       return true;
     });
@@ -350,6 +391,10 @@ export default function ProjectDetailScreen() {
             if (next.tags.length > 0) {
               const tags = p.tags ?? [];
               if (!next.tags.some((t) => tags.includes(t))) return false;
+            }
+            if (next.users.length > 0) {
+              if (!p.uploader || !next.users.includes(p.uploader.id))
+                return false;
             }
             return true;
           })
@@ -1085,6 +1130,7 @@ export default function ProjectDetailScreen() {
               visible={filterSheetOpen}
               filters={filters}
               allTags={allTags}
+              allUsers={allUsers}
               onApply={applyFilters}
               onClose={() => setFilterSheetOpen(false)}
               colors={colors}
@@ -2182,6 +2228,7 @@ function FilterSheet({
   visible,
   filters,
   allTags,
+  allUsers,
   onApply,
   onClose,
   colors,
@@ -2189,6 +2236,7 @@ function FilterSheet({
   visible: boolean;
   filters: GalleryFilters;
   allTags: string[];
+  allUsers: { id: string; label: string }[];
   onApply: (next: GalleryFilters) => void;
   onClose: () => void;
   colors: ReturnType<typeof useColors>;
@@ -2431,6 +2479,62 @@ function FilterSheet({
                         }}
                       >
                         {t}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          ) : null}
+
+          {allUsers.length > 0 ? (
+            <View style={{ gap: 8 }}>
+              <Text
+                style={[
+                  styles.filterSectionLabel,
+                  { color: colors.mutedForeground },
+                ]}
+              >
+                USERS
+              </Text>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                {allUsers.map((u) => {
+                  const active = draft.users.includes(u.id);
+                  return (
+                    <Pressable
+                      key={u.id}
+                      onPress={() =>
+                        setDraft((d) => ({
+                          ...d,
+                          users: active
+                            ? d.users.filter((x) => x !== u.id)
+                            : [...d.users, u.id],
+                        }))
+                      }
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: active }}
+                      style={[
+                        styles.filterChip,
+                        {
+                          backgroundColor: active
+                            ? colors.primary
+                            : colors.muted,
+                          borderColor: active ? colors.primary : colors.border,
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={{
+                          fontFamily: active
+                            ? "Inter_600SemiBold"
+                            : "Inter_500Medium",
+                          fontSize: 13,
+                          color: active
+                            ? colors.primaryForeground
+                            : colors.foreground,
+                        }}
+                      >
+                        {u.label}
                       </Text>
                     </Pressable>
                   );

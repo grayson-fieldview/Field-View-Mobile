@@ -46,6 +46,9 @@ export function mapBackendMedia(m: BackendMedia): Photo {
     uploaded: true,
     remote: true,
     mediaId: typeof m.id === "number" ? m.id : Number(m.id),
+    // Absent for deleted uploaders — keep it absent (undefined) so filter
+    // logic can distinguish "no uploader" from "uploader with null names".
+    uploader: m.uploader ?? undefined,
   };
 }
 
