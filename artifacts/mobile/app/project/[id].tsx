@@ -481,9 +481,9 @@ export default function ProjectDetailScreen() {
         mediaIds,
       });
       token = res.token;
-    } catch {
+    } catch (e) {
       // Stay in selection mode so the user can retry.
-      showToast("Couldn't generate share link");
+      showToast(shareLinkFailureMessage(e));
       setSharingSelection(false);
       return;
     }
@@ -511,8 +511,8 @@ export default function ProjectDetailScreen() {
     try {
       const res = await api.shareProject(project.id);
       token = res.shareToken;
-    } catch {
-      showToast("Couldn't generate share link");
+    } catch (e) {
+      showToast(shareLinkFailureMessage(e));
       setSharingProject(false);
       return;
     }
@@ -1798,6 +1798,19 @@ export default function ProjectDetailScreen() {
       </Modal>
     </View>
   );
+}
+
+/**
+ * Toast copy for a failed share-link mint. ApiError status 0 is the
+ * api layer's "request never reached the server" marker (offline,
+ * DNS, timeout) — call that out specifically; everything else keeps
+ * the generic message.
+ */
+function shareLinkFailureMessage(e: unknown): string {
+  if (e instanceof ApiError && e.status === 0) {
+    return "Couldn't generate link — you're offline. Try again when you have service.";
+  }
+  return "Couldn't generate share link";
 }
 
 function showFailedUploadActionSheet(

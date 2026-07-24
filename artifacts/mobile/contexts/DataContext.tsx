@@ -185,6 +185,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         storage.getPhotos(),
       ]);
       setProjects(p);
+      photosRef.current = ph;
       setPhotos(ph);
       setReady(true);
     })();
@@ -194,7 +195,14 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     setProjects(next);
     await storage.setProjects(next);
   }, []);
+  // Single write path for photos: the ref is updated here (synchronously,
+  // before any await) so concurrent mutators reading photosRef.current
+  // always see the latest write — React state commits lag behind and a
+  // per-render `photosRef.current = photos` assignment could reset the
+  // ref to a stale array between a write and its commit.
+  const photosRef = useRef<Photo[]>([]);
   const persistPhotos = useCallback(async (next: Photo[]) => {
+    photosRef.current = next;
     setPhotos(next);
     await storage.setPhotos(next);
   }, []);
@@ -210,11 +218,9 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   // every time the state changes (avoids effect re-runs / fetch loops).
   const projectsRef = useRef(projects);
   const tasksRef = useRef(tasks);
-  const photosRef = useRef(photos);
   const userRef = useRef(user);
   projectsRef.current = projects;
   tasksRef.current = tasks;
-  photosRef.current = photos;
   userRef.current = user;
 
   // Annotation bookkeeping, keyed by String(mediaId):
@@ -492,12 +498,15 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         uploaded: false,
         uploadQueueId,
       };
-      const next = [photo, ...photos];
-      photosRef.current = next;
+      // Read through photosRef, NOT the `photos` closure: two saves
+      // landing before a re-render (e.g. burst finishing while a single
+      // capture saves) would otherwise each spread a stale array and the
+      // second would overwrite the first's photo out of state.
+      const next = [photo, ...photosRef.current];
       await persistPhotos(next);
       return photo;
     },
-    [photos, persistPhotos],
+    [persistPhotos],
   );
 
   const addPhotosBatch: DataState["addPhotosBatch"] = useCallback(
@@ -544,12 +553,13 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
           uploadQueueId: queueIds[idx],
         };
       });
-      const next = [...created, ...photos];
-      photosRef.current = next;
+      // photosRef (not the `photos` closure) — see addPhoto: concurrent
+      // saves must not clobber each other.
+      const next = [...created, ...photosRef.current];
       await persistPhotos(next);
       return created;
     },
-    [photos, persistPhotos],
+    [persistPhotos],
   );
 
   // Reconcile photos with successful background uploads. The queue stores
@@ -606,7 +616,6 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         removeUploadQueueItem(item.id).catch(() => {});
       }
       if (changed) {
-        photosRef.current = next;
         void persistPhotos(next);
       }
     });

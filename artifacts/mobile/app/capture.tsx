@@ -21,6 +21,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -148,20 +149,37 @@ export default function CaptureScreen() {
       }),
     ]).start();
   }, [trayScale]);
+  // Session-local snapshot of every Photo saved this session, keyed by id.
+  // Source-of-truth fallback for the tray: if DataContext.photos hasn't
+  // flushed (or momentarily lost) a just-saved photo, the tray still
+  // renders it from this snapshot, so the count can never desync from
+  // what was actually saved.
+  const sessionPhotosRef = useRef<Map<string, Photo>>(new Map());
   const addToTray = useCallback(
     (saved: Photo[]) => {
       if (saved.length === 0) return;
+      for (const p of saved) sessionPhotosRef.current.set(p.id, p);
       setTrayIds((ids) => [...saved.map((p) => p.id).reverse(), ...ids]);
       pulseTray();
     },
     [pulseTray],
   );
 
-  // Live photo objects for the tray, newest first. Falls back over gaps
-  // (e.g. a photo deleted elsewhere) by simply omitting it.
+  // Live photo objects for the tray, newest first. Prefer the live
+  // context object (upload status / mediaId updates), fall back to the
+  // session snapshot taken at save time. Only omit an id if it's in
+  // neither (photo deleted elsewhere this session).
   const trayPhotos = trayIds
-    .map((id) => photos.find((p) => p.id === id))
+    .map((id) => photos.find((p) => p.id === id) ?? sessionPhotosRef.current.get(id))
     .filter((p): p is Photo => !!p);
+
+  // Prune a photo out of the tray entirely (id list + session snapshot).
+  // Called after a delete so the fallback map can't keep a removed photo
+  // visible/countable.
+  const removeFromTray = useCallback((id: string) => {
+    sessionPhotosRef.current.delete(id);
+    setTrayIds((ids) => ids.filter((x) => x !== id));
+  }, []);
 
   const cameraRef = useRef<CameraView | null>(null);
   const burstActive = useRef(false);
@@ -991,6 +1009,7 @@ export default function CaptureScreen() {
         visible={trayOpen}
         photos={trayPhotos}
         onClose={() => setTrayOpen(false)}
+        onRemovedPhoto={removeFromTray}
         primary={colors.primary}
       />
     </View>
@@ -1038,9 +1057,13 @@ function formatCommentDate(iso: string): string {
 function TrayTile({
   photo,
   onExpand,
+  onRemoved,
+  size,
 }: {
   photo: Photo;
   onExpand: () => void;
+  onRemoved: (id: string) => void;
+  size: number;
 }) {
   const { deletePhoto } = useData();
   const queueItem = useUploadStatus(photo.uploadQueueId);
@@ -1058,8 +1081,13 @@ function TrayTile({
             {
               text: "Remove",
               style: "destructive",
-              // deletePhoto also removes the queue item.
-              onPress: () => void deletePhoto(photo.id),
+              // deletePhoto also removes the queue item; onRemoved prunes
+              // the tray's id list + session snapshot so the deleted photo
+              // can't linger via the fallback map.
+              onPress: () => {
+                onRemoved(photo.id);
+                void deletePhoto(photo.id);
+              },
             },
             { text: "Cancel", style: "cancel" },
           ],
@@ -1096,7 +1124,7 @@ function TrayTile({
           ? "Photo upload failed. Tap for options."
           : "Review photo and add a comment"
       }
-      style={styles.trayTile}
+      style={[styles.trayTile, { width: size, height: size }]}
     >
       <Image
         source={{ uri: photo.uri }}
@@ -1125,14 +1153,22 @@ function TraySheet({
   visible,
   photos,
   onClose,
+  onRemovedPhoto,
   primary,
 }: {
   visible: boolean;
   photos: Photo[];
   onClose: () => void;
+  onRemovedPhoto: (id: string) => void;
   primary: string;
 }) {
   const insets = useSafeAreaInsets();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  // Explicit tile size: percentage widths ("31.5%") don't reliably
+  // resolve inside a ScrollView content container in a Modal on device
+  // (tiles collapsed to zero width → blank grid). 3 columns:
+  // horizontal padding 16×2, gap 8×2.
+  const tileSize = Math.floor((windowWidth - 32 - 16) / 3);
   // Expanded photo (comment view), by local photo id. Resolved against the
   // live `photos` prop so upload completion (mediaId arriving) re-renders
   // the comment area from the "Uploading…" note to the real input.
@@ -1218,7 +1254,20 @@ function TraySheet({
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <View
-          style={[styles.traySheet, { paddingBottom: insets.bottom + 12 }]}
+          style={[
+            styles.traySheet,
+            {
+              paddingBottom: insets.bottom + 12,
+              // Bounded height so the inner ScrollView always gets a real
+              // layout: cap at ~70% of the screen, keep at least room for
+              // the header + one row of tiles.
+              maxHeight: Math.floor(windowHeight * 0.7),
+              minHeight: Math.min(
+                Math.floor(windowHeight * 0.7),
+                tileSize + 140,
+              ),
+            },
+          ]}
         >
           <View style={styles.traySheetHandleRow}>
             <View style={styles.traySheetHandle} />
@@ -1340,14 +1389,16 @@ function TraySheet({
             </ScrollView>
           ) : (
             <ScrollView
-              style={{ flexGrow: 0 }}
+              style={{ flexShrink: 1 }}
               contentContainerStyle={styles.trayGrid}
             >
               {photos.map((p) => (
                 <TrayTile
                   key={p.id}
                   photo={p}
+                  size={tileSize}
                   onExpand={() => setExpandedId(p.id)}
+                  onRemoved={onRemovedPhoto}
                 />
               ))}
             </ScrollView>
@@ -1603,8 +1654,8 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   trayTile: {
-    width: "31.5%",
-    aspectRatio: 1,
+    // width/height set explicitly per-render from useWindowDimensions —
+    // percentage widths collapse inside this Modal's ScrollView on device.
     borderRadius: 10,
     overflow: "hidden",
     backgroundColor: "#262626",
