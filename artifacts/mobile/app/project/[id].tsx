@@ -1,5 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { Image } from "expo-image";
+import * as ImagePicker from "expo-image-picker";
+import { Calendar, type DateData } from "react-native-calendars";
 import * as VideoThumbnails from "expo-video-thumbnails";
 import Svg, { Path as SvgPath } from "react-native-svg";
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
@@ -38,6 +40,7 @@ import { useUploadStatus } from "@/contexts/UploadStatusContext";
 import { useColors } from "@/hooks/useColors";
 import { useProjectChecklists } from "@/hooks/useProjectChecklists";
 import { useProjectReports } from "@/hooks/useProjectReports";
+import { prepareForUpload } from "@/services/imageProcessing";
 import {
   api,
   ApiError,
@@ -50,6 +53,38 @@ import {
 } from "@/services/uploadQueue";
 
 type TabKey = "photos" | "tasks" | "checklists" | "reports" | "team";
+
+// ---------------------------------------------------------------------------
+// Gallery filters (Photos tab). Client-side only — the project detail load
+// returns the full media list, so no server round-trip is needed.
+// Semantics: AND across categories, OR within one (tags).
+// ---------------------------------------------------------------------------
+type GalleryFilters = {
+  sort: "newest" | "oldest";
+  type: "all" | "photos" | "videos";
+  /** Inclusive day range as local "YYYY-MM-DD". dateStart alone = single day. */
+  dateStart: string | null;
+  dateEnd: string | null;
+  tags: string[];
+};
+
+const DEFAULT_FILTERS: GalleryFilters = {
+  sort: "newest",
+  type: "all",
+  dateStart: null,
+  dateEnd: null,
+  tags: [],
+};
+
+/** Local calendar day of an ISO timestamp as "YYYY-MM-DD" (matches the
+ *  dateString react-native-calendars emits, so range compares are plain
+ *  string comparisons). */
+function toDayString(iso: string | undefined): string {
+  const d = iso ? new Date(iso) : new Date();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
 
 export default function ProjectDetailScreen() {
   const colors = useColors();
@@ -69,6 +104,7 @@ export default function ProjectDetailScreen() {
     deleteTask,
     deletePhoto,
     loadProjectDetail,
+    addPhotosBatch,
   } = useData();
   const { user: currentUser } = useAuth();
   const isAdmin = currentUser?.role === "admin";
@@ -198,14 +234,52 @@ export default function ProjectDetailScreen() {
     [id, refreshAssignments, showToast],
   );
 
-  // Photos tab UI state.
-  const [gridSize, setGridSize] = useState<1 | 2 | 3>(2);
+  // Photos tab UI state. Grid is fixed at 2 columns (the old 1/2/3 toggle
+  // was removed — it had no persistence and reset every mount anyway).
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  // Selection mode is implicit: we're in it whenever something is selected.
-  const selectMode = selected.size > 0;
+  // Selection mode is armed either explicitly (toolbar Select icon) or
+  // implicitly whenever something is selected — the existing long-press /
+  // checkbox paths keep working unchanged.
+  const [selectArmed, setSelectArmed] = useState(false);
+  const selectMode = selectArmed || selected.size > 0;
 
-  // Group photos by their taken-at calendar day, most recent day first; within
-  // each day, photos are sorted with the newest at the top.
+  // Gallery filters (client-side; the photo list is fully loaded).
+  const [filters, setFilters] = useState<GalleryFilters>(DEFAULT_FILTERS);
+  const [filterSheetOpen, setFilterSheetOpen] = useState(false);
+  const filterActive =
+    filters.sort !== "newest" ||
+    filters.type !== "all" ||
+    filters.dateStart !== null ||
+    filters.tags.length > 0;
+
+  // All tags present on this project's media, for the filter sheet chips.
+  const allTags = useMemo(() => {
+    const s = new Set<string>();
+    for (const p of projectPhotos) for (const t of p.tags ?? []) s.add(t);
+    return Array.from(s).sort((a, b) => a.localeCompare(b));
+  }, [projectPhotos]);
+
+  // AND across filter categories, OR within one (tags).
+  const filteredPhotos = useMemo(() => {
+    return projectPhotos.filter((p) => {
+      if (filters.type === "photos" && p.isVideo) return false;
+      if (filters.type === "videos" && !p.isVideo) return false;
+      if (filters.dateStart) {
+        const day = toDayString(p.takenAt);
+        const start = filters.dateStart;
+        const end = filters.dateEnd ?? filters.dateStart;
+        if (day < start || day > end) return false;
+      }
+      if (filters.tags.length > 0) {
+        const tags = p.tags ?? [];
+        if (!filters.tags.some((t) => tags.includes(t))) return false;
+      }
+      return true;
+    });
+  }, [projectPhotos, filters]);
+
+  // Group photos by their taken-at calendar day (sort order per filter);
+  // within each day, photos follow the same order.
   const photoGroups = useMemo(() => {
     const groups = new Map<
       string,
@@ -216,7 +290,7 @@ export default function ProjectDetailScreen() {
         photos: typeof projectPhotos;
       }
     >();
-    for (const ph of projectPhotos) {
+    for (const ph of filteredPhotos) {
       const d = ph.takenAt ? new Date(ph.takenAt) : new Date();
       const dayStart = new Date(
         d.getFullYear(),
@@ -238,23 +312,100 @@ export default function ProjectDetailScreen() {
       groups.set(dayKey, g);
     }
     const list = Array.from(groups.values());
+    const dir = filters.sort === "oldest" ? -1 : 1;
     for (const g of list) {
       g.photos.sort((a, b) => {
         const ta = a.takenAt ? Date.parse(a.takenAt) : 0;
         const tb = b.takenAt ? Date.parse(b.takenAt) : 0;
-        return tb - ta;
+        return (tb - ta) * dir;
       });
       g.ids = g.photos.map((p) => p.id);
     }
-    return list.sort((a, b) => b.sortKey - a.sortKey);
-  }, [projectPhotos]);
+    return list.sort((a, b) => (b.sortKey - a.sortKey) * dir);
+  }, [filteredPhotos, filters.sort]);
 
   const exitSelectMode = () => {
     setSelected(new Set());
+    setSelectArmed(false);
+  };
+
+  // Applying filters can hide photos that were already selected. Selection
+  // must always operate on VISIBLE items (sharing a filtered selection
+  // shares only those), so prune the selected set to the filtered view.
+  const applyFilters = (next: GalleryFilters) => {
+    setFilters(next);
+    setFilterSheetOpen(false);
+    setSelected((prev) => {
+      if (prev.size === 0) return prev;
+      const visible = new Set(
+        projectPhotos
+          .filter((p) => {
+            if (next.type === "photos" && p.isVideo) return false;
+            if (next.type === "videos" && !p.isVideo) return false;
+            if (next.dateStart) {
+              const day = toDayString(p.takenAt);
+              const end = next.dateEnd ?? next.dateStart;
+              if (day < next.dateStart || day > end) return false;
+            }
+            if (next.tags.length > 0) {
+              const tags = p.tags ?? [];
+              if (!next.tags.some((t) => tags.includes(t))) return false;
+            }
+            return true;
+          })
+          .map((p) => p.id),
+      );
+      const pruned = new Set(Array.from(prev).filter((i) => visible.has(i)));
+      return pruned.size === prev.size ? prev : pruned;
+    });
+  };
+
+  // Add-from-camera-roll: device library multi-select feeding the SAME
+  // upload pipeline as captured photos (prepareForUpload → addPhotosBatch
+  // → offline queue). GPS is optional in the pipeline; library imports
+  // simply omit it, exactly like the capture screen's library flow.
+  const [addingFromLibrary, setAddingFromLibrary] = useState(false);
+  const onAddFromLibrary = async () => {
+    if (!project || addingFromLibrary) return;
+    setAddingFromLibrary(true);
+    try {
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsMultipleSelection: true,
+        selectionLimit: 20,
+        quality: 0.7,
+        exif: false,
+      });
+      if (res.canceled || res.assets.length === 0) return;
+      const now = new Date().toISOString();
+      const prepared = await Promise.all(
+        res.assets.map(async (a) => ({
+          a,
+          p: await prepareForUpload(a.uri, a.mimeType ?? "image/jpeg"),
+        })),
+      );
+      await addPhotosBatch(
+        prepared.map(({ a, p }) => ({
+          projectId: project.id,
+          uri: p?.localUri ?? a.uri,
+          takenAt: now,
+          originalName: p?.originalName,
+          mimeType: p?.mimeType,
+          fileSize: p?.fileSize,
+        })),
+      );
+      showToast(
+        `Added ${res.assets.length} photo${res.assets.length === 1 ? "" : "s"} from library`,
+      );
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Couldn't add photos");
+    } finally {
+      setAddingFromLibrary(false);
+    }
   };
 
   // True while the POST /api/galleries call for a selected-photos
-  // share is in flight. Disables the selection-bar Share button so a
+  // share is in flight. Disables the hero share button so a
   // double-tap can't mint two gallery tokens.
   const [sharingSelection, setSharingSelection] = useState(false);
 
@@ -630,28 +781,40 @@ export default function ProjectDetailScreen() {
             </Pressable>
             <View style={{ flexDirection: "row", gap: 8 }}>
               <Pressable
-                onPress={onShareProject}
+                // Context-aware share: with a selection active it shares
+                // the SELECTED photos (gallery link); otherwise it shares
+                // the whole project. This replaces the old "disable during
+                // selection" behavior AND the selection-bar Share button.
+                onPress={() =>
+                  selected.size > 0
+                    ? void onShareSelected()
+                    : void onShareProject()
+                }
                 hitSlop={10}
-                // Disabled during selection mode: this button shares the
-                // WHOLE project, and leaving it tappable while photos are
-                // selected made users believe it shared the selection
-                // (the original selective-share bug report).
-                disabled={sharingProject || selectMode}
+                disabled={sharingProject || sharingSelection}
                 accessibilityRole="button"
-                accessibilityLabel="Share project"
+                accessibilityLabel={
+                  selected.size > 0
+                    ? "Share selected photos"
+                    : "Share project"
+                }
                 accessibilityState={{
-                  disabled: sharingProject || selectMode,
-                  busy: sharingProject,
+                  disabled: sharingProject || sharingSelection,
+                  busy: sharingProject || sharingSelection,
                 }}
                 style={({ pressed }) => [
                   styles.heroIconBtn,
                   {
                     opacity:
-                      sharingProject || selectMode ? 0.5 : pressed ? 0.7 : 1,
+                      sharingProject || sharingSelection
+                        ? 0.5
+                        : pressed
+                          ? 0.7
+                          : 1,
                   },
                 ]}
               >
-                {sharingProject ? (
+                {sharingProject || sharingSelection ? (
                   <ActivityIndicator size="small" color="#fff" />
                 ) : (
                   <Feather name="share-2" size={16} color="#fff" />
@@ -855,8 +1018,15 @@ export default function ProjectDetailScreen() {
         {tab === "photos" ? (
           <View style={styles.body}>
             <PhotosToolbar
-              gridSize={gridSize}
-              onGridSize={setGridSize}
+              selectMode={selectMode}
+              onToggleSelect={() => {
+                if (selectMode) exitSelectMode();
+                else setSelectArmed(true);
+              }}
+              filterActive={filterActive}
+              onOpenFilter={() => setFilterSheetOpen(true)}
+              addingFromLibrary={addingFromLibrary}
+              onAddFromLibrary={() => void onAddFromLibrary()}
               onTakePhoto={() =>
                 router.push({
                   pathname: "/capture",
@@ -872,6 +1042,14 @@ export default function ProjectDetailScreen() {
                   icon="camera"
                   title="No photos yet"
                   description="Tap Take Photo to capture burst-mode photos with GPS tagging."
+                />
+              </View>
+            ) : filteredPhotos.length === 0 ? (
+              <View style={{ paddingTop: 20 }}>
+                <EmptyState
+                  icon="filter"
+                  title="No photos match your filters"
+                  description="Adjust or clear the filters to see this project's photos."
                 />
               </View>
             ) : (
@@ -916,28 +1094,13 @@ export default function ProjectDetailScreen() {
                           {g.label}
                         </Text>
                       </View>
-                      <View
-                        style={[
-                          styles.photoGrid,
-                          gridSize === 1
-                            ? { rowGap: 12 }
-                            : gridSize === 3
-                              ? { rowGap: 6 }
-                              : { rowGap: 10 },
-                        ]}
-                      >
+                      <View style={[styles.photoGrid, { rowGap: 10 }]}>
                         {g.photos.map((ph) => (
                           <PhotoTile
                             key={ph.id}
                             photo={ph}
                             borderColor={colors.border}
-                            widthPercent={
-                              gridSize === 1
-                                ? "100%"
-                                : gridSize === 2
-                                  ? "48.5%"
-                                  : "32%"
-                            }
+                            widthPercent="48.5%"
                             selectMode={selectMode}
                             selected={selected.has(ph.id)}
                             primary={colors.primary}
@@ -977,31 +1140,6 @@ export default function ProjectDetailScreen() {
                 >
                   {selected.size} selected
                 </Text>
-                <Pressable
-                  onPress={onShareSelected}
-                  hitSlop={6}
-                  disabled={sharingSelection || selected.size === 0}
-                  accessibilityRole="button"
-                  accessibilityLabel="Share selected photos"
-                  accessibilityState={{
-                    disabled: sharingSelection || selected.size === 0,
-                    busy: sharingSelection,
-                  }}
-                >
-                  {sharingSelection ? (
-                    <ActivityIndicator size="small" color={colors.primary} />
-                  ) : (
-                    <Text
-                      style={{
-                        color: colors.primary,
-                        fontFamily: "Inter_700Bold",
-                        fontSize: 14,
-                      }}
-                    >
-                      Share
-                    </Text>
-                  )}
-                </Pressable>
                 <Pressable onPress={deleteSelected} hitSlop={6}>
                   <Text
                     style={{
@@ -1015,6 +1153,15 @@ export default function ProjectDetailScreen() {
                 </Pressable>
               </View>
             ) : null}
+
+            <FilterSheet
+              visible={filterSheetOpen}
+              filters={filters}
+              allTags={allTags}
+              onApply={applyFilters}
+              onClose={() => setFilterSheetOpen(false)}
+              colors={colors}
+            />
           </View>
         ) : null}
 
@@ -1876,13 +2023,21 @@ function pointsToPath(pts: { x: number; y: number }[]): string {
 }
 
 function PhotosToolbar({
-  gridSize,
-  onGridSize,
+  selectMode,
+  onToggleSelect,
+  filterActive,
+  onOpenFilter,
+  addingFromLibrary,
+  onAddFromLibrary,
   onTakePhoto,
   colors,
 }: {
-  gridSize: 1 | 2 | 3;
-  onGridSize: (s: 1 | 2 | 3) => void;
+  selectMode: boolean;
+  onToggleSelect: () => void;
+  filterActive: boolean;
+  onOpenFilter: () => void;
+  addingFromLibrary: boolean;
+  onAddFromLibrary: () => void;
   onTakePhoto: () => void;
   colors: ReturnType<typeof useColors>;
 }) {
@@ -1894,34 +2049,62 @@ function PhotosToolbar({
           { backgroundColor: colors.muted, borderColor: colors.border },
         ]}
       >
-        {([3, 2, 1] as const).map((s) => {
-          const active = gridSize === s;
-          const icon: keyof typeof Feather.glyphMap =
-            s === 3 ? "grid" : s === 2 ? "columns" : "square";
-          return (
-            <Pressable
-              key={s}
-              onPress={() => onGridSize(s)}
-              accessibilityRole="button"
-              accessibilityLabel={`${s}-column grid`}
-              accessibilityState={{ selected: active }}
-              style={[
-                styles.gridBtn,
-                {
-                  backgroundColor: active
-                    ? colors.background
-                    : "transparent",
-                },
-              ]}
-            >
-              <Feather
-                name={icon}
-                size={16}
-                color={active ? colors.foreground : colors.mutedForeground}
-              />
-            </Pressable>
-          );
-        })}
+        <Pressable
+          onPress={onToggleSelect}
+          accessibilityRole="button"
+          accessibilityLabel={
+            selectMode ? "Exit selection mode" : "Select photos"
+          }
+          accessibilityState={{ selected: selectMode }}
+          style={[
+            styles.gridBtn,
+            {
+              backgroundColor: selectMode
+                ? colors.background
+                : "transparent",
+            },
+          ]}
+        >
+          <Feather
+            name="check-square"
+            size={16}
+            color={selectMode ? colors.primary : colors.mutedForeground}
+          />
+        </Pressable>
+        <Pressable
+          onPress={onOpenFilter}
+          accessibilityRole="button"
+          accessibilityLabel={
+            filterActive ? "Filter photos (filters active)" : "Filter photos"
+          }
+          accessibilityState={{ selected: filterActive }}
+          style={styles.gridBtn}
+        >
+          <Feather
+            name="filter"
+            size={16}
+            color={filterActive ? colors.primary : colors.mutedForeground}
+          />
+          {filterActive ? (
+            <View
+              style={[styles.filterBadge, { backgroundColor: colors.primary }]}
+            />
+          ) : null}
+        </Pressable>
+        <Pressable
+          onPress={onAddFromLibrary}
+          disabled={addingFromLibrary}
+          accessibilityRole="button"
+          accessibilityLabel="Add photos from camera roll"
+          accessibilityState={{ disabled: addingFromLibrary, busy: addingFromLibrary }}
+          style={styles.gridBtn}
+        >
+          {addingFromLibrary ? (
+            <ActivityIndicator size="small" color={colors.mutedForeground} />
+          ) : (
+            <Feather name="plus" size={16} color={colors.mutedForeground} />
+          )}
+        </Pressable>
       </View>
 
       <Pressable
@@ -1948,6 +2131,287 @@ function PhotosToolbar({
         </Text>
       </Pressable>
     </View>
+  );
+}
+
+/**
+ * Bottom-sheet filter panel for the Photos tab. Works on a DRAFT copy of
+ * the filters: nothing applies until Apply is tapped; Clear all resets the
+ * draft to defaults (still requires Apply — predictable, no surprise
+ * re-renders behind the sheet).
+ *
+ * Date semantics (calendar): first tap = single day; second tap on a
+ * different day = inclusive range (auto-ordered); tapping the single
+ * selected day again = deselect; tapping with a full range set = start a
+ * new single day.
+ */
+function FilterSheet({
+  visible,
+  filters,
+  allTags,
+  onApply,
+  onClose,
+  colors,
+}: {
+  visible: boolean;
+  filters: GalleryFilters;
+  allTags: string[];
+  onApply: (next: GalleryFilters) => void;
+  onClose: () => void;
+  colors: ReturnType<typeof useColors>;
+}) {
+  const insets = useSafeAreaInsets();
+  const [draft, setDraft] = useState<GalleryFilters>(filters);
+
+  // Re-seed the draft from the applied filters each time the sheet opens.
+  useEffect(() => {
+    if (visible) setDraft(filters);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
+
+  const onDayPress = (day: DateData) => {
+    setDraft((d) => {
+      const tapped = day.dateString;
+      if (!d.dateStart || (d.dateStart && d.dateEnd)) {
+        // Nothing selected, or a full range — start a new single day.
+        return { ...d, dateStart: tapped, dateEnd: null };
+      }
+      if (tapped === d.dateStart) {
+        // Tapping the lone selected day deselects it.
+        return { ...d, dateStart: null, dateEnd: null };
+      }
+      // Second tap: inclusive range, auto-ordered.
+      const [start, end] =
+        tapped < d.dateStart ? [tapped, d.dateStart] : [d.dateStart, tapped];
+      return { ...d, dateStart: start, dateEnd: end };
+    });
+  };
+
+  // Period markings for the calendar (start/end caps + filled middle days).
+  const markedDates = useMemo(() => {
+    const marks: Record<
+      string,
+      {
+        startingDay?: boolean;
+        endingDay?: boolean;
+        color: string;
+        textColor: string;
+      }
+    > = {};
+    if (!draft.dateStart) return marks;
+    const start = draft.dateStart;
+    const end = draft.dateEnd ?? draft.dateStart;
+    const cur = new Date(`${start}T00:00:00`);
+    const last = new Date(`${end}T00:00:00`);
+    // Bounded walk (range can't exceed a project's lifetime; cap defensively).
+    for (let i = 0; i < 1000 && cur <= last; i++) {
+      const key = toDayString(cur.toISOString());
+      marks[key] = {
+        color: colors.primary,
+        textColor: colors.primaryForeground,
+        ...(key === start ? { startingDay: true } : {}),
+        ...(key === end ? { endingDay: true } : {}),
+      };
+      cur.setDate(cur.getDate() + 1);
+    }
+    return marks;
+  }, [draft.dateStart, draft.dateEnd, colors.primary, colors.primaryForeground]);
+
+  const segment = (
+    label: string,
+    options: { value: string; label: string }[],
+    current: string,
+    onPick: (v: string) => void,
+  ) => (
+    <View style={{ gap: 8 }}>
+      <Text style={[styles.filterSectionLabel, { color: colors.mutedForeground }]}>
+        {label}
+      </Text>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+        {options.map((o) => {
+          const active = current === o.value;
+          return (
+            <Pressable
+              key={o.value}
+              onPress={() => onPick(o.value)}
+              accessibilityRole="button"
+              accessibilityState={{ selected: active }}
+              style={[
+                styles.filterChip,
+                {
+                  backgroundColor: active ? colors.primary : colors.muted,
+                  borderColor: active ? colors.primary : colors.border,
+                },
+              ]}
+            >
+              <Text
+                style={{
+                  fontFamily: active ? "Inter_600SemiBold" : "Inter_500Medium",
+                  fontSize: 13,
+                  color: active ? colors.primaryForeground : colors.foreground,
+                }}
+              >
+                {o.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+
+  return (
+    <Modal
+      visible={visible}
+      animationType="slide"
+      transparent
+      onRequestClose={onClose}
+    >
+      <Pressable style={styles.sheetBackdrop} onPress={onClose} />
+      <View
+        style={[
+          styles.filterSheet,
+          {
+            backgroundColor: colors.card,
+            paddingBottom: insets.bottom + 12,
+          },
+        ]}
+      >
+        <View style={styles.sheetHandleRow}>
+          <View style={[styles.sheetHandle, { backgroundColor: colors.border }]} />
+        </View>
+        <View style={styles.filterHeaderRow}>
+          <Text style={[styles.filterTitle, { color: colors.foreground }]}>
+            Filters
+          </Text>
+          <Pressable
+            onPress={() => setDraft(DEFAULT_FILTERS)}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Clear all filters"
+          >
+            <Text
+              style={{
+                color: colors.primary,
+                fontFamily: "Inter_600SemiBold",
+                fontSize: 14,
+              }}
+            >
+              Clear all
+            </Text>
+          </Pressable>
+        </View>
+
+        <ScrollView
+          style={{ flexGrow: 0 }}
+          contentContainerStyle={{ gap: 18, paddingHorizontal: 16, paddingBottom: 8 }}
+          showsVerticalScrollIndicator={false}
+        >
+          {segment(
+            "SORT",
+            [
+              { value: "newest", label: "Newest first" },
+              { value: "oldest", label: "Oldest first" },
+            ],
+            draft.sort,
+            (v) => setDraft((d) => ({ ...d, sort: v as GalleryFilters["sort"] })),
+          )}
+          {segment(
+            "TYPE",
+            [
+              { value: "all", label: "All" },
+              { value: "photos", label: "Photos" },
+              { value: "videos", label: "Videos" },
+            ],
+            draft.type,
+            (v) => setDraft((d) => ({ ...d, type: v as GalleryFilters["type"] })),
+          )}
+
+          <View style={{ gap: 8 }}>
+            <Text
+              style={[styles.filterSectionLabel, { color: colors.mutedForeground }]}
+            >
+              DATE
+            </Text>
+            <Calendar
+              onDayPress={onDayPress}
+              markingType="period"
+              markedDates={markedDates}
+              theme={{
+                calendarBackground: "transparent",
+                dayTextColor: colors.foreground,
+                monthTextColor: colors.foreground,
+                textSectionTitleColor: colors.mutedForeground,
+                arrowColor: colors.primary,
+                todayTextColor: colors.primary,
+                textDisabledColor: colors.mutedForeground,
+              }}
+              style={{ borderRadius: 12 }}
+            />
+          </View>
+
+          {allTags.length > 0 ? (
+            <View style={{ gap: 8 }}>
+              <Text
+                style={[
+                  styles.filterSectionLabel,
+                  { color: colors.mutedForeground },
+                ]}
+              >
+                TAGS
+              </Text>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                {allTags.map((t) => {
+                  const active = draft.tags.includes(t);
+                  return (
+                    <Pressable
+                      key={t}
+                      onPress={() =>
+                        setDraft((d) => ({
+                          ...d,
+                          tags: active
+                            ? d.tags.filter((x) => x !== t)
+                            : [...d.tags, t],
+                        }))
+                      }
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: active }}
+                      style={[
+                        styles.filterChip,
+                        {
+                          backgroundColor: active
+                            ? colors.primary
+                            : colors.muted,
+                          borderColor: active ? colors.primary : colors.border,
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={{
+                          fontFamily: active
+                            ? "Inter_600SemiBold"
+                            : "Inter_500Medium",
+                          fontSize: 13,
+                          color: active
+                            ? colors.primaryForeground
+                            : colors.foreground,
+                        }}
+                      >
+                        {t}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          ) : null}
+        </ScrollView>
+
+        <View style={{ paddingHorizontal: 16, paddingTop: 10 }}>
+          <Button title="Apply" onPress={() => onApply(draft)} />
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -2375,6 +2839,55 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
+  },
+  filterBadge: {
+    position: "absolute",
+    top: 4,
+    right: 4,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  sheetBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.4)",
+  },
+  filterSheet: {
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: "85%",
+  },
+  sheetHandleRow: {
+    alignItems: "center",
+    paddingTop: 10,
+    paddingBottom: 4,
+  },
+  sheetHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+  },
+  filterHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  filterTitle: {
+    fontFamily: "Inter_700Bold",
+    fontSize: 17,
+  },
+  filterSectionLabel: {
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 11,
+    letterSpacing: 0.8,
+  },
+  filterChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
   },
   toolbarBtn: {
     flex: 1,

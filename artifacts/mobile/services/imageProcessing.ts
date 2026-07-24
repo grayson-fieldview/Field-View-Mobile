@@ -1,4 +1,78 @@
+import * as FileSystem from "expo-file-system/legacy";
 import * as ImageManipulator from "expo-image-manipulator";
+
+const MIME_BY_EXT: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  heic: "image/heic",
+  heif: "image/heic",
+  gif: "image/gif",
+  webp: "image/webp",
+  mp4: "video/mp4",
+  mov: "video/quicktime",
+  avi: "video/x-msvideo",
+};
+
+export interface PreparedUpload {
+  localUri: string;
+  originalName: string;
+  mimeType: string;
+  fileSize: number;
+}
+
+/**
+ * Copies a captured (or imported) file from its temporary location into the
+ * app's private cache directory under `fieldview/photos/`. Returns metadata
+ * suitable for the upload queue. Returns null on web (no cacheDirectory) or
+ * if the copy fails — callers should fall back to using the source uri
+ * without enqueueing.
+ *
+ * Shared by the capture screen (camera + its library import) and the
+ * project gallery's add-from-camera-roll flow — one pipeline, no forks.
+ */
+export async function prepareForUpload(
+  sourceUri: string,
+  fallbackMime = "image/jpeg",
+): Promise<PreparedUpload | null> {
+  try {
+    if (!FileSystem.cacheDirectory) {
+      // Web or sandboxed env — no stable cache dir to copy into.
+      return null;
+    }
+    const dir = `${FileSystem.cacheDirectory}fieldview/photos/`;
+    await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(
+      () => {
+        /* already exists */
+      },
+    );
+
+    // Derive extension from source uri (strip query string if any).
+    const qIdx = sourceUri.indexOf("?");
+    const cleanUri = qIdx >= 0 ? sourceUri.slice(0, qIdx) : sourceUri;
+    const dotIdx = cleanUri.lastIndexOf(".");
+    const rawExt = dotIdx > 0 ? cleanUri.slice(dotIdx + 1).toLowerCase() : "";
+    const safeExt = /^[a-z0-9]{1,4}$/.test(rawExt) ? rawExt : "jpg";
+    const mimeType = MIME_BY_EXT[safeExt] ?? fallbackMime;
+
+    const originalName = `${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}.${safeExt}`;
+    const localUri = `${dir}${originalName}`;
+
+    await FileSystem.copyAsync({ from: sourceUri, to: localUri });
+    const info = await FileSystem.getInfoAsync(localUri);
+    const fileSize = (info as { size?: number }).size ?? 0;
+
+    console.log(
+      `[imageProcessing] prepared ${originalName} (${mimeType}, ${fileSize} bytes) at ${localUri}`,
+    );
+    return { localUri, originalName, mimeType, fileSize };
+  } catch (e) {
+    console.log("[imageProcessing] prepareForUpload failed:", e);
+    return null;
+  }
+}
 
 /**
  * Photo capture aspect ratios supported by the account-level
