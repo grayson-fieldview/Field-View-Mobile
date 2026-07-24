@@ -741,7 +741,10 @@ export default function ProjectDetailScreen() {
 
       <ScrollView
         contentContainerStyle={{
-          paddingBottom: insets.bottom + 24,
+          // Extra bottom padding while the floating selection bar is up so
+          // the last photo row isn't hidden behind it (bar ≈ 56px + margin).
+          paddingBottom:
+            insets.bottom + 24 + (selectMode && tab === "photos" ? 72 : 0),
         }}
       >
         <View style={styles.heroWrap}>
@@ -780,46 +783,6 @@ export default function ProjectDetailScreen() {
               <Text style={styles.heroBackTxt}>Projects</Text>
             </Pressable>
             <View style={{ flexDirection: "row", gap: 8 }}>
-              <Pressable
-                // Context-aware share: with a selection active it shares
-                // the SELECTED photos (gallery link); otherwise it shares
-                // the whole project. This replaces the old "disable during
-                // selection" behavior AND the selection-bar Share button.
-                onPress={() =>
-                  selected.size > 0
-                    ? void onShareSelected()
-                    : void onShareProject()
-                }
-                hitSlop={10}
-                disabled={sharingProject || sharingSelection}
-                accessibilityRole="button"
-                accessibilityLabel={
-                  selected.size > 0
-                    ? "Share selected photos"
-                    : "Share project"
-                }
-                accessibilityState={{
-                  disabled: sharingProject || sharingSelection,
-                  busy: sharingProject || sharingSelection,
-                }}
-                style={({ pressed }) => [
-                  styles.heroIconBtn,
-                  {
-                    opacity:
-                      sharingProject || sharingSelection
-                        ? 0.5
-                        : pressed
-                          ? 0.7
-                          : 1,
-                  },
-                ]}
-              >
-                {sharingProject || sharingSelection ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Feather name="share-2" size={16} color="#fff" />
-                )}
-              </Pressable>
               <Pressable
                 onPress={() => setShowProjectMenu(true)}
                 hitSlop={10}
@@ -1117,42 +1080,6 @@ export default function ProjectDetailScreen() {
                 })}
               </View>
             )}
-
-            {selectMode && selected.size > 0 ? (
-              <View style={styles.selectionBar}>
-                <Pressable onPress={exitSelectMode} hitSlop={6}>
-                  <Text
-                    style={{
-                      color: colors.mutedForeground,
-                      fontFamily: "Inter_600SemiBold",
-                      fontSize: 14,
-                    }}
-                  >
-                    Cancel
-                  </Text>
-                </Pressable>
-                <Text
-                  style={{
-                    color: colors.foreground,
-                    fontFamily: "Inter_600SemiBold",
-                    fontSize: 14,
-                  }}
-                >
-                  {selected.size} selected
-                </Text>
-                <Pressable onPress={deleteSelected} hitSlop={6}>
-                  <Text
-                    style={{
-                      color: colors.destructive,
-                      fontFamily: "Inter_700Bold",
-                      fontSize: 14,
-                    }}
-                  >
-                    Delete
-                  </Text>
-                </Pressable>
-              </View>
-            ) : null}
 
             <FilterSheet
               visible={filterSheetOpen}
@@ -1670,6 +1597,86 @@ export default function ProjectDetailScreen() {
           void refreshAssignments();
         }}
       />
+      {/* Floating selection bar: pinned above the bottom safe area (this
+          screen is a stack route — FloatingTabBar only renders inside the
+          (tabs) layout, so there's no tab bar to stack above here). Shown
+          while selection mode is armed or anything is selected. */}
+      {selectMode && tab === "photos" ? (
+        <View
+          style={[
+            styles.selectionBarFloating,
+            {
+              bottom: insets.bottom + 12,
+              backgroundColor: colors.card,
+              borderColor: colors.border,
+            },
+          ]}
+        >
+          <Pressable onPress={exitSelectMode} hitSlop={6}>
+            <Text
+              style={{
+                color: colors.mutedForeground,
+                fontFamily: "Inter_600SemiBold",
+                fontSize: 14,
+              }}
+            >
+              Cancel
+            </Text>
+          </Pressable>
+          <Text
+            style={{
+              color: colors.foreground,
+              fontFamily: "Inter_600SemiBold",
+              fontSize: 14,
+            }}
+          >
+            {selected.size} selected
+          </Text>
+          <Pressable
+            onPress={onShareSelected}
+            hitSlop={6}
+            disabled={sharingSelection || selected.size === 0}
+            accessibilityRole="button"
+            accessibilityLabel="Share selected photos"
+            accessibilityState={{
+              disabled: sharingSelection || selected.size === 0,
+              busy: sharingSelection,
+            }}
+          >
+            {sharingSelection ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : (
+              <Text
+                style={{
+                  color: colors.primary,
+                  fontFamily: "Inter_700Bold",
+                  fontSize: 14,
+                  opacity: selected.size === 0 ? 0.4 : 1,
+                }}
+              >
+                Share
+              </Text>
+            )}
+          </Pressable>
+          <Pressable
+            onPress={deleteSelected}
+            hitSlop={6}
+            disabled={selected.size === 0}
+          >
+            <Text
+              style={{
+                color: colors.destructive,
+                fontFamily: "Inter_700Bold",
+                fontSize: 14,
+                opacity: selected.size === 0 ? 0.4 : 1,
+              }}
+            >
+              Delete
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
+
       {/* Top-right kebab overflow menu. Lightweight Modal-as-popover
           (matches the rest of this screen's modal patterns). */}
       <Modal
@@ -1693,6 +1700,32 @@ export default function ProjectDetailScreen() {
             ]}
             onPress={(e) => e.stopPropagation()}
           >
+            <Pressable
+              onPress={() => {
+                setShowProjectMenu(false);
+                void onShareProject();
+              }}
+              disabled={sharingProject}
+              accessibilityRole="button"
+              accessibilityLabel="Share project link"
+              accessibilityState={{
+                disabled: sharingProject,
+                busy: sharingProject,
+              }}
+              style={({ pressed }) => [
+                styles.menuItem,
+                { opacity: sharingProject ? 0.5 : pressed ? 0.6 : 1 },
+              ]}
+            >
+              {sharingProject ? (
+                <ActivityIndicator size="small" color={colors.foreground} />
+              ) : (
+                <Feather name="share-2" size={16} color={colors.foreground} />
+              )}
+              <Text style={[styles.menuItemTxt, { color: colors.foreground }]}>
+                Share project link
+              </Text>
+            </Pressable>
             {currentUser?.role !== "restricted" ? (
               <Pressable
                 onPress={() => {
@@ -2942,15 +2975,22 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  selectionBar: {
+  selectionBarFloating: {
+    position: "absolute",
+    left: 16,
+    right: 16,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginTop: 18,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-    backgroundColor: "rgba(0,0,0,0.06)",
+    paddingVertical: 14,
+    paddingHorizontal: 18,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    shadowColor: "#000",
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
   },
   photo: { width: "100%", height: "100%" },
   videoTile: {
