@@ -18,6 +18,7 @@ import {
   hasMinDrag,
   isLegacyMobileStrokeId,
   rawToCanonical,
+  recoverLegacyPen,
   strokeToRenderShape,
   toCanonicalForSave,
   toPixels,
@@ -305,49 +306,73 @@ test("legacy raw-px stroke normalizes and writes integer px width", () => {
   close(saved.points![1].y, 0.75);
 });
 
-test("id-less 1000-unit stroke is normalized to px + fv- id on save", () => {
+test("id-less 1000-unit stroke recovers its pen + gets fv- id on save", () => {
   // Post-5f1409c / pre-22a8844 window: no id, no size/canvasW, width in
-  // 1000-units. 14.925... on a 335px box = the legacy 5px pen.
-  const saved = toCanonicalForSave(
-    {
-      type: "pencil",
-      width: (5 / 335) * 1000, // 14.9253...
-      color: "#111",
-      points: [
-        { x: 0.1, y: 0.1 },
-        { x: 0.9, y: 0.9 },
-      ],
-    } as StoredStroke,
-    335,
-  ) as StoredStroke;
-  // Snapped to the git-sourced pen set {3,6,12}, not merely rounded.
-  assert.equal(saved.width, 6); // pen 6 authored on 402pt: 14.925×0.335=5.0→snap 6
-  assert.ok((saved.id as string).startsWith("fv-"));
-  // And the new id now honestly describes the width as px on read:
-  assert.equal(widthToPx(saved.width as number, 335, saved.id), 6);
-});
-
-test("snap beats round: pen 6 on a 430pt canvas normalizes back to 6", () => {
-  // 6/430*1000 = 13.9535 units; ×375/1000 = 5.23px → round() would give 5.
+  // 1000-units. 14.9254 = pen 6 authored on a 402pt canvas.
   const saved = toCanonicalForSave({
     type: "pencil",
-    width: (6 / 430) * 1000,
-    points: [{ x: 0.1, y: 0.1 }, { x: 0.9, y: 0.9 }],
+    width: (6 / 402) * 1000, // 14.9253...
+    color: "#111",
+    points: [
+      { x: 0.1, y: 0.1 },
+      { x: 0.9, y: 0.9 },
+    ],
   } as StoredStroke) as StoredStroke;
-  assert.equal(saved.width, 6);
+  assert.equal(saved.width, 6); // inverse solve: c = 1000*6/14.9254 = 402 ✓
+  assert.ok((saved.id as string).startsWith("fv-"));
+  // And the new id now honestly describes the width as px on read:
+  assert.equal(widthToPx(saved.width as number, 402, saved.id), 6);
+});
+
+test("recoverLegacyPen: exact pen recovery for pens × device widths (18 cells)", () => {
+  const pens = [3, 6, 12];
+  const widths = [320, 375, 402, 430, 768, 1024];
+  for (const p of pens) {
+    for (const c of widths) {
+      const units = (1000 * p) / c;
+      assert.equal(
+        recoverLegacyPen(units),
+        p,
+        `pen ${p} on ${c}pt (units=${units})`,
+      );
+      // End-to-end through the save normalizer too.
+      const saved = toCanonicalForSave({
+        type: "pencil",
+        width: units,
+        points: [{ x: 0.1, y: 0.1 }, { x: 0.9, y: 0.9 }],
+      } as StoredStroke) as StoredStroke;
+      assert.equal(saved.width, p, `save: pen ${p} on ${c}pt`);
+    }
+  }
+});
+
+test("recoverLegacyPen: unmatched units → null; save keeps verbatim + warns", () => {
+  assert.equal(recoverLegacyPen(9.99), null); // implies c=300.3/600.6/1201.2 — no device
+  const warnings: unknown[] = [];
+  const orig = console.warn;
+  console.warn = (...a: unknown[]) => warnings.push(a);
+  let saved: StoredStroke;
+  try {
+    saved = toCanonicalForSave({
+      type: "pencil",
+      width: 9.99,
+      points: [{ x: 0.1, y: 0.1 }, { x: 0.9, y: 0.9 }],
+    } as StoredStroke) as StoredStroke;
+  } finally {
+    console.warn = orig;
+  }
+  assert.equal(saved.width, 9.99); // never converted on a guess
+  assert.equal(warnings.length, 1);
 });
 
 test("id-less Gen-1 stroke (size/canvasW) is untouched by the normalizer", () => {
   // canvasMeta runs FIRST: size is authoritative px, not 1000-units.
-  const saved = toCanonicalForSave(
-    {
-      points: [{ x: 100, y: 100 }, { x: 200, y: 200 }],
-      size: 6,
-      canvasW: 400,
-      canvasH: 400,
-    } as StoredStroke,
-    335,
-  ) as StoredStroke;
+  const saved = toCanonicalForSave({
+    points: [{ x: 100, y: 100 }, { x: 200, y: 200 }],
+    size: 6,
+    canvasW: 400,
+    canvasH: 400,
+  } as StoredStroke) as StoredStroke;
   assert.equal(saved.width, 6);
 });
 

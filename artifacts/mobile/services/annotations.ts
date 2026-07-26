@@ -378,34 +378,49 @@ export function rawToCanonical(
 }
 
 /**
- * Nominal canvas width used to normalize an ID-LESS 1000-unit width to
- * px when the caller can't supply the real render box (typical phone
- * canvas was ~335–430pt; the exact value only shifts the result within
- * one pen size). Callers that know their box should pass it explicitly.
- */
-export const LEGACY_NORMALIZE_BOX_W = 375;
-
-/**
  * The mobile pen set — sourced from git history, not inferred: every
  * revision that ever defined the pen-size UI used exactly [3, 6, 12]
  * (git log -G "SIZES = [" shows only this array, from the first photo
  * editor commit onward). So the observed production width 14.9254 is
  * pen 6 authored on a 402pt canvas (6/402*1000), not pen 5 on 335pt —
- * 5 was never a mobile pen. Legacy 1000-unit widths therefore decode
- * to one of these three px values; SNAP to the nearest (don't round):
- * pen 6 on 430pt → 13.95 units → ×0.375 = 5.23 → round gives 5 (wrong),
- * snap gives 6 (right). The three unit bands don't overlap at any
- * plausible canvas width, so snapping is unambiguous.
+ * 5 was never a mobile pen.
  */
 export const LEGACY_PEN_SIZES_PX = [3, 6, 12] as const;
 
-/** Snap a px estimate to the nearest legacy pen size. */
-export function snapToLegacyPen(px: number): number {
-  let best: number = LEGACY_PEN_SIZES_PX[0];
-  for (const s of LEGACY_PEN_SIZES_PX) {
-    if (Math.abs(px - s) < Math.abs(px - best)) best = s;
+/**
+ * Real iOS logical widths a legacy stroke could have been authored on.
+ * Phones + iPads; used to INVERT the legacy unit formula rather than
+ * assuming a canvas width (a fixed 375 assumption converts every
+ * tablet-authored stroke one pen step too thin: iPad 768 pen 6 →
+ * 2.93 → "3").
+ */
+export const IOS_LOGICAL_WIDTHS = [
+  320, 375, 390, 393, 402, 414, 428, 430, // phones
+  744, 768, 810, 820, 834, 1024, 1080, 1112, 1133, // iPads
+] as const;
+
+/**
+ * Recover the authoring pen (px) from a legacy 1000-unit width by
+ * inverse solve: u = 1000p/c → c = 1000p/u for each pen p; keep the
+ * pen whose implied canvas width matches a real device width.
+ * Uniqueness: a collision would need one real width to be exactly 2×
+ * (or 4×) another; none are, at the 0.75pt tolerance used here (the
+ * nearest near-misses are 744 vs 2×372≈375 and 834 vs 2×417≈414,
+ * ~3pt apart — stored units carry full float precision, so a genuine
+ * match lands within ~1e-9).
+ * Returns null when NO pen maps to a real width — callers must log
+ * for manual review, never convert on a guess.
+ */
+export function recoverLegacyPen(units: number): number | null {
+  if (!Number.isFinite(units) || units <= 0) return null;
+  const matches: number[] = [];
+  for (const p of LEGACY_PEN_SIZES_PX) {
+    const c = (1000 * p) / units;
+    if (IOS_LOGICAL_WIDTHS.some((w) => Math.abs(c - w) <= 0.75)) {
+      matches.push(p);
+    }
   }
-  return best;
+  return matches.length === 1 ? matches[0] : null;
 }
 
 /**
@@ -423,10 +438,12 @@ export function snapToLegacyPen(px: number): number {
  *     with width converted to integer px (web convention).
  *   - ID-LESS strokes with a bare `width` are, by construction, from the
  *     post-5f1409c / pre-22a8844 window — inside the 1000-unit era. Their
- *     width is NORMALIZED to px against `boxW` BEFORE an `fv-` id is
- *     minted, so the new id honestly self-describes a px width instead
- *     of mislabeling a 1000-unit one. (The canvasMeta check above must
- *     stay first: Gen-1 id-less px strokes are unaffected.)
+ *     width is NORMALIZED to px via inverse pen recovery (recoverLegacyPen)
+ *     BEFORE an `fv-` id is minted, so the new id honestly self-describes
+ *     a px width instead of mislabeling a 1000-unit one. Units matching no
+ *     real device width are logged and kept VERBATIM — never converted on
+ *     a guess. (The canvasMeta check above must stay first: Gen-1 id-less
+ *     px strokes are unaffected.)
  *   - already-canonical strokes (with ids) pass through with a
  *     guaranteed valid type; their width value is preserved VERBATIM
  *     (the id-based read heuristic handles both unit conventions, so
@@ -434,10 +451,7 @@ export function snapToLegacyPen(px: number): number {
  * Strokes the mobile renderer can't draw are NEVER discarded — the save
  * payload must round-trip the user's full row.
  */
-export function toCanonicalForSave(
-  s: StoredStroke,
-  boxW: number = LEGACY_NORMALIZE_BOX_W,
-): CanonicalStroke {
+export function toCanonicalForSave(s: StoredStroke): CanonicalStroke {
   // Preserve an existing stable id (web-authored / previously-saved strokes
   // already carry one); only mint a new id when the stroke has none. Never
   // regenerate — ids must be stable across saves.
@@ -483,14 +497,26 @@ export function toCanonicalForSave(
     };
   }
   // Id-less + no canvas metadata → definitively the 1000-unit era (see
-  // doc block): normalize the width to integer px FIRST, then let the
-  // freshly-minted `fv-` id describe it truthfully.
-  const width =
-    typeof s.width === "number" && Number.isFinite(s.width) && s.width > 0
-      ? hadId
-        ? s.width // stored widths with ids are never rewritten
-        : snapToLegacyPen((s.width * boxW) / 1000)
-      : DEFAULT_STROKE_WIDTH;
+  // doc block): recover the authoring pen FIRST, then let the
+  // freshly-minted `fv-` id describe the px width truthfully.
+  let width: number;
+  if (typeof s.width !== "number" || !Number.isFinite(s.width) || s.width <= 0) {
+    width = DEFAULT_STROKE_WIDTH;
+  } else if (hadId) {
+    width = s.width; // stored widths with ids are never rewritten
+  } else {
+    const pen = recoverLegacyPen(s.width);
+    if (pen !== null) {
+      width = pen;
+    } else {
+      // No real device width explains these units — flag for manual
+      // review and keep the value verbatim rather than guessing.
+      console.warn(
+        `[annotations] id-less legacy width matches no device (units=${s.width}); kept verbatim`,
+      );
+      width = s.width;
+    }
+  }
   return {
     id,
     type: s.type ?? "pencil",
