@@ -14,6 +14,7 @@ import { test } from "node:test";
 import {
   DEFAULT_STROKE_WIDTH,
   arrowHeadPath,
+  mobileIdTimestamp,
   rawToCanonical,
   strokeToRenderShape,
   toCanonicalForSave,
@@ -30,18 +31,56 @@ const close = (a: number, b: number, eps = 1e-6) =>
 
 // ---------- Task 0: width unit heuristic ----------
 
-test("widthToPx: integer widths are raw px (web convention)", () => {
-  assert.equal(widthToPx(3, W), 3);
-  assert.equal(widthToPx(8, W), 8);
-  assert.equal(widthToPx(1, 9999), 1);
+// Mobile base-36 ids with known mint times (Date.now().toString(36) + random).
+const preCutoverId = new Date("2026-01-15T12:00:00Z").getTime().toString(36) + "abc12345"; // legacy build era
+const postCutoverId = new Date("2026-07-27T12:00:00Z").getTime().toString(36) + "abc12345";
+const webUuid = "a3f1c2d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+const webFallbackId = `s-${Date.now()}-abc123`;
+
+test("mobileIdTimestamp: recognizes mobile ids, rejects web ids", () => {
+  assert.equal(
+    mobileIdTimestamp(preCutoverId),
+    new Date("2026-01-15T12:00:00Z").getTime(),
+  );
+  assert.equal(mobileIdTimestamp(webUuid), null);
+  assert.equal(mobileIdTimestamp(webUuid.replace(/-/g, "")), null); // hex-32
+  assert.equal(mobileIdTimestamp(webFallbackId), null);
+  assert.equal(mobileIdTimestamp(undefined), null);
+  assert.equal(mobileIdTimestamp(""), null);
 });
 
-test("widthToPx: non-integer widths are legacy 1000-units", () => {
+test("widthToPx: pre-cutover mobile id is definitively 1000-units, even integers", () => {
   // Legacy mobile: 5px pen on a 335px canvas → (5/335)*1000 = 14.9253...
   const legacy = (5 / 335) * 1000;
-  close(widthToPx(legacy, 335), 5);
-  // Scales with the render box, as the legacy convention intended.
-  close(widthToPx(legacy, 670), 10);
+  close(widthToPx(legacy, 335, preCutoverId), 5);
+  close(widthToPx(legacy, 670, preCutoverId), 10); // scales with the box
+  // Even an integer-looking width is 1000-units for a pre-cutover id.
+  close(widthToPx(15, 400, preCutoverId), 6);
+});
+
+test("widthToPx: web ids (UUID / s- fallback) are raw px, even non-integers", () => {
+  assert.equal(widthToPx(3, W, webUuid), 3);
+  assert.equal(widthToPx(4.5, W, webUuid), 4.5);
+  assert.equal(widthToPx(8, W, webFallbackId), 8);
+});
+
+test("widthToPx: post-cutover mobile id falls back to numeric test", () => {
+  assert.equal(widthToPx(3, W, postCutoverId), 3); // updated build: int px
+  const legacy = (5 / 335) * 1000;
+  close(widthToPx(legacy, 335, postCutoverId), 5); // stale build: 1000-units
+});
+
+test("widthToPx: no id → last-resort numeric test (warns)", () => {
+  const warnings: unknown[] = [];
+  const orig = console.warn;
+  console.warn = (...a: unknown[]) => warnings.push(a);
+  try {
+    assert.equal(widthToPx(3, W), 3);
+    close(widthToPx((5 / 335) * 1000, 335), 5);
+  } finally {
+    console.warn = orig;
+  }
+  assert.equal(warnings.length, 2);
 });
 
 test("widthToPx: garbage falls back to default", () => {
@@ -188,7 +227,7 @@ test("round-trip: canonical → render px → re-normalized equals original", ()
 
 test("round-trip via legacy toPixels path stays consistent", () => {
   const canonical: StoredStroke = {
-    id: "rt2",
+    id: preCutoverId, // legacy mobile-minted id
     type: "pencil",
     width: (5 / 335) * 1000, // legacy non-integer width
     points: [

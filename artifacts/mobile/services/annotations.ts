@@ -34,9 +34,8 @@ const DEFAULT_COLOR = "#ef4444";
 const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
 
 /**
- * Resolve a canonical `width` to display px (Task 0 heuristic).
- *
- * The two clients historically disagree on units:
+ * Width-unit discrimination (Task 0). The two clients historically
+ * disagree on units:
  *   - Web writes/reads raw display px. Its picker is an integer slider
  *     (min 1, max 8, default 3) and its canvas renderer does
  *     `ctx.lineWidth = stroke.width` with no scaling.
@@ -44,17 +43,77 @@ const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
  *     (penPx / canvasW) * 1000 — virtually always NON-integer
  *     (e.g. 5px on a 335px canvas → 14.925373...).
  *
- * Tolerant read-time discrimination: integer → px (web-authored, or a
- * new mobile stroke), non-integer → 1000-units (legacy mobile), scaled
- * against the current render box. Renders both plausibly without ever
- * rewriting what either client stored.
+ * Read-time-only resolution, in priority order (never rewrites storage):
+ *   1. Local legacy `size`/`canvasW` metadata — authoritative px
+ *      (handled by the callers before width is consulted).
+ *   2. Stroke id provenance:
+ *      - mobile ids are base-36 `Date.now().toString(36) + random`
+ *        (services/id.ts, unchanged since the first commit — mobile
+ *        never minted UUIDs). A mobile id whose embedded timestamp
+ *        predates WIDTH_PX_CUTOVER_MS is DEFINITIVELY 1000-units.
+ *      - web ids are crypto.randomUUID() (or an `s-`-prefixed fallback
+ *        in insecure contexts) — raw px.
+ *      - mobile ids minted AFTER the cutover are ambiguous: updated
+ *        builds write integer px, stale builds still in the field write
+ *        non-integer 1000-units → fall through to the numeric test
+ *        (documented case, no warn).
+ *   3. Integer/non-integer numeric test as a last resort, with a
+ *      console.warn so we can measure whether it's load-bearing.
  */
-export function widthToPx(width: number | undefined, boxW: number): number {
+
+/**
+ * Date this client started writing integer-px widths. Mobile base-36 ids
+ * with an embedded mint-timestamp before this are guaranteed 1000-units.
+ */
+export const WIDTH_PX_CUTOVER_MS = Date.UTC(2026, 6, 26);
+
+/**
+ * If `id` looks like a mobile-minted base-36 id, return its embedded
+ * mint timestamp (ms); otherwise null. Mobile ids are 9–18 lowercase
+ * base-36 chars whose first 8 chars decode to a plausible epoch-ms
+ * (8-char base-36 prefixes cover ~2015–2059). UUIDs (dashes, or 32 hex
+ * chars) and web `s-` fallback ids never match.
+ */
+export function mobileIdTimestamp(id: unknown): number | null {
+  if (typeof id !== "string" || !/^[0-9a-z]{9,18}$/.test(id)) return null;
+  const ts = parseInt(id.slice(0, 8), 36);
+  return ts >= Date.UTC(2015, 0, 1) && ts < Date.UTC(2059, 0, 1) ? ts : null;
+}
+
+/** Last-resort numeric discrimination: integer=px, non-integer=1000-units. */
+function widthByNumericTest(width: number, boxW: number): number {
+  return Number.isInteger(width) ? width : (width * boxW) / 1000;
+}
+
+/**
+ * Resolve a canonical `width` to display px against a render box of
+ * width `boxW`, using the stroke's `id` for provenance (see above).
+ */
+export function widthToPx(
+  width: number | undefined,
+  boxW: number,
+  id?: unknown,
+): number {
   if (typeof width !== "number" || !Number.isFinite(width) || width <= 0) {
     return DEFAULT_STROKE_WIDTH;
   }
-  if (Number.isInteger(width)) return width;
-  return (width * boxW) / 1000;
+  const ts = mobileIdTimestamp(id);
+  if (ts !== null) {
+    // Definitive: pre-cutover mobile builds only ever wrote 1000-units.
+    if (ts < WIDTH_PX_CUTOVER_MS) return (width * boxW) / 1000;
+    // Post-cutover mobile id: updated build (integer px) vs stale build
+    // (non-integer 1000-units). Documented ambiguity — numeric test.
+    return widthByNumericTest(width, boxW);
+  }
+  if (typeof id === "string" && id.length > 0) {
+    // Non-mobile id (UUID / hex / web `s-` fallback): web-authored → px.
+    return width;
+  }
+  // No usable id at all — numeric test is load-bearing here; measure it.
+  console.warn(
+    `[annotations] width heuristic fell back to integer test (id=${String(id)}, width=${width})`,
+  );
+  return widthByNumericTest(width, boxW);
 }
 
 /** fontSize is display px on both clients (web renders `${fontSize}px`). */
@@ -97,7 +156,7 @@ export function toPixels(s: StoredStroke, w: number, h: number): PixelStroke {
 
   let sizePx: number;
   if (typeof s.width === "number") {
-    sizePx = widthToPx(s.width, w);
+    sizePx = widthToPx(s.width, w, s.id);
   } else if (typeof s.size === "number" && hasCanvasMeta(s)) {
     // Legacy raw px on its own canvas → scale to this box.
     sizePx = (s.size / (s.canvasW as number)) * w;
@@ -208,7 +267,7 @@ export function strokeToRenderShape(
   const pts = normalizedPoints(s);
   const strokeWidth =
     typeof s.width === "number"
-      ? widthToPx(s.width, w)
+      ? widthToPx(s.width, w, s.id)
       : typeof s.size === "number" && hasCanvasMeta(s)
         ? (s.size / (s.canvasW as number)) * w
         : typeof s.size === "number"
