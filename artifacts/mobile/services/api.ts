@@ -627,6 +627,13 @@ export interface BackendTask {
     email?: string | null;
   } | null;
   dueDate?: string | null;
+  /**
+   * Task photo requirement (task_photos join). Both are present on task
+   * list payloads; treated as optional defensively since POST/PATCH
+   * serializers may omit computed fields.
+   */
+  requiredPhotoCount?: number | null;
+  attachedPhotoCount?: number | null;
   createdAt: string;
   updatedAt?: string;
   project?: { name?: string };

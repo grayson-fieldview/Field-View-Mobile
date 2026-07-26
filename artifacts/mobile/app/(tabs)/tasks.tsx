@@ -292,6 +292,37 @@ export default function TasksScreen() {
                       </Text>
                     </View>
                   ) : null}
+
+                  {(item.requiredPhotoCount ?? 0) > 0 ? (
+                    <View style={styles.metaItem}>
+                      <Feather
+                        name="camera"
+                        size={12}
+                        color={
+                          !item.done &&
+                          (item.attachedPhotoCount ?? 0) <
+                            (item.requiredPhotoCount ?? 0)
+                            ? "#D97706"
+                            : colors.mutedForeground
+                        }
+                      />
+                      <Text
+                        style={[
+                          styles.metaText,
+                          {
+                            color:
+                              !item.done &&
+                              (item.attachedPhotoCount ?? 0) <
+                                (item.requiredPhotoCount ?? 0)
+                                ? "#D97706"
+                                : colors.mutedForeground,
+                          },
+                        ]}
+                      >
+                        {`${item.attachedPhotoCount ?? 0} of ${item.requiredPhotoCount} photos`}
+                      </Text>
+                    </View>
+                  ) : null}
                 </View>
 
                 {/* Assignee chip — tap to reassign */}

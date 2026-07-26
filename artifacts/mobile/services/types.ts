@@ -331,6 +331,15 @@ export interface Task {
   /** User id of the creator (server-stamped). */
   createdById?: string;
   dueDate?: string;
+  /**
+   * Photos that must be attached to THIS task (task_photos join) before
+   * it can be marked done. 0/undefined = no requirement. Server-computed;
+   * mobile has no attach UI yet (Phase 1+) — photos are attached from
+   * the web app for now.
+   */
+  requiredPhotoCount?: number;
+  /** Server-computed count of photos currently attached to this task. */
+  attachedPhotoCount?: number;
   createdAt: string;
   remote?: boolean;
 }

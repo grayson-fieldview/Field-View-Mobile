@@ -1235,6 +1235,43 @@ export default function ProjectDetailScreen() {
                           {t.notes}
                         </Text>
                       ) : null}
+                      {(t.requiredPhotoCount ?? 0) > 0 ? (
+                        <View
+                          style={{
+                            flexDirection: "row",
+                            alignItems: "center",
+                            gap: 4,
+                            marginTop: 3,
+                          }}
+                        >
+                          <Feather
+                            name="camera"
+                            size={11}
+                            color={
+                              !t.done &&
+                              (t.attachedPhotoCount ?? 0) <
+                                (t.requiredPhotoCount ?? 0)
+                                ? "#D97706"
+                                : colors.mutedForeground
+                            }
+                          />
+                          <Text
+                            style={[
+                              styles.taskNotes,
+                              {
+                                color:
+                                  !t.done &&
+                                  (t.attachedPhotoCount ?? 0) <
+                                    (t.requiredPhotoCount ?? 0)
+                                    ? "#D97706"
+                                    : colors.mutedForeground,
+                              },
+                            ]}
+                          >
+                            {`${t.attachedPhotoCount ?? 0} of ${t.requiredPhotoCount} photos`}
+                          </Text>
+                        </View>
+                      ) : null}
                     </View>
                   </Pressable>
                 ))}

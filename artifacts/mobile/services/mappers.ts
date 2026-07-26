@@ -83,6 +83,14 @@ export function mapBackendTask(t: BackendTask): Task {
     assignedToName,
     createdById: t.createdById ?? undefined,
     dueDate: t.dueDate ?? undefined,
+    requiredPhotoCount:
+      typeof t.requiredPhotoCount === "number" && t.requiredPhotoCount > 0
+        ? t.requiredPhotoCount
+        : undefined,
+    attachedPhotoCount:
+      typeof t.attachedPhotoCount === "number"
+        ? t.attachedPhotoCount
+        : undefined,
     createdAt: t.createdAt,
     remote: true,
   };

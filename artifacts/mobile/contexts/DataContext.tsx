@@ -7,7 +7,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { AppState } from "react-native";
+import { Alert, AppState } from "react-native";
 
 import { useAuth } from "@/contexts/AuthContext";
 import { ApiError, api } from "@/services/api";
@@ -243,6 +243,8 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   // slow PATCH that returns AFTER a faster newer write doesn't clobber
   // the newer state. Optimistic-create (tmp- ids) doesn't use this map.
   const taskVersionsRef = useRef<Map<string, number>>(new Map());
+  /** Task ids with a status-cycle PATCH currently in flight (see cycleTaskStatus). */
+  const cyclingTasksRef = useRef<Set<string>>(new Set());
   const bumpTaskVersion = useCallback((id: string): number => {
     const next = (taskVersionsRef.current.get(id) ?? 0) + 1;
     taskVersionsRef.current.set(id, next);
@@ -908,6 +910,14 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
   const cycleTaskStatus: DataState["cycleTaskStatus"] = useCallback(
     async (id) => {
+      // Per-task in-flight guard. Without it, a tap while a PATCH is
+      // pending reads the OPTIMISTIC status (e.g. "done" that the server
+      // is about to reject with 422) and computes the next step from it —
+      // advancing past "done" to "todo". With the guard, taps during the
+      // round-trip are ignored, so after a rejected transition the state
+      // has already been reverted and the next tap retries the SAME
+      // transition.
+      if (cyclingTasksRef.current.has(id)) return;
       const current = tasksRef.current.find((t) => t.id === id);
       if (!current) return;
       // Web-matching forward cycle. Falls back to "todo" as the current
@@ -919,7 +929,35 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         done: "todo",
       };
       const nextStatus: TaskStatus = NEXT[current.status ?? "todo"];
-      await updateTask(id, { status: nextStatus });
+      cyclingTasksRef.current.add(id);
+      try {
+        await updateTask(id, { status: nextStatus });
+      } catch (err) {
+        // Server-enforced photo requirement (no feature flag; live for
+        // all accounts). updateTask has already reverted the optimistic
+        // state, so the task is back at its pre-tap status and the next
+        // tap retries the same transition. Mobile has no attach UI yet
+        // (Phase 1+), so tell the crew member the actionable path.
+        if (
+          err instanceof ApiError &&
+          err.status === 422 &&
+          typeof err.body === "object" &&
+          err.body !== null &&
+          (err.body as { code?: unknown }).code === "PHOTOS_REQUIRED"
+        ) {
+          const b = err.body as { required?: number; attached?: number };
+          const required = typeof b.required === "number" ? b.required : 0;
+          const attached = typeof b.attached === "number" ? b.attached : 0;
+          Alert.alert(
+            "Photos required",
+            `This task needs ${required} photo${required === 1 ? "" : "s"} attached to it before it can be completed (${attached} of ${required} attached so far).\n\nAttaching photos to a task isn't available in the app yet — please attach them from the web app, then mark the task done here.`,
+          );
+          return; // handled — don't propagate to the row's silent .catch
+        }
+        throw err;
+      } finally {
+        cyclingTasksRef.current.delete(id);
+      }
     },
     [updateTask],
   );
