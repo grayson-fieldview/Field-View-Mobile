@@ -18,18 +18,18 @@ import {
 } from "react-native";
 import Gallery from "react-native-awesome-gallery";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import Svg, { Path } from "react-native-svg";
 
+import {
+  AnnotationEditor,
+  AnnotationLayer,
+  COLORS,
+  SIZES,
+} from "@/components/AnnotationEditor";
 import { useData } from "@/contexts/DataContext";
 import { useToast } from "@/contexts/ToastContext";
-import { rawToCanonical, toPixels } from "@/services/annotations";
 import { ApiError, api, buildMediaReferencesMessage } from "@/services/api";
 import type { BackendCommentResponse } from "@/services/api";
-import { isRenderablePencilStroke } from "@/services/types";
-import type { AnnotationStroke, Photo, StoredStroke } from "@/services/types";
-
-const COLORS = ["#ef4444", "#22c55e", "#3b82f6", "#F09001", "#a855f7", "#111111"];
-const SIZES = [3, 6, 12];
+import type { Photo, StoredStroke } from "@/services/types";
 
 /**
  * Full-screen video player for the viewer. Used both inside the gallery
@@ -129,18 +129,6 @@ export default function PhotoViewerScreen() {
     {},
   );
 
-  const currentStroke = useRef<AnnotationStroke | null>(null);
-  const [, force] = useState(0);
-
-  // Captured drawing-canvas size. Kept as a ref (read synchronously at draw
-  // time so freshly-drawn px points record the box they were laid out
-  // against) AND mirrored to state so the render can denormalize canonical
-  // strokes to px against the current box.
-  const canvasSize = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
-  const [editBox, setEditBox] = useState<{ w: number; h: number }>({
-    w: 0,
-    h: 0,
-  });
   // Read-mode (gallery) box. Items are absoluteFill, so a single captured
   // size denormalizes every sibling's canonical strokes.
   const [readBox, setReadBox] = useState<{ w: number; h: number }>({
@@ -292,22 +280,6 @@ export default function PhotoViewerScreen() {
     );
   }
 
-  const startStroke = (x: number, y: number) => {
-    if (!editing) return;
-    currentStroke.current = {
-      color,
-      size,
-      points: [{ x, y }],
-      canvasW: canvasSize.current.w || undefined,
-      canvasH: canvasSize.current.h || undefined,
-    };
-    force((n) => n + 1);
-  };
-  const extendStroke = (x: number, y: number) => {
-    if (!editing || !currentStroke.current) return;
-    currentStroke.current.points.push({ x, y });
-    force((n) => n + 1);
-  };
   // Persist a buffer change locally (offline buffer + optimistic render set)
   // and mark the photo dirty for the next server flush. The local render set
   // (Photo.annotations) is the union of others + own so thumbnails / read
@@ -318,21 +290,9 @@ export default function PhotoViewerScreen() {
     await updatePhoto(pid, { annotations: [...others, ...ownNext] });
   };
 
-  const endStroke = async () => {
-    if (!editing) return;
-    const s = currentStroke.current;
-    currentStroke.current = null;
-    if (!s || s.points.length < 2) {
-      force((n) => n + 1);
-      return;
-    }
-    // Convert the freshly-drawn raw px stroke to canonical 0..1 at the edge,
-    // stamping type "pencil". The buffer is uniformly canonical from here.
-    const canonical = rawToCanonical({
-      ...s,
-      canvasW: canvasSize.current.w || undefined,
-      canvasH: canvasSize.current.h || undefined,
-    });
+  // AnnotationEditor hands each finished stroke up already in canonical
+  // 0..1 form (type from its active tool); append + persist locally.
+  const commitStroke = async (canonical: StoredStroke) => {
     const pid = currentPhoto.id;
     const next = [...(strokesById[pid] ?? []), canonical];
     setStrokesById((prev) => ({ ...prev, [pid]: next }));
@@ -456,21 +416,8 @@ export default function PhotoViewerScreen() {
     }
   };
 
-  // Edit-mode render set, resolved to px against the edit canvas box:
-  //   others' canonical strokes + own canonical buffer (denormalized)
-  //   + the live in-progress raw px stroke (already in canvas px space).
-  // The gallery (read-only) branch never sees `live` because edit mode
-  // unmounts the gallery.
-  const live = currentStroke.current;
   const currentStrokeList = strokesById[currentPhoto.id] ?? [];
   const editOthers = othersById[currentPhoto.id] ?? [];
-  const editStrokesPx = [
-    ...editOthers.map((s) => toPixels(s, editBox.w, editBox.h)),
-    ...currentStrokeList.map((s) => toPixels(s, editBox.w, editBox.h)),
-    ...(live
-      ? [{ type: "pencil", color: live.color, size: live.size, points: live.points }]
-      : []),
-  ].filter(isRenderablePencilStroke);
 
   return (
     <View style={styles.bg}>
@@ -501,49 +448,22 @@ export default function PhotoViewerScreen() {
           edit mode (taking its gestures with it) and remounts at
           currentIndex on exit. */}
       {editing ? (
-        <View
-          style={StyleSheet.absoluteFill}
-          onLayout={(e) => {
-            const w = e.nativeEvent.layout.width;
-            const h = e.nativeEvent.layout.height;
-            canvasSize.current = { w, h };
-            setEditBox((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
-          }}
-          onStartShouldSetResponder={() => true}
-          onMoveShouldSetResponder={() => true}
-          onResponderGrant={(e) =>
-            startStroke(e.nativeEvent.locationX, e.nativeEvent.locationY)
-          }
-          onResponderMove={(e) =>
-            extendStroke(e.nativeEvent.locationX, e.nativeEvent.locationY)
-          }
-          onResponderRelease={endStroke}
-          onResponderTerminate={endStroke}
-        >
-          <Image
-            source={{ uri: currentPhoto.uri }}
-            style={StyleSheet.absoluteFill}
-            contentFit="contain"
-          />
-          <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
-            {editStrokesPx.map((s, i) => (
-              // editStrokesPx is already px-resolved and pencil-filtered:
-              // others + own canonical buffer denormalized against the
-              // edit box, plus the live raw px stroke. The filter upstream
-              // drops text/arrow/etc. strokes (mobile renderer is
-              // pencil-only).
-              <Path
-                key={i}
-                d={pointsToPath(s.points)}
-                stroke={s.color}
-                strokeWidth={s.size}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                fill="none"
-              />
-            ))}
-          </Svg>
-        </View>
+        <AnnotationEditor
+          photoUri={currentPhoto.uri}
+          ownStrokes={currentStrokeList}
+          othersStrokes={editOthers}
+          color={color}
+          onColorChange={setColor}
+          size={size}
+          onSizeChange={setSize}
+          onCommit={(s) => void commitStroke(s)}
+          onClear={() => void clearAll()}
+          onDone={() => setEditing(false)}
+          // Directly below the parent's persistent row 1 (30px buttons +
+          // 2×6 padding = 42) plus the panel's 8px gap — same spot the
+          // rows occupied when they lived inside the tools panel.
+          panelTop={insets.top + 56 + 42 + 8}
+        />
       ) : (
         <Gallery
           data={projectPhotos}
@@ -559,15 +479,6 @@ export default function PhotoViewerScreen() {
             index: number;
             setImageDimensions: (d: { width: number; height: number }) => void;
           }) => {
-            // Read mode renders the photo's UNION render set
-            // (item.annotations = others + own, kept current by
-            // loadPhotoAnnotations and every local buffer write),
-            // denormalized to px against the captured read box and
-            // pencil-filtered. canonical 0..1 strokes scale to the box;
-            // legacy/px strokes are normalized by toPixels first.
-            const saved = (item.annotations ?? [])
-              .map((s) => toPixels(s, readBox.w, readBox.h))
-              .filter(isRenderablePencilStroke);
             if (item.isVideo) {
               // Videos render through expo-video, not <Image>. Seed a
               // non-zero size after mount so the gallery's pinch/zoom math
@@ -612,26 +523,20 @@ export default function PhotoViewerScreen() {
                     if (w && h) setImageDimensions({ width: w, height: h });
                   }}
                 />
-                {saved.length > 0 ? (
-                  // The gallery wraps renderItem in an Animated.View whose
-                  // transform is [translateX, translateY, scale]. Both
-                  // the Image AND this Svg are inside that wrapper, so
-                  // pinch/pan scales them together — annotations stay
-                  // pinned to their photo pixels at every zoom level.
-                  <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
-                    {saved.map((s, i) => (
-                      <Path
-                        key={i}
-                        d={pointsToPath(s.points)}
-                        stroke={s.color}
-                        strokeWidth={s.size}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        fill="none"
-                      />
-                    ))}
-                  </Svg>
-                ) : null}
+                {/* Read mode renders the photo's UNION render set
+                    (item.annotations = others + own) via the shared
+                    memoized layer — all six stroke types, denormalized
+                    against the captured read box. The gallery wraps
+                    renderItem in an Animated.View whose transform is
+                    [translateX, translateY, scale]; both the Image AND
+                    this layer are inside that wrapper, so pinch/pan
+                    scales them together — annotations stay pinned to
+                    their photo pixels at every zoom level. */}
+                <AnnotationLayer
+                  strokes={item.annotations ?? []}
+                  width={readBox.w}
+                  height={readBox.h}
+                />
               </View>
             );
           }}
@@ -676,69 +581,9 @@ export default function PhotoViewerScreen() {
             />
           )}
         </View>
-
-        {editing ? (
-          <>
-            <View style={styles.toolRow}>
-              {COLORS.map((c) => (
-                <Pressable
-                  key={c}
-                  onPress={() => setColor(c)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Color ${c}`}
-                  accessibilityState={{ selected: color === c }}
-                  style={[
-                    styles.swatch,
-                    {
-                      backgroundColor: c,
-                      borderColor: color === c ? "#fff" : "transparent",
-                    },
-                  ]}
-                />
-              ))}
-            </View>
-            <View style={styles.toolRow}>
-              <Text style={styles.sizeLabel}>Size</Text>
-              {SIZES.map((s) => (
-                <Pressable
-                  key={s}
-                  onPress={() => setSize(s)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Brush size ${s}`}
-                  accessibilityState={{ selected: size === s }}
-                  style={[
-                    styles.sizeDot,
-                    {
-                      borderColor: size === s ? "#fff" : "transparent",
-                    },
-                  ]}
-                >
-                  <View
-                    style={{
-                      width: s * 1.5,
-                      height: s * 1.5,
-                      borderRadius: s,
-                      backgroundColor: color,
-                    }}
-                  />
-                </Pressable>
-              ))}
-              {currentStrokeList.length > 0 ? (
-                <Pressable onPress={clearAll} style={styles.clearBtn}>
-                  <Text style={styles.clearTxt}>Clear all</Text>
-                </Pressable>
-              ) : null}
-              <Pressable
-                onPress={() => setEditing(false)}
-                accessibilityRole="button"
-                accessibilityLabel="Save annotations"
-                style={styles.saveBtn}
-              >
-                <Text style={styles.saveTxt}>Save</Text>
-              </Pressable>
-            </View>
-          </>
-        ) : null}
+        {/* Edit-mode rows (colors / sizes / clear / save + tool scaffold)
+            now render inside AnnotationEditor, absolutely positioned to
+            the same spot below this row. */}
       </View>
 
       {/* Caption / metadata + comments — only when not editing (preserved
@@ -886,14 +731,6 @@ function formatCommentDate(iso: string): string {
   });
 }
 
-function pointsToPath(pts: { x: number; y: number }[]): string {
-  if (pts.length === 0) return "";
-  let d = `M${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
-  for (let i = 1; i < pts.length; i++)
-    d += ` L${pts[i].x.toFixed(1)} ${pts[i].y.toFixed(1)}`;
-  return d;
-}
-
 function ToolButton({
   icon,
   onPress,
@@ -996,50 +833,6 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
-  },
-  swatch: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    borderWidth: 2,
-  },
-  sizeLabel: {
-    color: "#111",
-    fontFamily: "Inter_600SemiBold",
-    fontSize: 12,
-    marginRight: 4,
-  },
-  sizeDot: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    borderWidth: 2,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  clearBtn: {
-    marginLeft: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    backgroundColor: "#fee2e2",
-  },
-  clearTxt: {
-    color: "#991b1b",
-    fontFamily: "Inter_600SemiBold",
-    fontSize: 11,
-  },
-  saveBtn: {
-    marginLeft: "auto",
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 6,
-    backgroundColor: "#F09001",
-  },
-  saveTxt: {
-    color: "#fff",
-    fontFamily: "Inter_600SemiBold",
-    fontSize: 12,
   },
   metaWrap: {
     position: "absolute",

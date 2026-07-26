@@ -1,4 +1,5 @@
 - [Mobile task status](mobile-task-status.md) — status enum is source of truth; done is derived; never binary-toggle (clobbers in_progress)
 - [Mobile mutations server-first](mobile-mutations-server-first.md) — locally-cached entities (projects/photos) resync via mergeById; mutate server FIRST then prune local, else change silently reverts
 - [Annotation stroke wire contract](annotation-stroke-id.md) — every stroke needs a stable per-stroke `id: string` or the web Zod union 400s the whole row; preserve incoming ids, never regenerate
+- [Annotation wire contract](annotation-wire-contract.md) — width int=px vs non-int=1000-units heuristic; circle=[center,radiusPoint]; arrowhead derived; text top-anchored raw-px fontSize
 - [Android v1 location model](android-v1-location.md) — Android is manual/foreground clock-in only; no background location, no FGS, no geofencing. iOS keeps full background/geofencing.

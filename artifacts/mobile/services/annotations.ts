@@ -1,30 +1,64 @@
 import type {
   AnnotationStroke,
   CanonicalStroke,
+  KnownStrokeType,
   PixelStroke,
   StoredStroke,
-} from "./types";
-import { newId } from "./id";
+  StrokePoint,
+} from "./types.ts";
+import { isKnownStrokeType } from "./types.ts";
+import { newId } from "./id.ts";
 
 /**
  * Coordinate-space conversions between the mobile renderer (px against a
- * concrete canvas box) and the canonical cross-platform wire format
- * (points normalized 0..1, width in 1000-virtual-canvas units, explicit
- * `type` enum). All boundary conversion lives here so the rest of the app
- * can hold a single tolerant model and convert only at the read/write edge.
+ * concrete canvas box) and the canonical cross-platform wire format.
+ * All boundary conversion lives here so the rest of the app can hold a
+ * single tolerant model and convert only at the read/write edge.
  *
- * Canonical contract (locked, shared with the web client):
+ * Canonical contract (confirmed against the production web bundle, 2026-07):
  *   points: [{x,y}] normalized 0..1, clamped, vs the displayed canvas box
- *   type:   "pencil" for freehand (enum pencil|line|arrow|rectangle|circle)
- *   width:  number in 1000-virtual-canvas units (default 3)
+ *   type:   "pencil" | "line" | "arrow" | "circle" | "rectangle" | "text"
+ *           line/arrow/rectangle: points = [start, end]
+ *           circle:               points = [center, radiusPoint]
+ *   width:  see widthToPx() — web writes integer display px (slider 1..8);
+ *           legacy mobile wrote non-integer 1000-virtual-canvas units.
+ *           NEW mobile strokes write integer px to match the web.
  *   color:  string
- *   text strokes carry no points: { type:"text", x, y, content, color, fontSize }
+ *   text strokes carry no points: { type:"text", x, y, content, color,
+ *           fontSize } with fontSize in display px, anchored top-left.
  */
 
 export const DEFAULT_STROKE_WIDTH = 3;
 const DEFAULT_COLOR = "#ef4444";
 
 const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
+
+/**
+ * Resolve a canonical `width` to display px (Task 0 heuristic).
+ *
+ * The two clients historically disagree on units:
+ *   - Web writes/reads raw display px. Its picker is an integer slider
+ *     (min 1, max 8, default 3) and its canvas renderer does
+ *     `ctx.lineWidth = stroke.width` with no scaling.
+ *   - Legacy mobile wrote 1000-virtual-canvas units, i.e.
+ *     (penPx / canvasW) * 1000 — virtually always NON-integer
+ *     (e.g. 5px on a 335px canvas → 14.925373...).
+ *
+ * Tolerant read-time discrimination: integer → px (web-authored, or a
+ * new mobile stroke), non-integer → 1000-units (legacy mobile), scaled
+ * against the current render box. Renders both plausibly without ever
+ * rewriting what either client stored.
+ */
+export function widthToPx(width: number | undefined, boxW: number): number {
+  if (typeof width !== "number" || !Number.isFinite(width) || width <= 0) {
+    return DEFAULT_STROKE_WIDTH;
+  }
+  if (Number.isInteger(width)) return width;
+  return (width * boxW) / 1000;
+}
+
+/** fontSize is display px on both clients (web renders `${fontSize}px`). */
+export const DEFAULT_FONT_SIZE = 18;
 
 /** True when a stored stroke carries legacy px canvas metadata. */
 export function hasCanvasMeta(s: StoredStroke): boolean {
@@ -61,53 +95,233 @@ export function toPixels(s: StoredStroke, w: number, h: number): PixelStroke {
     norm = pts;
   }
 
-  let widthUnits: number;
+  let sizePx: number;
   if (typeof s.width === "number") {
-    widthUnits = s.width;
+    sizePx = widthToPx(s.width, w);
   } else if (typeof s.size === "number" && hasCanvasMeta(s)) {
-    widthUnits = (s.size / (s.canvasW as number)) * 1000;
+    // Legacy raw px on its own canvas → scale to this box.
+    sizePx = (s.size / (s.canvasW as number)) * w;
   } else if (typeof s.size === "number") {
-    widthUnits = s.size;
+    sizePx = (s.size * w) / 1000;
   } else {
-    widthUnits = DEFAULT_STROKE_WIDTH;
+    sizePx = DEFAULT_STROKE_WIDTH;
   }
 
   return {
     type: s.type,
     color: s.color ?? DEFAULT_COLOR,
-    size: (widthUnits * w) / 1000,
+    size: sizePx,
     points: norm.map((p) => ({ x: p.x * w, y: p.y * h })),
   };
 }
 
+/** Tolerantly reduce a stored stroke's points to normalized 0..1. */
+function normalizedPoints(s: StoredStroke): StrokePoint[] {
+  const pts = Array.isArray(s.points) ? s.points : [];
+  if (hasCanvasMeta(s)) {
+    const cw = s.canvasW as number;
+    const ch = s.canvasH as number;
+    return pts.map((p) => ({ x: p.x / cw, y: p.y / ch }));
+  }
+  return pts;
+}
+
+/**
+ * A stroke resolved to concrete display geometry against a render box —
+ * everything the SVG layer needs, one variant per renderable kind.
+ * Derived, never stored.
+ */
+export type RenderShape =
+  | { kind: "pencil"; color: string; strokeWidth: number; points: StrokePoint[] }
+  | {
+      kind: "line" | "arrow";
+      color: string;
+      strokeWidth: number;
+      x1: number;
+      y1: number;
+      x2: number;
+      y2: number;
+    }
+  | {
+      kind: "circle";
+      color: string;
+      strokeWidth: number;
+      cx: number;
+      cy: number;
+      r: number;
+    }
+  | {
+      kind: "rectangle";
+      color: string;
+      strokeWidth: number;
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+    }
+  | { kind: "text"; color: string; x: number; y: number; content: string; fontSize: number };
+
+/**
+ * Resolve ANY stored stroke to a renderable shape against box (w,h) px.
+ * Returns null for unknown/unrenderable strokes — the renderer skips
+ * them, but they are still preserved in the data and on save.
+ *
+ * Geometry matches the production web canvas renderer:
+ *   line/arrow/rectangle: points[0] = start, points[1] = end
+ *   circle:               points[0] = center, points[1] = a point on the
+ *                         circumference; r = px distance between them
+ *                         (a true circle, not an ellipse)
+ *   text:                 top-level x/y (normalized), top-left anchored,
+ *                         fontSize raw px
+ */
+export function strokeToRenderShape(
+  s: StoredStroke,
+  w: number,
+  h: number,
+): RenderShape | null {
+  if (!w || !h) return null;
+  const color = s.color ?? DEFAULT_COLOR;
+  const type = (s.type ?? "pencil") as KnownStrokeType | string;
+
+  if (type === "text") {
+    if (
+      typeof s.x !== "number" ||
+      typeof s.y !== "number" ||
+      typeof s.content !== "string" ||
+      s.content.length === 0
+    ) {
+      return null;
+    }
+    return {
+      kind: "text",
+      color,
+      x: clamp01(s.x) * w,
+      y: clamp01(s.y) * h,
+      content: s.content,
+      fontSize:
+        typeof s.fontSize === "number" && s.fontSize > 0
+          ? s.fontSize
+          : DEFAULT_FONT_SIZE,
+    };
+  }
+
+  const pts = normalizedPoints(s);
+  const strokeWidth =
+    typeof s.width === "number"
+      ? widthToPx(s.width, w)
+      : typeof s.size === "number" && hasCanvasMeta(s)
+        ? (s.size / (s.canvasW as number)) * w
+        : typeof s.size === "number"
+          ? (s.size * w) / 1000
+          : DEFAULT_STROKE_WIDTH;
+
+  if (type === "pencil") {
+    if (pts.length === 0) return null;
+    return {
+      kind: "pencil",
+      color,
+      strokeWidth,
+      points: pts.map((p) => ({ x: p.x * w, y: p.y * h })),
+    };
+  }
+
+  if (type === "line" || type === "arrow" || type === "rectangle" || type === "circle") {
+    if (pts.length < 2) return null;
+    const a = { x: pts[0].x * w, y: pts[0].y * h };
+    const b = { x: pts[1].x * w, y: pts[1].y * h };
+    if (type === "circle") {
+      return {
+        kind: "circle",
+        color,
+        strokeWidth,
+        cx: a.x,
+        cy: a.y,
+        r: Math.hypot(b.x - a.x, b.y - a.y),
+      };
+    }
+    if (type === "rectangle") {
+      return {
+        kind: "rectangle",
+        color,
+        strokeWidth,
+        x: Math.min(a.x, b.x),
+        y: Math.min(a.y, b.y),
+        w: Math.abs(b.x - a.x),
+        h: Math.abs(b.y - a.y),
+      };
+    }
+    return { kind: type, color, strokeWidth, x1: a.x, y1: a.y, x2: b.x, y2: b.y };
+  }
+
+  // Unknown/future stroke type: not renderable here, but NEVER dropped
+  // from the data — toCanonicalForSave passes it through unchanged.
+  return null;
+}
+
+/**
+ * Arrowhead geometry, derived (never stored) — matches the web renderer:
+ * head length max(12, strokeWidthPx * 4) px, half-angle π/6 off the shaft.
+ */
+export function arrowHeadPath(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  strokeWidthPx: number,
+): string {
+  const angle = Math.atan2(y2 - y1, x2 - x1);
+  const len = Math.max(12, strokeWidthPx * 4);
+  const a1 = angle - Math.PI / 6;
+  const a2 = angle + Math.PI / 6;
+  const f = (n: number) => n.toFixed(1);
+  return (
+    `M${f(x2)} ${f(y2)} L${f(x2 - len * Math.cos(a1))} ${f(y2 - len * Math.sin(a1))} ` +
+    `M${f(x2)} ${f(y2)} L${f(x2 - len * Math.cos(a2))} ${f(y2 - len * Math.sin(a2))}`
+  );
+}
+
 /**
  * Convert a freshly-drawn raw px stroke (carrying canvasW/H) to canonical
- * form: points clamped to 0..1, width in 1000-units, type stamped "pencil"
- * (mobile omits type while drawing).
+ * form: points clamped to 0..1, width in integer display px (the web
+ * convention — see widthToPx), type from the active tool (Phase 1: the
+ * editor only produces "pencil").
  */
-export function rawToCanonical(s: AnnotationStroke): CanonicalStroke {
+export function rawToCanonical(
+  s: AnnotationStroke,
+  type: KnownStrokeType = "pencil",
+): CanonicalStroke {
   const cw = s.canvasW && s.canvasW > 0 ? s.canvasW : 1;
   const ch = s.canvasH && s.canvasH > 0 ? s.canvasH : 1;
   return {
     // Freshly-drawn stroke: stamp a stable id once, at creation.
     id: newId(),
-    type: "pencil",
+    type,
     points: (s.points ?? []).map((p) => ({
       x: clamp01(p.x / cw),
       y: clamp01(p.y / ch),
     })),
     color: s.color ?? DEFAULT_COLOR,
-    width: typeof s.size === "number" ? (s.size / cw) * 1000 : DEFAULT_STROKE_WIDTH,
+    // Integer px, matching what the web writes and renders. Legacy mobile
+    // wrote (size/canvasW)*1000 here, which the web rendered ~3x too
+    // thick; the read-time heuristic still honors those old values.
+    width: typeof s.size === "number" ? Math.max(1, Math.round(s.size)) : DEFAULT_STROKE_WIDTH,
   };
 }
 
 /**
  * Convert ANY stored stroke into canonical wire form for the server.
  *   - "text" strokes are preserved untouched (never stripped).
- *   - legacy px (canvasW/H) strokes are normalized + stamped "pencil".
- *   - already-canonical strokes pass through with a guaranteed valid type.
- * Non-pencil strokes the mobile renderer can't draw are NEVER discarded —
- * the save payload must round-trip the user's full row.
+ *   - UNKNOWN/future stroke types pass through UNCHANGED (aside from a
+ *     guaranteed id) — a newer web client's data must never be narrowed
+ *     or destroyed by a mobile round-trip.
+ *   - legacy px (canvasW/H) strokes are normalized + stamped "pencil",
+ *     with width converted to integer px (web convention).
+ *   - already-canonical strokes pass through with a guaranteed valid
+ *     type; their width value is preserved VERBATIM (the read-time
+ *     heuristic in widthToPx handles both unit conventions, so rewriting
+ *     stored widths would only lose information).
+ * Strokes the mobile renderer can't draw are NEVER discarded — the save
+ * payload must round-trip the user's full row.
  */
 export function toCanonicalForSave(s: StoredStroke): CanonicalStroke {
   // Preserve an existing stable id (web-authored / previously-saved strokes
@@ -125,6 +339,12 @@ export function toCanonicalForSave(s: StoredStroke): CanonicalStroke {
       fontSize: s.fontSize,
     };
   }
+  if (s.type !== undefined && !isKnownStrokeType(s.type)) {
+    // Forward-compat pass-through: keep every field exactly as stored
+    // (minus mobile-local legacy px metadata, which was never on the wire
+    // for these strokes — they can only have arrived FROM the wire).
+    return { ...s, id };
+  }
   if (hasCanvasMeta(s)) {
     const cw = s.canvasW as number;
     const ch = s.canvasH as number;
@@ -138,7 +358,7 @@ export function toCanonicalForSave(s: StoredStroke): CanonicalStroke {
       color: s.color ?? DEFAULT_COLOR,
       width:
         typeof s.size === "number"
-          ? (s.size / cw) * 1000
+          ? Math.max(1, Math.round(s.size))
           : typeof s.width === "number"
             ? s.width
             : DEFAULT_STROKE_WIDTH,

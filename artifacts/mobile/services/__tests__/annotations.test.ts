@@ -1,0 +1,301 @@
+/**
+ * Round-trip + conversion tests for services/annotations.ts.
+ *
+ * Runs with Node's built-in test runner and native type stripping —
+ * no test framework installed:  `pnpm --filter @workspace/mobile test`
+ * (i.e. `node --test "services/__tests__/*.test.ts"` on Node >= 22.18).
+ *
+ * Relative `.ts` imports are intentional: node runs these files directly,
+ * without the app's `@/` alias or a bundler.
+ */
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import {
+  DEFAULT_STROKE_WIDTH,
+  arrowHeadPath,
+  rawToCanonical,
+  strokeToRenderShape,
+  toCanonicalForSave,
+  toPixels,
+  widthToPx,
+} from "../annotations.ts";
+import type { StoredStroke } from "../types.ts";
+import { KNOWN_STROKE_TYPES, isKnownStrokeType } from "../types.ts";
+
+const W = 400;
+const H = 300;
+const close = (a: number, b: number, eps = 1e-6) =>
+  assert.ok(Math.abs(a - b) < eps, `${a} !~ ${b}`);
+
+// ---------- Task 0: width unit heuristic ----------
+
+test("widthToPx: integer widths are raw px (web convention)", () => {
+  assert.equal(widthToPx(3, W), 3);
+  assert.equal(widthToPx(8, W), 8);
+  assert.equal(widthToPx(1, 9999), 1);
+});
+
+test("widthToPx: non-integer widths are legacy 1000-units", () => {
+  // Legacy mobile: 5px pen on a 335px canvas → (5/335)*1000 = 14.9253...
+  const legacy = (5 / 335) * 1000;
+  close(widthToPx(legacy, 335), 5);
+  // Scales with the render box, as the legacy convention intended.
+  close(widthToPx(legacy, 670), 10);
+});
+
+test("widthToPx: garbage falls back to default", () => {
+  assert.equal(widthToPx(undefined, W), DEFAULT_STROKE_WIDTH);
+  assert.equal(widthToPx(0, W), DEFAULT_STROKE_WIDTH);
+  assert.equal(widthToPx(-2, W), DEFAULT_STROKE_WIDTH);
+  assert.equal(widthToPx(Number.NaN, W), DEFAULT_STROKE_WIDTH);
+});
+
+// ---------- strokeToRenderShape: all six types ----------
+
+test("pencil resolves normalized points to px", () => {
+  const s: StoredStroke = {
+    id: "p1",
+    type: "pencil",
+    color: "#ff0000",
+    width: 4,
+    points: [
+      { x: 0, y: 0 },
+      { x: 0.5, y: 0.5 },
+      { x: 1, y: 1 },
+    ],
+  };
+  const shape = strokeToRenderShape(s, W, H);
+  assert.ok(shape && shape.kind === "pencil");
+  assert.equal(shape.strokeWidth, 4);
+  assert.deepEqual(shape.points[1], { x: 200, y: 150 });
+});
+
+test("line and arrow resolve [start,end]", () => {
+  for (const type of ["line", "arrow"] as const) {
+    const shape = strokeToRenderShape(
+      { id: "l1", type, width: 2, points: [{ x: 0.25, y: 0.5 }, { x: 0.75, y: 1 }] },
+      W,
+      H,
+    );
+    assert.ok(shape && shape.kind === type);
+    assert.equal(shape.x1, 100);
+    assert.equal(shape.y1, 150);
+    assert.equal(shape.x2, 300);
+    assert.equal(shape.y2, 300);
+  }
+});
+
+test("circle: points = [center, radiusPoint], r = px distance (web contract)", () => {
+  const shape = strokeToRenderShape(
+    {
+      id: "c1",
+      type: "circle",
+      width: 3,
+      points: [
+        { x: 0.5, y: 0.5 },
+        { x: 0.75, y: 0.5 },
+      ],
+    },
+    W,
+    H,
+  );
+  assert.ok(shape && shape.kind === "circle");
+  assert.equal(shape.cx, 200);
+  assert.equal(shape.cy, 150);
+  close(shape.r, 100); // 0.25 * 400px
+});
+
+test("rectangle normalizes corner order", () => {
+  const shape = strokeToRenderShape(
+    {
+      id: "r1",
+      type: "rectangle",
+      width: 3,
+      points: [
+        { x: 0.75, y: 1 },
+        { x: 0.25, y: 0.5 },
+      ],
+    },
+    W,
+    H,
+  );
+  assert.ok(shape && shape.kind === "rectangle");
+  assert.deepEqual(
+    { x: shape.x, y: shape.y, w: shape.w, h: shape.h },
+    { x: 100, y: 150, w: 200, h: 150 },
+  );
+});
+
+test("text: top-level normalized x/y, raw px fontSize", () => {
+  const shape = strokeToRenderShape(
+    { id: "t1", type: "text", x: 0.1, y: 0.2, content: "hi", fontSize: 24 },
+    W,
+    H,
+  );
+  assert.ok(shape && shape.kind === "text");
+  close(shape.x, 40);
+  close(shape.y, 60);
+  assert.equal(shape.fontSize, 24);
+  assert.equal(shape.content, "hi");
+});
+
+test("unknown type renders as null (skipped, not crashed)", () => {
+  assert.equal(
+    strokeToRenderShape(
+      { id: "u1", type: "sticker", points: [{ x: 0.1, y: 0.1 }] } as StoredStroke,
+      W,
+      H,
+    ),
+    null,
+  );
+});
+
+test("degenerate strokes render as null", () => {
+  assert.equal(strokeToRenderShape({ id: "d1", type: "line", points: [{ x: 0.1, y: 0.1 }] }, W, H), null);
+  assert.equal(strokeToRenderShape({ id: "d2", type: "pencil", points: [] }, W, H), null);
+  assert.equal(strokeToRenderShape({ id: "d3", type: "text", x: 0.1, y: 0.1, content: "" }, W, H), null);
+  assert.equal(strokeToRenderShape({ id: "d4", type: "pencil", points: [{ x: 0.5, y: 0.5 }] }, 0, 0), null);
+});
+
+// ---------- round-trip: canonical → px → canonical ----------
+
+test("round-trip: canonical → render px → re-normalized equals original", () => {
+  const canonical: StoredStroke = {
+    id: "rt1",
+    type: "pencil",
+    width: 3,
+    color: "#3b82f6",
+    points: [
+      { x: 0.125, y: 0.25 },
+      { x: 0.5, y: 0.75 },
+      { x: 0.875, y: 0.1 },
+    ],
+  };
+  const shape = strokeToRenderShape(canonical, W, H);
+  assert.ok(shape && shape.kind === "pencil");
+  const back = shape.points.map((p) => ({ x: p.x / W, y: p.y / H }));
+  back.forEach((p, i) => {
+    close(p.x, canonical.points![i].x);
+    close(p.y, canonical.points![i].y);
+  });
+  // Save path must not mutate the values either.
+  const saved = toCanonicalForSave(canonical) as StoredStroke;
+  assert.deepEqual(saved.points, canonical.points);
+  assert.equal(saved.width, 3); // verbatim, not re-united
+  assert.equal(saved.id, "rt1"); // id preserved, never regenerated
+});
+
+test("round-trip via legacy toPixels path stays consistent", () => {
+  const canonical: StoredStroke = {
+    id: "rt2",
+    type: "pencil",
+    width: (5 / 335) * 1000, // legacy non-integer width
+    points: [
+      { x: 0.2, y: 0.4 },
+      { x: 0.6, y: 0.8 },
+    ],
+  };
+  const px = toPixels(canonical, 335, 335);
+  close(px.size ?? 0, 5); // heuristic: non-integer → 1000-units
+  const saved = toCanonicalForSave(canonical) as StoredStroke;
+  close(saved.width as number, (5 / 335) * 1000); // stored width untouched
+});
+
+// ---------- toCanonicalForSave ----------
+
+test("unknown stroke types pass through save unchanged", () => {
+  const foreign = {
+    id: "f1",
+    type: "polygon",
+    points: [
+      { x: 0.1, y: 0.1 },
+      { x: 0.9, y: 0.9 },
+    ],
+    width: 7,
+    color: "#000",
+    extraFutureField: { nested: true },
+  } as unknown as StoredStroke;
+  const saved = toCanonicalForSave(foreign);
+  assert.deepEqual(saved, foreign);
+});
+
+test("unknown stroke without id gets one minted (Zod wire requirement)", () => {
+  const saved = toCanonicalForSave({ type: "polygon" } as StoredStroke);
+  assert.equal(typeof saved.id, "string");
+  assert.ok(saved.id.length > 0);
+});
+
+test("text strokes are preserved untouched on save", () => {
+  const t: StoredStroke = {
+    id: "t2",
+    type: "text",
+    x: 0.3,
+    y: 0.4,
+    content: "note",
+    color: "#fff",
+    fontSize: 18,
+  };
+  assert.deepEqual(toCanonicalForSave(t), t);
+});
+
+test("legacy raw-px stroke normalizes and writes integer px width", () => {
+  const legacy: StoredStroke = {
+    id: "lg1",
+    points: [
+      { x: 100, y: 100 },
+      { x: 200, y: 300 },
+    ],
+    size: 6,
+    canvasW: 400,
+    canvasH: 400,
+    color: "#111",
+  };
+  const saved = toCanonicalForSave(legacy);
+  assert.equal(saved.type, "pencil");
+  assert.equal(saved.width, 6); // raw px preserved as integer px
+  close(saved.points![0].x, 0.25);
+  close(saved.points![1].y, 0.75);
+});
+
+// ---------- rawToCanonical (new authoring path) ----------
+
+test("rawToCanonical writes integer px width and stamps the given type", () => {
+  const raw = {
+    color: "#ef4444",
+    size: 6,
+    canvasW: 335,
+    canvasH: 500,
+    points: [
+      { x: 0, y: 0 },
+      { x: 335, y: 250 },
+    ],
+  };
+  const c = rawToCanonical(raw, "pencil");
+  assert.equal(c.type, "pencil");
+  assert.equal(c.width, 6); // px int — NOT (6/335)*1000
+  assert.equal(typeof c.id, "string");
+  close(c.points![1].x, 1);
+  close(c.points![1].y, 0.5);
+  // Type comes from the caller (activeTool), not a hardcoded constant.
+  assert.equal(rawToCanonical(raw, "line").type, "line");
+});
+
+// ---------- arrowhead + type guards ----------
+
+test("arrowHeadPath: head length max(12, width*4), two barbs", () => {
+  // Horizontal arrow pointing +x; barbs go back-left at ±30°.
+  const d = arrowHeadPath(0, 0, 100, 0, 3);
+  const segs = d.split("M").filter(Boolean);
+  assert.equal(segs.length, 2);
+  assert.ok(d.startsWith("M100.0 0.0"));
+  // len = max(12, 12) = 12 → barb x = 100 - 12*cos(30°) ≈ 89.6
+  assert.ok(d.includes("89.6"));
+});
+
+test("isKnownStrokeType covers exactly the six wire types", () => {
+  assert.equal(KNOWN_STROKE_TYPES.length, 6);
+  for (const t of KNOWN_STROKE_TYPES) assert.ok(isKnownStrokeType(t));
+  assert.ok(!isKnownStrokeType("sticker"));
+  assert.ok(!isKnownStrokeType(undefined));
+});

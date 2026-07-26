@@ -45,38 +45,146 @@ export interface AnnotationStroke {
 }
 
 /**
- * Canonical, cross-platform stroke shape — the wire format stored in
- * `media_annotations.strokes` and shared with the web client.
+ * Canonical wire-format conventions (confirmed empirically against the
+ * production web client bundle, 2026-07):
  *
- *  - `points` are normalized 0..1 against the displayed canvas box.
- *  - `width` is in 1000-virtual-canvas units (NOT px, NOT 0..1).
- *  - `type` is a required enum on the wire ("pencil" | "line" | "arrow" |
- *    "rectangle" | "circle"); "text" strokes carry no points and instead
- *    use {x, y, content, fontSize}.
- *
- * All fields are optional here so the type can also describe partial /
- * tolerated payloads; conversion helpers in services/annotations.ts fill
- * the gaps and enforce the canonical form at the read/write edge.
+ *  - `points` / `x`,`y` are normalized 0..1 against the displayed box.
+ *  - `width` units are AMBIGUOUS historically: the web client writes and
+ *    reads raw display px (integer slider 1..8); older mobile builds
+ *    wrote 1000-virtual-canvas units (virtually always non-integer).
+ *    services/annotations.ts owns the read-time heuristic — integer
+ *    widths are px, non-integer widths are 1000-units. New mobile
+ *    strokes write integer px to match the web.
+ *  - `fontSize` is display px (web renders `${fontSize}px`).
+ *  - `type` is a required enum on the wire; "text" strokes carry no
+ *    points and instead use {x, y, content, fontSize}.
  */
-export interface CanonicalStroke {
-  /**
-   * Per-stroke stable id. REQUIRED on the wire — the web backend's Zod
-   * union validates `id: z.string()` on every stroke (vector + text), and
-   * rejects the whole annotation row 400 if any stroke lacks it. Assigned
-   * once at creation and preserved across every later save (never
-   * regenerated); web-authored strokes round-tripped through mobile keep
-   * their original id.
-   */
+export interface StrokePoint {
+  x: number;
+  y: number;
+}
+
+/**
+ * Fields shared by every stroke on the wire.
+ *
+ * Per-stroke stable `id` is REQUIRED on the wire — the web backend's Zod
+ * union validates `id: z.string()` on every stroke (vector + text), and
+ * rejects the whole annotation row 400 if any stroke lacks it. Assigned
+ * once at creation and preserved across every later save (never
+ * regenerated); web-authored strokes round-tripped through mobile keep
+ * their original id.
+ */
+export interface StrokeBase {
   id: string;
-  type?: string;
-  points?: { x: number; y: number }[];
   color?: string;
+}
+
+/** Freehand stroke: n points, 0..1 normalized. */
+export interface PencilStroke extends StrokeBase {
+  type: "pencil";
+  points?: StrokePoint[];
   width?: number;
-  /** text-stroke fields (web-authored; mobile preserves but doesn't render) */
+}
+
+/** Straight segment: points = [start, end]. */
+export interface LineStroke extends StrokeBase {
+  type: "line";
+  points?: StrokePoint[];
+  width?: number;
+}
+
+/**
+ * Arrow: points = [start, end] (tail → tip). The head is NOT stored —
+ * renderers derive it (length max(12, widthPx*4) px, half-angle π/6 off
+ * the shaft; matches the production web canvas renderer).
+ */
+export interface ArrowStroke extends StrokeBase {
+  type: "arrow";
+  points?: StrokePoint[];
+  width?: number;
+}
+
+/**
+ * Circle: points = [center, radiusPoint]. NOT bounding-box corners — the
+ * production web renderer deserializes points[0] as the center and draws
+ * a perfect circle with r = distance(center, points[1]) in display px
+ * (`ctx.arc`). Confirmed from the deployed web bundle.
+ */
+export interface CircleStroke extends StrokeBase {
+  type: "circle";
+  points?: StrokePoint[];
+  width?: number;
+}
+
+/** Rectangle: points = [start, end] — two opposite corners, any order. */
+export interface RectangleStroke extends StrokeBase {
+  type: "rectangle";
+  points?: StrokePoint[];
+  width?: number;
+}
+
+/**
+ * Text: x/y at TOP LEVEL (no points array), normalized 0..1, anchored at
+ * the TOP-left of the glyph box (web renders with textBaseline="top").
+ * fontSize is in display px (web convention); no width field.
+ */
+export interface TextStroke extends StrokeBase {
+  type: "text";
   x?: number;
   y?: number;
   content?: string;
   fontSize?: number;
+}
+
+/**
+ * Tolerated catch-all for stroke types this client doesn't know about
+ * (authored by a newer web client). MUST pass through read and save
+ * unchanged — never dropped, never narrowed, so mobile can round-trip a
+ * user's full annotation row without destroying newer data. All fields
+ * optional so it can also describe partial / malformed payloads;
+ * conversion helpers in services/annotations.ts fill the gaps for the
+ * known types and leave unknown types untouched.
+ */
+export interface UnknownStroke extends StrokeBase {
+  type?: string;
+  points?: StrokePoint[];
+  width?: number;
+  x?: number;
+  y?: number;
+  content?: string;
+  fontSize?: number;
+}
+
+export type KnownCanonicalStroke =
+  | PencilStroke
+  | LineStroke
+  | ArrowStroke
+  | CircleStroke
+  | RectangleStroke
+  | TextStroke;
+
+/**
+ * Canonical, cross-platform stroke shape — the wire format stored in
+ * `media_annotations.strokes` and shared with the web client. A
+ * discriminated union on `type` for the six known kinds, plus the
+ * UnknownStroke pass-through member for forward compatibility.
+ */
+export type CanonicalStroke = KnownCanonicalStroke | UnknownStroke;
+
+export const KNOWN_STROKE_TYPES = [
+  "pencil",
+  "line",
+  "arrow",
+  "circle",
+  "rectangle",
+  "text",
+] as const;
+export type KnownStrokeType = (typeof KNOWN_STROKE_TYPES)[number];
+
+export function isKnownStrokeType(t: unknown): t is KnownStrokeType {
+  return (
+    typeof t === "string" && (KNOWN_STROKE_TYPES as readonly string[]).includes(t)
+  );
 }
 
 /**
@@ -85,7 +193,7 @@ export interface CanonicalStroke {
  * render/save converters accept this union so a single code path handles
  * both server-canonical strokes and pre-existing AsyncStorage px strokes.
  */
-export interface StoredStroke extends CanonicalStroke {
+export interface StoredStroke extends UnknownStroke {
   /** Legacy px stroke width (mobile pre-sync builds). */
   size?: number;
   canvasW?: number;
