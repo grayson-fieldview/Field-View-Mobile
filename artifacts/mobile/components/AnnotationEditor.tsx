@@ -11,6 +11,7 @@ import Svg, {
 
 import {
   arrowHeadPath,
+  hasMinDrag,
   rawToCanonical,
   strokeToRenderShape,
 } from "@/services/annotations";
@@ -259,7 +260,9 @@ export function AnnotationEditor({
   const endStroke = () => {
     const s = currentStroke.current;
     currentStroke.current = null;
-    if (!s || s.points.length < 2) {
+    // Discard taps / sub-threshold drags: the server has no min-length on
+    // `points`, so a zero-length arrow/circle would validate and sync.
+    if (!s || !hasMinDrag(s.points)) {
       force((n) => n + 1);
       return;
     }

@@ -51,9 +51,10 @@ export interface AnnotationStroke {
  *  - `points` / `x`,`y` are normalized 0..1 against the displayed box.
  *  - `width` units are AMBIGUOUS historically: the web client writes and
  *    reads raw display px (integer slider 1..8); older mobile builds
- *    wrote 1000-virtual-canvas units (virtually always non-integer).
- *    services/annotations.ts owns the read-time heuristic — integer
- *    widths are px, non-integer widths are 1000-units. New mobile
+ *    wrote 1000-virtual-canvas units. services/annotations.ts owns the
+ *    read-time resolution, keyed on stroke-id provenance: bare base-36
+ *    ids (legacy mobile) are 1000-units, everything else (web UUID,
+ *    web `s-` fallback, new mobile `fv-` UUIDs) is raw px. New mobile
  *    strokes write integer px to match the web.
  *  - `fontSize` is display px (web renders `${fontSize}px`).
  *  - `type` is a required enum on the wire; "text" strokes carry no

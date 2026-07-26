@@ -1,8 +1,22 @@
 import * as Sentry from "@sentry/react-native";
 
+import { setUnclassifiedStrokeIdReporter } from "./annotations";
+
 const DSN = process.env.EXPO_PUBLIC_SENTRY_DSN;
 
 export function initSentry() {
+  // Measure whether the stroke-width heuristic's catch-all (ids matching
+  // no known shape) is load-bearing — see services/annotations.ts. Wired
+  // here (not in annotations.ts) so that module stays importable by
+  // plain `node --test`.
+  setUnclassifiedStrokeIdReporter((id, width) => {
+    Sentry.addBreadcrumb({
+      category: "annotations",
+      level: "warning",
+      message: "stroke id matched no known shape; width read as px",
+      data: { id: String(id), width },
+    });
+  });
   if (!DSN) {
     console.warn("[sentry] EXPO_PUBLIC_SENTRY_DSN not set — Sentry disabled");
     return;

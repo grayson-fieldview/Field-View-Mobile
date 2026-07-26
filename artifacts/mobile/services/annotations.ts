@@ -7,7 +7,7 @@ import type {
   StrokePoint,
 } from "./types.ts";
 import { isKnownStrokeType } from "./types.ts";
-import { newId } from "./id.ts";
+import { newStrokeId } from "./id.ts";
 
 /**
  * Coordinate-space conversions between the mobile renderer (px against a
@@ -43,46 +43,62 @@ const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
  *     (penPx / canvasW) * 1000 — virtually always NON-integer
  *     (e.g. 5px on a 335px canvas → 14.925373...).
  *
- * Read-time-only resolution, in priority order (never rewrites storage):
+ * Read-time-only resolution, in priority order (never rewrites storage;
+ * no value inspection, no timestamp decoding):
  *   1. Local legacy `size`/`canvasW` metadata — authoritative px
  *      (handled by the callers before width is consulted).
- *   2. Stroke id provenance:
- *      - mobile ids are base-36 `Date.now().toString(36) + random`
- *        (services/id.ts, unchanged since the first commit — mobile
- *        never minted UUIDs). A mobile id whose embedded timestamp
- *        predates WIDTH_PX_CUTOVER_MS is DEFINITIVELY 1000-units.
- *      - web ids are crypto.randomUUID() (or an `s-`-prefixed fallback
- *        in insecure contexts) — raw px.
- *      - mobile ids minted AFTER the cutover are ambiguous: updated
- *        builds write integer px, stale builds still in the field write
- *        non-integer 1000-units → fall through to the numeric test
- *        (documented case, no warn).
- *   3. Integer/non-integer numeric test as a last resort, with a
- *      console.warn so we can measure whether it's load-bearing.
+ *   2. Bare base-36 id (the legacy mobile newId() format) →
+ *      1000-units, ALWAYS. Legacy builds are the only base-36 minters;
+ *      new mobile strokes mint `fv-` UUIDs (services/id.ts).
+ *   3. Everything else → raw px: web crypto.randomUUID() ids, the web
+ *      `s-${Date.now()}-...` insecure-context fallback, and new mobile
+ *      `fv-` ids. Ids matching NONE of the known shapes still resolve
+ *      as px but are reported (console.warn + Sentry breadcrumb) so we
+ *      can measure whether the catch-all is load-bearing.
  */
 
 /**
- * Date this client started writing integer-px widths. Mobile base-36 ids
- * with an embedded mint-timestamp before this are guaranteed 1000-units.
+ * Legacy mobile stroke-id classifier: no dashes, <= 20 chars, lowercase
+ * base-36 with at least one char in [g-z]. The [g-z] requirement is what
+ * excludes UUIDs-without-dashes (pure hex): it is deterministically
+ * satisfied by the id's FIRST char, because Date.now().toString(36) has
+ * led with a char >= 'g' since Sep 2009 and will until the timestamp
+ * grows to 9 base-36 digits on 2059-05-25 — after which this guarantee
+ * would rest on the random suffix alone. (Legacy ids stopped being
+ * minted in 2026, so the window is comfortably covered.)
  */
-export const WIDTH_PX_CUTOVER_MS = Date.UTC(2026, 6, 26);
-
-/**
- * If `id` looks like a mobile-minted base-36 id, return its embedded
- * mint timestamp (ms); otherwise null. Mobile ids are 9–18 lowercase
- * base-36 chars whose first 8 chars decode to a plausible epoch-ms
- * (8-char base-36 prefixes cover ~2015–2059). UUIDs (dashes, or 32 hex
- * chars) and web `s-` fallback ids never match.
- */
-export function mobileIdTimestamp(id: unknown): number | null {
-  if (typeof id !== "string" || !/^[0-9a-z]{9,18}$/.test(id)) return null;
-  const ts = parseInt(id.slice(0, 8), 36);
-  return ts >= Date.UTC(2015, 0, 1) && ts < Date.UTC(2059, 0, 1) ? ts : null;
+export function isLegacyMobileStrokeId(id: unknown): boolean {
+  return (
+    typeof id === "string" &&
+    id.length <= 20 &&
+    /^[0-9a-z]+$/.test(id) &&
+    /[g-z]/.test(id)
+  );
 }
 
-/** Last-resort numeric discrimination: integer=px, non-integer=1000-units. */
-function widthByNumericTest(width: number, boxW: number): number {
-  return Number.isInteger(width) ? width : (width * boxW) / 1000;
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** True for id shapes known to mark raw-px widths. */
+function isKnownPxStrokeId(id: unknown): boolean {
+  return (
+    typeof id === "string" &&
+    (UUID_RE.test(id) || id.startsWith("s-") || id.startsWith("fv-"))
+  );
+}
+
+/**
+ * Hook for reporting ids that match none of the known shapes (step 3
+ * catch-all). Kept as an injected callback so this module stays free of
+ * React Native / Sentry imports and remains runnable under `node --test`;
+ * services/sentry.ts wires it to a Sentry breadcrumb at app startup.
+ */
+let unclassifiedIdReporter: ((id: unknown, width: number) => void) | null =
+  null;
+export function setUnclassifiedStrokeIdReporter(
+  fn: ((id: unknown, width: number) => void) | null,
+): void {
+  unclassifiedIdReporter = fn;
 }
 
 /**
@@ -97,23 +113,16 @@ export function widthToPx(
   if (typeof width !== "number" || !Number.isFinite(width) || width <= 0) {
     return DEFAULT_STROKE_WIDTH;
   }
-  const ts = mobileIdTimestamp(id);
-  if (ts !== null) {
-    // Definitive: pre-cutover mobile builds only ever wrote 1000-units.
-    if (ts < WIDTH_PX_CUTOVER_MS) return (width * boxW) / 1000;
-    // Post-cutover mobile id: updated build (integer px) vs stale build
-    // (non-integer 1000-units). Documented ambiguity — numeric test.
-    return widthByNumericTest(width, boxW);
+  // Step 2: bare base-36 id → legacy mobile → 1000-units, always.
+  if (isLegacyMobileStrokeId(id)) return (width * boxW) / 1000;
+  // Step 3: everything else is px. Report shapes we don't recognize.
+  if (!isKnownPxStrokeId(id)) {
+    console.warn(
+      `[annotations] stroke id matches no known shape; width read as px (id=${String(id)}, width=${width})`,
+    );
+    unclassifiedIdReporter?.(id, width);
   }
-  if (typeof id === "string" && id.length > 0) {
-    // Non-mobile id (UUID / hex / web `s-` fallback): web-authored → px.
-    return width;
-  }
-  // No usable id at all — numeric test is load-bearing here; measure it.
-  console.warn(
-    `[annotations] width heuristic fell back to integer test (id=${String(id)}, width=${width})`,
-  );
-  return widthByNumericTest(width, boxW);
+  return width;
 }
 
 /** fontSize is display px on both clients (web renders `${fontSize}px`). */
@@ -352,8 +361,9 @@ export function rawToCanonical(
   const cw = s.canvasW && s.canvasW > 0 ? s.canvasW : 1;
   const ch = s.canvasH && s.canvasH > 0 ? s.canvasH : 1;
   return {
-    // Freshly-drawn stroke: stamp a stable id once, at creation.
-    id: newId(),
+    // Freshly-drawn stroke: stamp a stable `fv-` id once, at creation —
+    // the id shape marks this stroke's width as raw px (see widthToPx).
+    id: newStrokeId(),
     type,
     points: (s.points ?? []).map((p) => ({
       x: clamp01(p.x / cw),
@@ -368,34 +378,60 @@ export function rawToCanonical(
 }
 
 /**
+ * Nominal canvas width used to normalize an ID-LESS 1000-unit width to
+ * px when the caller can't supply the real render box (typical phone
+ * canvas was ~335–430pt; the exact value only shifts the result within
+ * one pen size). Callers that know their box should pass it explicitly.
+ */
+export const LEGACY_NORMALIZE_BOX_W = 375;
+
+/**
  * Convert ANY stored stroke into canonical wire form for the server.
- *   - "text" strokes are preserved untouched (never stripped).
+ *   - "text" strokes are preserved, with x/y clamped to 0..1 and
+ *     fontSize clamped to 8..96 on write (the server clamps fontSize
+ *     but NOT coordinates — confirmed from the deployed schema).
+ *     Phase 4 note: `content` is z.string().min(1) server-side — an
+ *     EMPTY text stroke 400s the ENTIRE row and loses every annotation
+ *     on the photo. The text tool must never save empty content.
  *   - UNKNOWN/future stroke types pass through UNCHANGED (aside from a
  *     guaranteed id) — a newer web client's data must never be narrowed
  *     or destroyed by a mobile round-trip.
  *   - legacy px (canvasW/H) strokes are normalized + stamped "pencil",
  *     with width converted to integer px (web convention).
- *   - already-canonical strokes pass through with a guaranteed valid
- *     type; their width value is preserved VERBATIM (the read-time
- *     heuristic in widthToPx handles both unit conventions, so rewriting
- *     stored widths would only lose information).
+ *   - ID-LESS strokes with a bare `width` are, by construction, from the
+ *     post-5f1409c / pre-22a8844 window — inside the 1000-unit era. Their
+ *     width is NORMALIZED to px against `boxW` BEFORE an `fv-` id is
+ *     minted, so the new id honestly self-describes a px width instead
+ *     of mislabeling a 1000-unit one. (The canvasMeta check above must
+ *     stay first: Gen-1 id-less px strokes are unaffected.)
+ *   - already-canonical strokes (with ids) pass through with a
+ *     guaranteed valid type; their width value is preserved VERBATIM
+ *     (the id-based read heuristic handles both unit conventions, so
+ *     rewriting stored widths would only lose information).
  * Strokes the mobile renderer can't draw are NEVER discarded — the save
  * payload must round-trip the user's full row.
  */
-export function toCanonicalForSave(s: StoredStroke): CanonicalStroke {
+export function toCanonicalForSave(
+  s: StoredStroke,
+  boxW: number = LEGACY_NORMALIZE_BOX_W,
+): CanonicalStroke {
   // Preserve an existing stable id (web-authored / previously-saved strokes
   // already carry one); only mint a new id when the stroke has none. Never
   // regenerate — ids must be stable across saves.
-  const id = typeof s.id === "string" && s.id ? s.id : newId();
+  const hadId = typeof s.id === "string" && s.id.length > 0;
+  const id = hadId ? (s.id as string) : newStrokeId();
   if (s.type === "text") {
     return {
       id,
       type: "text",
-      x: s.x,
-      y: s.y,
+      x: typeof s.x === "number" ? clamp01(s.x) : s.x,
+      y: typeof s.y === "number" ? clamp01(s.y) : s.y,
       content: s.content,
       color: s.color,
-      fontSize: s.fontSize,
+      fontSize:
+        typeof s.fontSize === "number"
+          ? Math.min(96, Math.max(8, s.fontSize))
+          : s.fontSize,
     };
   }
   if (s.type !== undefined && !isKnownStrokeType(s.type)) {
@@ -423,6 +459,15 @@ export function toCanonicalForSave(s: StoredStroke): CanonicalStroke {
             : DEFAULT_STROKE_WIDTH,
     };
   }
+  // Id-less + no canvas metadata → definitively the 1000-unit era (see
+  // doc block): normalize the width to integer px FIRST, then let the
+  // freshly-minted `fv-` id describe it truthfully.
+  const width =
+    typeof s.width === "number" && Number.isFinite(s.width) && s.width > 0
+      ? hadId
+        ? s.width // stored widths with ids are never rewritten
+        : Math.max(1, Math.round((s.width * boxW) / 1000))
+      : DEFAULT_STROKE_WIDTH;
   return {
     id,
     type: s.type ?? "pencil",
@@ -430,6 +475,24 @@ export function toCanonicalForSave(s: StoredStroke): CanonicalStroke {
       ? s.points.map((p) => ({ x: clamp01(p.x), y: clamp01(p.y) }))
       : undefined,
     color: s.color ?? DEFAULT_COLOR,
-    width: typeof s.width === "number" ? s.width : DEFAULT_STROKE_WIDTH,
+    width,
   };
+}
+
+/**
+ * Minimum drag distance (px on the touch canvas) for a stroke to count
+ * as intentional. The server schema has NO min-length on `points`, so a
+ * bare tap would otherwise produce a zero-length arrow/circle/rect that
+ * validates and syncs. Applied at commit time in the editor; matters
+ * mostly for the Phase 2 shape tools but guards pencil taps today too.
+ */
+export const MIN_DRAG_PX = 6;
+
+/** True when raw px points span at least MIN_DRAG_PX from their origin. */
+export function hasMinDrag(points: { x: number; y: number }[]): boolean {
+  if (points.length < 2) return false;
+  const [o] = points;
+  return points.some(
+    (p) => Math.hypot(p.x - o.x, p.y - o.y) >= MIN_DRAG_PX,
+  );
 }
