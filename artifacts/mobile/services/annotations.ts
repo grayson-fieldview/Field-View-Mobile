@@ -386,6 +386,29 @@ export function rawToCanonical(
 export const LEGACY_NORMALIZE_BOX_W = 375;
 
 /**
+ * The mobile pen set — sourced from git history, not inferred: every
+ * revision that ever defined the pen-size UI used exactly [3, 6, 12]
+ * (git log -G "SIZES = [" shows only this array, from the first photo
+ * editor commit onward). So the observed production width 14.9254 is
+ * pen 6 authored on a 402pt canvas (6/402*1000), not pen 5 on 335pt —
+ * 5 was never a mobile pen. Legacy 1000-unit widths therefore decode
+ * to one of these three px values; SNAP to the nearest (don't round):
+ * pen 6 on 430pt → 13.95 units → ×0.375 = 5.23 → round gives 5 (wrong),
+ * snap gives 6 (right). The three unit bands don't overlap at any
+ * plausible canvas width, so snapping is unambiguous.
+ */
+export const LEGACY_PEN_SIZES_PX = [3, 6, 12] as const;
+
+/** Snap a px estimate to the nearest legacy pen size. */
+export function snapToLegacyPen(px: number): number {
+  let best: number = LEGACY_PEN_SIZES_PX[0];
+  for (const s of LEGACY_PEN_SIZES_PX) {
+    if (Math.abs(px - s) < Math.abs(px - best)) best = s;
+  }
+  return best;
+}
+
+/**
  * Convert ANY stored stroke into canonical wire form for the server.
  *   - "text" strokes are preserved, with x/y clamped to 0..1 and
  *     fontSize clamped to 8..96 on write (the server clamps fontSize
@@ -466,7 +489,7 @@ export function toCanonicalForSave(
     typeof s.width === "number" && Number.isFinite(s.width) && s.width > 0
       ? hadId
         ? s.width // stored widths with ids are never rewritten
-        : Math.max(1, Math.round((s.width * boxW) / 1000))
+        : snapToLegacyPen((s.width * boxW) / 1000)
       : DEFAULT_STROKE_WIDTH;
   return {
     id,
@@ -483,10 +506,12 @@ export function toCanonicalForSave(
  * Minimum drag distance (px on the touch canvas) for a stroke to count
  * as intentional. The server schema has NO min-length on `points`, so a
  * bare tap would otherwise produce a zero-length arrow/circle/rect that
- * validates and syncs. Applied at commit time in the editor; matters
- * mostly for the Phase 2 shape tools but guards pencil taps today too.
+ * validates and syncs. Kept LOW (2px): a short pencil dab is a
+ * legitimate annotation — this only rejects same-spot touch jitter.
+ * (A pure one-point tap has always been discarded by the points<2
+ * check, before and after this guard existed.)
  */
-export const MIN_DRAG_PX = 6;
+export const MIN_DRAG_PX = 2;
 
 /** True when raw px points span at least MIN_DRAG_PX from their origin. */
 export function hasMinDrag(points: { x: number; y: number }[]): boolean {

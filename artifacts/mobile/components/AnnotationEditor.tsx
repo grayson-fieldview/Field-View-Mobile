@@ -10,6 +10,7 @@ import Svg, {
 } from "react-native-svg";
 
 import {
+  LEGACY_PEN_SIZES_PX,
   arrowHeadPath,
   hasMinDrag,
   rawToCanonical,
@@ -31,7 +32,9 @@ export const COLORS = [
   "#a855f7",
   "#111111",
 ];
-export const SIZES = [3, 6, 12];
+// The pen set doubles as the legacy-width snap target in
+// services/annotations.ts — keep the two in lockstep.
+export const SIZES: number[] = [...LEGACY_PEN_SIZES_PX];
 
 export function pointsToPath(pts: { x: number; y: number }[]): string {
   if (pts.length === 0) return "";

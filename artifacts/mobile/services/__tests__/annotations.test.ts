@@ -320,10 +320,21 @@ test("id-less 1000-unit stroke is normalized to px + fv- id on save", () => {
     } as StoredStroke,
     335,
   ) as StoredStroke;
-  assert.equal(saved.width, 5); // normalized px, BEFORE the id was minted
+  // Snapped to the git-sourced pen set {3,6,12}, not merely rounded.
+  assert.equal(saved.width, 6); // pen 6 authored on 402pt: 14.925×0.335=5.0→snap 6
   assert.ok((saved.id as string).startsWith("fv-"));
   // And the new id now honestly describes the width as px on read:
-  assert.equal(widthToPx(saved.width as number, 335, saved.id), 5);
+  assert.equal(widthToPx(saved.width as number, 335, saved.id), 6);
+});
+
+test("snap beats round: pen 6 on a 430pt canvas normalizes back to 6", () => {
+  // 6/430*1000 = 13.9535 units; ×375/1000 = 5.23px → round() would give 5.
+  const saved = toCanonicalForSave({
+    type: "pencil",
+    width: (6 / 430) * 1000,
+    points: [{ x: 0.1, y: 0.1 }, { x: 0.9, y: 0.9 }],
+  } as StoredStroke) as StoredStroke;
+  assert.equal(saved.width, 6);
 });
 
 test("id-less Gen-1 stroke (size/canvasW) is untouched by the normalizer", () => {
@@ -365,7 +376,9 @@ test("text save clamps x/y to 0..1 and fontSize to 8..96", () => {
 test("hasMinDrag: taps and micro-drags rejected, real drags accepted", () => {
   assert.ok(!hasMinDrag([]));
   assert.ok(!hasMinDrag([{ x: 10, y: 10 }])); // tap
-  assert.ok(!hasMinDrag([{ x: 10, y: 10 }, { x: 12, y: 11 }])); // jitter
+  assert.ok(!hasMinDrag([{ x: 10, y: 10 }, { x: 11, y: 10.5 }])); // jitter
+  // Short pencil dabs are legitimate: 2px counts.
+  assert.ok(hasMinDrag([{ x: 10, y: 10 }, { x: 12, y: 10 }]));
   assert.ok(hasMinDrag([{ x: 10, y: 10 }, { x: 10 + MIN_DRAG_PX, y: 10 }]));
   // Distance measured from the ORIGIN, so a long path that returns near
   // its start still counts (it crossed the threshold mid-path).
