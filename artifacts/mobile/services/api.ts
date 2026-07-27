@@ -136,6 +136,33 @@ export function hasSession(): boolean {
   return cookieJar.size > 0;
 }
 
+/**
+ * Does an incoming Set-Cookie header carry EXACTLY the session the jar
+ * already holds? True iff it contains at least one cookie pair and every
+ * pair matches an existing jar entry by name AND value.
+ *
+ * Why: express-session runs with `rolling: true` (server-side, live since
+ * 2026-04), so every authenticated response — including 4xx — re-sends
+ * the SAME `connect.sid` value with a pushed-out Expires to extend the
+ * 14-day sliding window. Those refreshes are safe to persist regardless
+ * of status code (the value is identical; only metadata changed). A
+ * DIFFERENT value on an error response is the real hazard the non-2xx
+ * guard was built for: a fresh anonymous sid that would clobber the
+ * authenticated session in the jar + Keychain.
+ */
+function setCookieMatchesJar(raw: string): boolean {
+  const re = /([\w.!#$%&'*+\-^`|~]+)=([^;,]*)/g;
+  let m: RegExpExecArray | null;
+  let pairs = 0;
+  while ((m = re.exec(raw)) !== null) {
+    const name = m[1];
+    if (COOKIE_ATTR_RE.test(name)) continue;
+    pairs += 1;
+    if (cookieJar.get(name) !== m[2]) return false;
+  }
+  return pairs > 0;
+}
+
 function parseAndPersistSetCookie(raw: string | null): void {
   if (!raw) return;
   // Parse all `name=value` pairs out of the combined set-cookie header,
@@ -337,23 +364,41 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
   // clearSession() explicitly, which wipes the jar and Keychain.
   const setCookie = res.headers.get("set-cookie");
   if (setCookie) {
-    if (res.ok) {
+    if (res.ok || setCookieMatchesJar(setCookie)) {
+      // 2xx, OR a non-2xx whose cookie value(s) exactly match the jar —
+      // a rolling-session refresh (same sid, extended Expires). Persist
+      // it so 4xx-heavy sessions still extend the 14-day sliding window;
+      // discarding these was starving the session of refreshes and aging
+      // valid cookies out despite daily use (build 39 logout bug).
       parseAndPersistSetCookie(setCookie);
     } else {
-      // Visibility hook: if this fires in production, the server IS
-      // sending Set-Cookie on error responses — correlate with the
-      // instant-logout reports. Never log cookie values.
-      const discardMsg = `[api] DISCARDED Set-Cookie on error response: ${opts.method ?? "GET"} ${path} status=${res.status}`;
+      // Non-2xx with a DIFFERENT cookie value: the real hazard — e.g. a
+      // fresh anonymous sid on an unauthenticated response that would
+      // clobber the authenticated session. Discard + report. Never log
+      // cookie values; sidMatch=false is implied by reaching this branch.
+      const discardMsg = `[api] DISCARDED Set-Cookie on error response: ${opts.method ?? "GET"} ${path} status=${res.status} (sid differs from jar)`;
       console.warn(discardMsg);
       Sentry.addBreadcrumb({
         category: "session",
         level: "warning",
         message: "Set-Cookie discarded on error response",
-        data: { method: opts.method ?? "GET", path, status: res.status },
+        data: {
+          method: opts.method ?? "GET",
+          path,
+          status: res.status,
+          sidMatch: false,
+          jarSize: cookieJar.size,
+        },
       });
       Sentry.captureMessage("Set-Cookie discarded on error response", {
         level: "warning",
-        extra: { method: opts.method ?? "GET", path, status: res.status },
+        extra: {
+          method: opts.method ?? "GET",
+          path,
+          status: res.status,
+          sidMatch: false,
+          jarSize: cookieJar.size,
+        },
       });
     }
   }
