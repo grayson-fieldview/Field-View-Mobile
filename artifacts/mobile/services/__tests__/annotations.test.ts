@@ -229,7 +229,7 @@ test("nextFontSizeNorm: computes from measured rect, preserves prev otherwise", 
   close(nextFontSizeNorm(18, 520) as number, 18 / 520);
   assert.equal(nextFontSizeNorm(18, null, 0.05), 0.05); // rect unmeasured → preserve
   assert.equal(nextFontSizeNorm(18, undefined), undefined); // nothing to preserve
-  assert.equal(nextFontSizeNorm(96, 10), 4); // schema cap max(4)
+  assert.equal(nextFontSizeNorm(96, 10), undefined); // >4 → dropped, never clamped
 });
 
 test("unknown type renders as null (skipped, not crashed)", () => {
@@ -462,12 +462,9 @@ test("fontSizeNorm round-trips through save (single and double), verbatim", () =
 
 test("malformed fontSizeNorm never reaches the wire (row-killer guard)", () => {
   const base = { id: "fv-t7", type: "text" as const, x: 0.5, y: 0.5, content: "hi", fontSize: 18 };
-  // >4 violates z.max(4) → clamped, not preserved verbatim.
-  assert.equal(
-    (toCanonicalForSave({ ...base, fontSizeNorm: 9 }) as { fontSizeNorm?: number }).fontSizeNorm,
-    4,
-  );
-  // Non-finite / non-positive → key dropped (degrades to legacy).
+  // Malformed → key DROPPED (never clamped: norm=4 renders text at 4x
+  // image height). Stroke degrades to legacy fontSize/600 resolution.
+  assert.ok(!("fontSizeNorm" in toCanonicalForSave({ ...base, fontSizeNorm: 9 })));
   assert.ok(!("fontSizeNorm" in toCanonicalForSave({ ...base, fontSizeNorm: NaN })));
   assert.ok(!("fontSizeNorm" in toCanonicalForSave({ ...base, fontSizeNorm: 0 })));
   assert.ok(!("fontSizeNorm" in toCanonicalForSave({ ...base, fontSizeNorm: -1 })));

@@ -67,9 +67,10 @@ export function resolveFontSize(
  * (client/src/lib/annotation-convert.ts): if the fitted rect is not yet
  * measured, PRESERVE the previous norm rather than recomputing it.
  * Silently recomputing to undefined on an edit re-save would downgrade
- * a stroke to legacy. Clamped to the server schema cap
- * (z.number().positive().max(4)) — an out-of-range value would 400 the
- * entire row.
+ * a stroke to legacy. Server schema cap: z.number().positive().max(4);
+ * a violating value 400s the entire row. A computed norm >4 is DROPPED,
+ * never clamped (norm=4 renders text at 4x image height — worse than
+ * useless); the stroke falls back to legacy fontSize/600 resolution.
  */
 export function nextFontSizeNorm(
   typedPx: number,
@@ -77,7 +78,8 @@ export function nextFontSizeNorm(
   prevNorm?: number,
 ): number | undefined {
   if (typeof fittedRectH === "number" && fittedRectH > 0) {
-    return Math.min(4, typedPx / fittedRectH);
+    const norm = typedPx / fittedRectH;
+    return norm > 0 && norm <= 4 ? norm : undefined;
   }
   return prevNorm;
 }
@@ -862,12 +864,15 @@ export function toCanonicalForSave(s: StoredStroke): CanonicalStroke {
       // stroke must not grow it, and an undefined-valued key must never
       // be written. Wire safety: the server schema is
       // z.number().positive().max(4) and a violating value 400s the
-      // ENTIRE row — clamp >4 down to 4, drop non-finite/<=0 (the
-      // stroke degrades to legacy fontSize resolution, never lost).
+      // ENTIRE row — any malformed norm (non-finite, <=0, or >4) is
+      // DROPPED, never clamped: a norm clamped to 4 would render text
+      // at 4x the image height, worse than useless. Dropping degrades
+      // the stroke to legacy fontSize/600 resolution — safe, never lost.
       ...(typeof s.fontSizeNorm === "number" &&
       Number.isFinite(s.fontSizeNorm) &&
-      s.fontSizeNorm > 0
-        ? { fontSizeNorm: Math.min(4, s.fontSizeNorm) }
+      s.fontSizeNorm > 0 &&
+      s.fontSizeNorm <= 4
+        ? { fontSizeNorm: s.fontSizeNorm }
         : {}),
     };
   }
