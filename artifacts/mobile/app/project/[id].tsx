@@ -3,7 +3,7 @@ import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { Calendar, type DateData } from "react-native-calendars";
 import * as VideoThumbnails from "expo-video-thumbnails";
-import Svg, { Path as SvgPath } from "react-native-svg";
+import Svg from "react-native-svg";
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -22,6 +22,11 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AssigneePickerSheet, type AssigneeSelection } from "@/components/AssigneePickerSheet";
+import { renderShape } from "@/components/AnnotationEditor";
+import {
+  strokeToRenderShape,
+  type RenderShape,
+} from "@/services/annotations";
 import { TaskStatusPill } from "@/components/TaskStatusPill";
 import { buildDuePresets } from "@/services/dueDate";
 import { AssignUserToProjectModal } from "@/components/AssignUserToProjectModal";
@@ -189,6 +194,11 @@ export default function ProjectDetailScreen() {
 
   const [tab, setTab] = useState<TabKey>("photos");
   const [showTaskModal, setShowTaskModal] = useState(false);
+  // Long-press suppression for task rows (same pattern as PhotoTile's
+  // longPressed ref): RN Web fires onPress after onLongPress on release,
+  // so a long-press delete would ALSO navigate to detail without this.
+  // One ref covers all rows — only one press gesture is live at a time.
+  const taskRowLongPressed = useRef(false);
   const [showChecklistModal, setShowChecklistModal] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false);
   const [showAssignUserModal, setShowAssignUserModal] = useState(false);
@@ -1159,7 +1169,20 @@ export default function ProjectDetailScreen() {
                 {projectTasks.map((t) => (
                   <Pressable
                     key={t.id}
+                    // Whole row opens task detail; nested Pressables
+                    // (status pill, camera chip) win the hit on their
+                    // own area. Long-press keeps delete.
+                    onPress={() => {
+                      if (taskRowLongPressed.current) {
+                        taskRowLongPressed.current = false;
+                        return;
+                      }
+                      router.push(`/task/${t.id}`);
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Open task: ${t.title}`}
                     onLongPress={() => {
+                      taskRowLongPressed.current = true;
                       if (Platform.OS === "web") return deleteTask(t.id);
                       Alert.alert("Delete task?", undefined, [
                         { text: "Cancel", style: "cancel" },
@@ -1239,7 +1262,15 @@ export default function ProjectDetailScreen() {
                           (which owns photo attach/detach now). Amber
                           while a requirement is unmet. */}
                       <Pressable
-                        onPress={() => router.push(`/task/${t.id}`)}
+                        onPress={(e) => {
+                          // RN Web bubbles to the row's onPress; native
+                          // picks the inner target. Same guard as the
+                          // tasks-tab chevron. Row and chip both go to
+                          // detail today, but keep the propagation
+                          // contract explicit.
+                          e?.stopPropagation?.();
+                          router.push(`/task/${t.id}`);
+                        }}
                         hitSlop={8}
                         accessibilityRole="button"
                         accessibilityLabel="Task photos"
@@ -2006,6 +2037,20 @@ function PhotoTile({
   // we fall back to the grey videoTile placeholder — never block the grid,
   // never crash. Non-video tiles skip this entirely.
   const [videoPoster, setVideoPoster] = useState<string | null>(null);
+  // Intrinsic pixel size of the tile's source (photo, or the video's
+  // generated poster — same pixel space as the video frames). Needed by
+  // AnnotationOverlay to reproduce the cover crop; until it arrives the
+  // overlay renders nothing rather than strokes in a wrong basis (same
+  // gating rule as the full-screen viewer).
+  const [imgDims, setImgDims] = useState<{ w: number; h: number } | null>(
+    null,
+  );
+  const captureDims = (e: { source?: { width?: number; height?: number } }) => {
+    const w = e.source?.width;
+    const h = e.source?.height;
+    if (w && h)
+      setImgDims((prev) => (prev?.w === w && prev?.h === h ? prev : { w, h }));
+  };
   useEffect(() => {
     if (!photo.isVideo || !photo.uri) return;
     let cancelled = false;
@@ -2092,6 +2137,7 @@ function PhotoTile({
               style={StyleSheet.absoluteFill}
               contentFit="cover"
               transition={120}
+              onLoad={captureDims}
             />
           ) : null}
           <View style={styles.videoPlayBadge}>
@@ -2104,10 +2150,15 @@ function PhotoTile({
           style={styles.photo}
           contentFit="cover"
           transition={120}
+          onLoad={captureDims}
         />
       )}
-      {photo.annotations && photo.annotations.length > 0 ? (
-        <AnnotationOverlay strokes={photo.annotations} />
+      {photo.annotations && photo.annotations.length > 0 && imgDims ? (
+        <AnnotationOverlay
+          strokes={photo.annotations}
+          imgW={imgDims.w}
+          imgH={imgDims.h}
+        />
       ) : null}
       {uploadStatus === "uploading" ? (
         <View pointerEvents="none" style={styles.uploadingDim} />
@@ -2151,54 +2202,61 @@ function PhotoTile({
   );
 }
 
+/**
+ * Cap on strokes rendered per THUMBNAIL. On a ~120px tile anything past
+ * a few dozen strokes is visually indistinct mush; the cap bounds SVG
+ * node count on grids with pathological photos (first N strokes win —
+ * matches web's paint order, oldest underneath). Full-screen view has
+ * no cap.
+ */
+const MAX_THUMB_STROKES = 60;
+
 function AnnotationOverlay({
   strokes,
+  imgW,
+  imgH,
 }: {
   strokes: import("@/services/types").StoredStroke[];
+  imgW: number;
+  imgH: number;
 }) {
-  // Thumbnail overlay. Photo.annotations is the canonical/legacy render-set
-  // UNION (others + own). Denormalize every stroke into a fixed 1000×1000
-  // viewBox via toPixels — canonical 0..1 strokes map to 0..1000 and legacy
-  // px strokes are normalized first — then pencil-filter. A constant square
-  // viewBox with slice scaling fits the tile without needing per-stroke
-  // canvas dimensions; the math/render can't crash on text-kind strokes
-  // because the filter drops them. See isRenderablePencilStroke().
-  const { isRenderablePencilStroke } =
-    require("@/services/types") as typeof import("@/services/types");
-  const { toPixels } =
-    require("@/services/annotations") as typeof import("@/services/annotations");
-  const renderable = strokes
-    .map((s) => toPixels(s, 1000, 1000))
-    .filter(isRenderablePencilStroke);
-  if (renderable.length === 0) return null;
+  // Thumbnail overlay — ALL six stroke types, correct basis. Canonical
+  // strokes are normalized 0..1 over the photo's pixels, so the only
+  // thing needed to place them on a cover-cropped tile is the photo's
+  // ASPECT RATIO (from expo-image onLoad, passed in by PhotoTile).
+  // We denormalize into a nominal 1000-wide space with matching aspect
+  // (H = 1000·imgH/imgW) and let the viewBox with xMidYMid slice apply
+  // the exact same cover crop the <Image contentFit="cover"> applies —
+  // strokes land on the same photo pixels at any tile size. Canonical
+  // widths (widthToPx) scale with the 1000 basis; legacy px widths and
+  // text fontSize render at their raw px in that space, which is the
+  // web-canvas scale — acceptable at thumbnail size.
+  const shapes = useMemo(() => {
+    if (!imgW || !imgH) return [];
+    const w = 1000;
+    const h = (1000 * imgH) / imgW;
+    return strokes
+      .slice(0, MAX_THUMB_STROKES)
+      .map((s, i) => ({
+        shape: strokeToRenderShape(s, w, h),
+        key: s.id ?? `i${i}`,
+      }))
+      .filter(
+        (x): x is { shape: RenderShape; key: string } => x.shape !== null,
+      );
+  }, [strokes, imgW, imgH]);
+  if (shapes.length === 0 || !imgW || !imgH) return null;
+  const h = (1000 * imgH) / imgW;
   return (
     <Svg
       pointerEvents="none"
       style={StyleSheet.absoluteFill}
-      viewBox="0 0 1000 1000"
+      viewBox={`0 0 1000 ${h}`}
       preserveAspectRatio="xMidYMid slice"
     >
-      {renderable.map((s, i) => (
-        <SvgPath
-          key={i}
-          d={pointsToPath(s.points)}
-          stroke={s.color}
-          strokeWidth={s.size}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          fill="none"
-        />
-      ))}
+      {shapes.map(({ shape, key }) => renderShape(shape, key))}
     </Svg>
   );
-}
-
-function pointsToPath(pts: { x: number; y: number }[]): string {
-  if (pts.length === 0) return "";
-  let d = `M${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
-  for (let i = 1; i < pts.length; i++)
-    d += ` L${pts[i].x.toFixed(1)} ${pts[i].y.toFixed(1)}`;
-  return d;
 }
 
 function PhotosToolbar({

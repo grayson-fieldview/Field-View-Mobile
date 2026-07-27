@@ -79,7 +79,7 @@ export function pointsToPath(pts: { x: number; y: number }[]): string {
  * RN SVG platforms, so we offset the baseline down by ~0.8em from the
  * stored top-left y. Approximation — flagged, not pixel-exact vs web.
  */
-function renderShape(shape: RenderShape, key: string | number) {
+export function renderShape(shape: RenderShape, key: string | number) {
   switch (shape.kind) {
     case "pencil":
       return (

@@ -246,6 +246,10 @@ function RootLayoutNav() {
         }}
       />
       <Stack.Screen
+        name="task/[id]"
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
         name="capture"
         options={{ headerShown: false, presentation: "fullScreenModal" }}
       />
