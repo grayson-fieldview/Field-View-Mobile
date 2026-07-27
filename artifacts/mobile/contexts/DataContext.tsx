@@ -663,7 +663,29 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       let rows;
       try {
         rows = await api.listMediaAnnotations(photo.mediaId);
-      } catch {
+        // TEMP DIAG (Bug 2, build 39): raw response shape + stroke counts.
+        console.log(
+          `[annot-diag] GET annotations media=${photo.mediaId}: rows=${Array.isArray(rows) ? rows.length : typeof rows}`,
+          Array.isArray(rows)
+            ? rows.map((r) => ({
+                id: r.id,
+                userId: r.userId,
+                strokes: Array.isArray(r.strokes) ? r.strokes.length : "n/a",
+                types: Array.isArray(r.strokes)
+                  ? r.strokes.map((s: { type?: unknown }) => s?.type)
+                  : [],
+              }))
+            : rows,
+        );
+      } catch (err) {
+        // TEMP DIAG (Bug 2, build 39): this catch previously swallowed the
+        // error with zero logging — a session drop (Bug 1) lands here and
+        // looks identical to "no annotations".
+        console.warn(
+          `[annot-diag] GET annotations media=${photo.mediaId} FAILED:`,
+          err instanceof ApiError ? `ApiError status=${err.status}` : err,
+          `→ falling back to legacyOwn=${legacyOwn.length}, others=0`,
+        );
         // Tolerant: keep whatever we have rather than blanking the photo.
         return { ownStrokes: legacyOwn, othersStrokes: [] };
       }

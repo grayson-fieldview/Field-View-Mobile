@@ -151,6 +151,10 @@ export default function PhotoViewerScreen() {
       const { ownStrokes, othersStrokes } =
         await loadPhotoAnnotations(currentPhotoId);
       if (cancelled) return;
+      // TEMP DIAG (Bug 2, build 39): strokes received by the screen.
+      console.log(
+        `[annot-diag] photo ${currentPhotoId}: own=${ownStrokes.length}, others=${othersStrokes.length}, dirty=${dirtyRef.current.has(currentPhotoId)}`,
+      );
       // Never let a late server response clobber unsaved local edits: if the
       // user started drawing before this fetch resolved, the photo is dirty
       // and the local buffer wins (last-write-wins for the own row). Others'
