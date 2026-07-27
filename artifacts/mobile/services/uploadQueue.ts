@@ -7,6 +7,7 @@ import {
   api,
   UploadExpiredError,
   type BackendChecklistItemPhoto,
+  type BackendTaskPhoto,
 } from "./api";
 import { newId } from "./id";
 import { pendingUploadsDir } from "./imageProcessing";
@@ -43,6 +44,14 @@ export interface QueuedUpload {
    * the upload — the photo still lands on the project.
    */
   checklistItemId?: string;
+  /**
+   * Optional task attach target — mirror of checklistItemId. When set,
+   * the post-upload tagger calls api.attachPhotosToTask(taskId,
+   * [mediaId]) after the Media row is created (same retry ladder).
+   * Errors are surfaced via subscribeTaskAttach but do not fail the
+   * upload — the photo still lands on the project.
+   */
+  taskId?: string;
   /**
    * "unrecoverable" = the local file no longer exists on device (iOS
    * evicted it, or a legacy cache-dir item's bytes were purged before
@@ -89,12 +98,31 @@ export interface ChecklistAttachEvent {
 }
 type AttachListener = (event: ChecklistAttachEvent) => void;
 
+/**
+ * Result of the post-upload TASK attach step — mirror of
+ * ChecklistAttachEvent. Emitted exactly once per upload that carried a
+ * `taskId`, after the attach settles (success OR final failure after
+ * retries). DataContext subscribes to reconcile the task's
+ * attachedPhotoCount and surface terminal failures; the photos sheet
+ * subscribes to refresh its grid.
+ */
+export interface TaskAttachEvent {
+  taskId: string;
+  mediaId: number;
+  /** Present on success — the new task_photos junction row. */
+  photo?: BackendTaskPhoto;
+  /** Present on failure — human-readable message. */
+  error?: string;
+}
+type TaskAttachListener = (event: TaskAttachEvent) => void;
+
 // ---- Module state ----
 let queue: QueuedUpload[] = [];
 let loaded = false;
 let loadPromise: Promise<void> | null = null;
 const subscribers = new Set<Listener>();
 const attachSubscribers = new Set<AttachListener>();
+const taskAttachSubscribers = new Set<TaskAttachListener>();
 const inFlight = new Set<string>();
 let tickInterval: ReturnType<typeof setInterval> | null = null;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -297,7 +325,70 @@ function emitAttach(event: ChecklistAttachEvent): void {
   }
 }
 
+function emitTaskAttach(event: TaskAttachEvent): void {
+  for (const fn of taskAttachSubscribers) {
+    try {
+      fn(event);
+    } catch (e) {
+      console.log("[upload-queue] task attach subscriber threw:", e);
+    }
+  }
+}
+
 const ATTACH_RETRY_DELAYS_MS = [0, 2_000, 8_000];
+
+/**
+ * Task mirror of attachWithRetry: POST /api/tasks/:taskId/photos with
+ * the new mediaId, retried on the same ladder. Idempotent server-side
+ * per (task, media), so a retry after an ambiguous failure is safe.
+ * Terminal failure emits an error event — the media row exists on the
+ * project but is NOT attached to the task; subscribers must surface
+ * that, never swallow it.
+ */
+async function attachTaskWithRetry(
+  taskId: string,
+  mediaId: number,
+  uploadedUrl?: string,
+): Promise<void> {
+  let lastErr: unknown;
+  for (let i = 0; i < ATTACH_RETRY_DELAYS_MS.length; i++) {
+    const delay = ATTACH_RETRY_DELAYS_MS[i] ?? 0;
+    if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+    try {
+      const res = await api.attachPhotosToTask(taskId, [mediaId]);
+      let photo: BackendTaskPhoto | undefined = Array.isArray(res)
+        ? res[0]
+        : res;
+      // Patch a missing joined-media url from the uploaded URL so
+      // subscribers can render the thumbnail without a refetch (same
+      // tolerance as the checklist path).
+      const hasUrl =
+        typeof photo?.media?.url === "string" &&
+        photo.media.url.trim().length > 0;
+      const fallback =
+        typeof uploadedUrl === "string" && uploadedUrl.trim().length > 0
+          ? uploadedUrl
+          : undefined;
+      if (photo && !hasUrl && fallback) {
+        photo = { ...photo, media: { ...photo.media, url: fallback } };
+      }
+      console.log(
+        `[upload-queue] ✓ attached media ${mediaId} → task ${taskId} (attempt ${i + 1})`,
+      );
+      emitTaskAttach({ taskId, mediaId, photo });
+      return;
+    } catch (e) {
+      lastErr = e;
+      console.log(
+        `[upload-queue] task attach attempt ${i + 1} failed for media ${mediaId} → task ${taskId}:`,
+        e,
+      );
+    }
+  }
+  const message =
+    lastErr instanceof Error ? lastErr.message : String(lastErr ?? "unknown error");
+  emitTaskAttach({ taskId, mediaId, error: message });
+}
 
 async function attachWithRetry(
   checklistItemId: string,
@@ -479,6 +570,10 @@ async function processItem(item: QueuedUpload): Promise<void> {
     if (item.checklistItemId && Number.isFinite(mediaId)) {
       void attachWithRetry(item.checklistItemId, mediaId, created.url);
     }
+    // Same for uploads scoped to a task (capture-to-task).
+    if (item.taskId && Number.isFinite(mediaId)) {
+      void attachTaskWithRetry(item.taskId, mediaId, created.url);
+    }
     // TODO: notify DataContext to refresh project media after successful upload
   } catch (e) {
     if (!queue.some((it) => it.id === item.id)) {
@@ -597,6 +692,21 @@ export function subscribeAttach(listener: AttachListener): () => void {
   attachSubscribers.add(listener);
   return () => {
     attachSubscribers.delete(listener);
+  };
+}
+
+/**
+ * Subscribe to attach-step results for uploads that carried a `taskId`.
+ * Fires exactly once per such upload with either a `photo` (success) or
+ * an `error` (final failure after retries). Returns an unsubscribe
+ * function.
+ */
+export function subscribeTaskAttach(
+  listener: TaskAttachListener,
+): () => void {
+  taskAttachSubscribers.add(listener);
+  return () => {
+    taskAttachSubscribers.delete(listener);
   };
 }
 

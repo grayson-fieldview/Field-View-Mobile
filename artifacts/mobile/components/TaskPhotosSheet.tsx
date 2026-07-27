@@ -11,6 +11,7 @@ import {
   Text,
   View,
 } from "react-native";
+import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "@/components/Button";
@@ -19,6 +20,7 @@ import { useData } from "@/contexts/DataContext";
 import { useToast } from "@/contexts/ToastContext";
 import { useColors } from "@/hooks/useColors";
 import { ApiError, api, type BackendTaskPhoto } from "@/services/api";
+import { subscribeTaskAttach } from "@/services/uploadQueue";
 import type { Task } from "@/services/types";
 
 interface Props {
@@ -48,6 +50,7 @@ export function TaskPhotosSheet({ task, onClose }: Props) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const { showToast } = useToast();
+  const router = useRouter();
   const { setTaskAttachedPhotoCount, loadProjectDetail } = useData();
 
   const [rows, setRows] = useState<BackendTaskPhoto[]>([]);
@@ -128,6 +131,30 @@ export function TaskPhotosSheet({ task, onClose }: Props) {
       cancelled = true;
     };
   }, [visible, taskId, projectId, applyRows, loadProjectDetail]);
+
+  // Live update while open: when a capture-to-task upload's post-upload
+  // attach settles for THIS task, pull the fresh rows so the new photo
+  // appears in the grid. (DataContext owns count reconcile + failure
+  // alert; this is just the grid.)
+  useEffect(() => {
+    if (!visible || !taskId) return;
+    const unsub = subscribeTaskAttach((evt) => {
+      if (evt.taskId !== taskId) return;
+      refresh(taskId).catch(() => {});
+    });
+    return unsub;
+  }, [visible, taskId, refresh]);
+
+  const takeNewPhoto = useCallback(() => {
+    if (!taskId || !projectId) return;
+    // Close the sheet first — pushing a route underneath an open modal
+    // leaves the modal covering the camera on iOS pageSheet.
+    onClose();
+    router.push({
+      pathname: "/capture",
+      params: { projectId, taskId },
+    });
+  }, [taskId, projectId, onClose, router]);
 
   const attach = useCallback(
     async (mediaIds: number[]) => {
@@ -325,12 +352,23 @@ export function TaskPhotosSheet({ task, onClose }: Props) {
             },
           ]}
         >
-          <Button
-            title="Attach project photos"
-            onPress={() => setPickerOpen(true)}
-            loading={busy}
-            size="lg"
-          />
+          <View style={{ flexDirection: "row", gap: 10 }}>
+            <Button
+              title="Take new photo"
+              variant="secondary"
+              onPress={takeNewPhoto}
+              disabled={busy}
+              size="lg"
+              style={{ flex: 1 }}
+            />
+            <Button
+              title="Attach photos"
+              onPress={() => setPickerOpen(true)}
+              loading={busy}
+              size="lg"
+              style={{ flex: 1 }}
+            />
+          </View>
         </View>
 
         {projectId ? (

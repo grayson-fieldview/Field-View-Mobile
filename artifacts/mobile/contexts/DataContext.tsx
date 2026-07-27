@@ -32,6 +32,7 @@ import {
   enqueueUpload,
   removeItem as removeUploadQueueItem,
   subscribe as subscribeUploadQueue,
+  subscribeTaskAttach,
 } from "@/services/uploadQueue";
 
 /** Shape callers pass to addPhoto/addPhotosBatch. The optional upload-meta
@@ -44,6 +45,13 @@ type AddPhotoInput = Omit<Photo, "id" | "uploaded" | "uploadQueueId"> & {
   mimeType?: string;
   fileSize?: number;
   checklistItemId?: string;
+  /**
+   * Optional task attach target — mirror of checklistItemId. Tags the
+   * upload so the queue's post-upload tagger attaches the new media to
+   * the task; the task's attachedPhotoCount is bumped optimistically at
+   * enqueue time and reconciled when the attach settles.
+   */
+  taskId?: string;
 };
 
 interface DataState {
@@ -491,10 +499,114 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     ],
   );
 
+  // Optimistic task-photo-count delta (capture-to-task enqueue). Floors
+  // at 0; reconciled with the authoritative count when the post-upload
+  // attach settles (subscribeTaskAttach effect below).
+  const bumpTaskAttachedPhotoCount = useCallback(
+    (taskId: string, delta: number) => {
+      setTasksList(
+        tasksRef.current.map((t) =>
+          t.id === taskId
+            ? {
+                ...t,
+                attachedPhotoCount: Math.max(
+                  0,
+                  (t.attachedPhotoCount ?? 0) + delta,
+                ),
+              }
+            : t,
+        ),
+      );
+    },
+    [setTasksList],
+  );
+
+  // Reconcile capture-to-task attaches: when the upload queue's
+  // post-upload tagger settles (success or terminal failure), replace
+  // the optimistic count with the server-authoritative one. On terminal
+  // failure the photo exists on the PROJECT but is NOT on the task —
+  // surface that loudly rather than leaving a silently-wrong hint.
+  //
+  // Settles are COALESCED per task in a short window: a burst of N
+  // photos produces one reconcile GET and (at most) one aggregated
+  // failure alert instead of N of each — no modal spam / request
+  // fan-out under outage conditions.
+  const taskAttachWindowsRef = useRef<
+    Map<string, { timer: ReturnType<typeof setTimeout>; failures: string[] }>
+  >(new Map());
+  useEffect(() => {
+    const windows = taskAttachWindowsRef.current;
+    const flush = (taskId: string) => {
+      const win = windows.get(taskId);
+      if (!win) return;
+      windows.delete(taskId);
+      const failures = win.failures;
+      void (async () => {
+        try {
+          const rows = await api.getTaskPhotos(taskId);
+          const count = Array.isArray(rows) ? rows.length : 0;
+          setTasksList(
+            tasksRef.current.map((t) =>
+              t.id === taskId && t.attachedPhotoCount !== count
+                ? { ...t, attachedPhotoCount: count }
+                : t,
+            ),
+          );
+        } catch {
+          // Reconcile GET failed — undo the optimistic bumps for the
+          // failed attaches so the hint doesn't overcount; successful
+          // attaches keep their bump (server has them). One retry later
+          // via the next settle or a task refresh will converge fully.
+          if (failures.length > 0)
+            bumpTaskAttachedPhotoCount(taskId, -failures.length);
+        }
+        if (failures.length > 0) {
+          const title =
+            tasksRef.current.find((t) => t.id === taskId)?.title ??
+            "the task";
+          const n = failures.length;
+          Alert.alert(
+            n === 1 ? "Photo not attached to task" : "Photos not attached to task",
+            `${n === 1 ? "A photo" : `${n} photos`} uploaded to the project but couldn't be attached to "${title}" (${failures[0]}). Open the task's photos and attach ${n === 1 ? "it" : "them"} from project photos.`,
+          );
+        }
+      })();
+    };
+    const unsub = subscribeTaskAttach((evt) => {
+      const existing = windows.get(evt.taskId);
+      if (existing) {
+        clearTimeout(existing.timer);
+        if (evt.error) existing.failures.push(evt.error);
+        existing.timer = setTimeout(() => flush(evt.taskId), 1_500);
+      } else {
+        windows.set(evt.taskId, {
+          failures: evt.error ? [evt.error] : [],
+          timer: setTimeout(() => flush(evt.taskId), 1_500),
+        });
+      }
+    });
+    return () => {
+      unsub();
+      // Flush anything pending synchronously-ish on teardown (provider
+      // unmount = app teardown in practice; timers would be dropped).
+      for (const [taskId, win] of windows) {
+        clearTimeout(win.timer);
+        void taskId;
+      }
+      windows.clear();
+    };
+  }, [setTasksList, bumpTaskAttachedPhotoCount]);
+
   const addPhoto: DataState["addPhoto"] = useCallback(
     async (input) => {
-      const { originalName, mimeType, fileSize, checklistItemId, ...photoFields } =
-        input;
+      const {
+        originalName,
+        mimeType,
+        fileSize,
+        checklistItemId,
+        taskId,
+        ...photoFields
+      } = input;
       let uploadQueueId: string | undefined;
       if (
         originalName &&
@@ -512,8 +624,13 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
             latitude: input.latitude,
             longitude: input.longitude,
             checklistItemId,
+            taskId,
           });
           uploadQueueId = queued.id;
+          // Optimistic: reflect the pending capture in the task row hint
+          // immediately; reconciled when the post-upload attach settles
+          // (see the subscribeTaskAttach effect below).
+          if (taskId) bumpTaskAttachedPhotoCount(taskId, 1);
         } catch (e) {
           console.log("[DataContext] enqueueUpload failed:", e);
         }
@@ -532,7 +649,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       await persistPhotos(next);
       return photo;
     },
-    [persistPhotos],
+    [persistPhotos, bumpTaskAttachedPhotoCount],
   );
 
   const addPhotosBatch: DataState["addPhotosBatch"] = useCallback(
@@ -555,7 +672,9 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
                 latitude: i.latitude,
                 longitude: i.longitude,
                 checklistItemId: i.checklistItemId,
+                taskId: i.taskId,
               });
+              if (i.taskId) bumpTaskAttachedPhotoCount(i.taskId, 1);
               return queued.id;
             } catch (e) {
               console.log("[DataContext] enqueueUpload failed:", e);
@@ -566,12 +685,19 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         }),
       );
       const created: Photo[] = inputs.map((i, idx) => {
-        const { originalName, mimeType, fileSize, checklistItemId, ...photoFields } =
-          i;
+        const {
+          originalName,
+          mimeType,
+          fileSize,
+          checklistItemId,
+          taskId,
+          ...photoFields
+        } = i;
         void originalName;
         void mimeType;
         void fileSize;
         void checklistItemId;
+        void taskId;
         return {
           ...photoFields,
           id: newId(),
@@ -585,7 +711,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       await persistPhotos(next);
       return created;
     },
-    [persistPhotos],
+    [persistPhotos, bumpTaskAttachedPhotoCount],
   );
 
   // Reconcile photos with successful background uploads. The queue stores

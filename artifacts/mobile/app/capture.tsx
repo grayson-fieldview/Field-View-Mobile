@@ -78,7 +78,7 @@ export default function CaptureScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { projectId, checklistItemId } = useLocalSearchParams<{
+  const { projectId, checklistItemId, taskId } = useLocalSearchParams<{
     projectId: string;
     /**
      * Optional. When set, every photo captured (single shot OR burst) in
@@ -87,6 +87,12 @@ export default function CaptureScreen() {
      * post-upload tagger calls api.attachPhotoToItem on success.
      */
     checklistItemId?: string;
+    /**
+     * Optional task attach target — mirror of checklistItemId. Set by
+     * the task photos sheet's "Take new photo"; every photo captured in
+     * this session auto-attaches to the task after upload.
+     */
+    taskId?: string;
   }>();
   const { projects, photos, addPhoto, addPhotosBatch } = useData();
   const { accountSettings } = useAuth();
@@ -376,6 +382,7 @@ export default function CaptureScreen() {
           mimeType: prepared?.mimeType,
           fileSize: prepared?.fileSize,
           checklistItemId,
+          taskId,
         });
         addToTray([saved]);
         setSessionCount((s) => s + 1);
@@ -431,6 +438,7 @@ export default function CaptureScreen() {
           mimeType: p?.mimeType,
           fileSize: p?.fileSize,
           checklistItemId,
+          taskId,
         })),
       );
       addToTray(savedBatch);
@@ -511,6 +519,7 @@ export default function CaptureScreen() {
             mimeType: prepared.mimeType,
             fileSize: prepared.fileSize,
             checklistItemId,
+            taskId,
           });
           setSessionCount((s) => s + 1);
         } else {
@@ -565,6 +574,7 @@ export default function CaptureScreen() {
           mimeType: p?.mimeType,
           fileSize: p?.fileSize,
           checklistItemId,
+          taskId,
         })),
       );
       // Imports count toward the session pill, so they join the tray too.
