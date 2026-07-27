@@ -15,7 +15,13 @@ import {
   DEFAULT_STROKE_WIDTH,
   MIN_DRAG_PX,
   arrowHeadPath,
+  HIT_TOLERANCE_PX,
+  distToSegment,
   fittedContainRect,
+  hitDistancePx,
+  hitTestStrokesPx,
+  shapeBoundsPx,
+  translateStroke,
   hasMinDrag,
   isLegacyMobileStrokeId,
   rawToCanonical,
@@ -660,6 +666,170 @@ test("fitted-rect round trip: landscape container, off-center point", () => {
   assert.ok("points" in s && s.points); // pencil, not text — narrows the union
   close(s.points[0].x, 0.25);
   close(s.points[0].y, 0.75);
+});
+
+// ---------- Selection: hit-testing / bounds / translate ----------
+// All geometry in rect-space px against a 400x300 canvas (W, H above).
+
+const px = (x: number, y: number) => ({ x: x / W, y: y / H });
+
+const mkStroke = (over: Partial<StoredStroke>): StoredStroke => ({
+  id: newStrokeId(),
+  type: "pencil",
+  color: "#ef4444",
+  width: 3,
+  points: [],
+  ...over,
+});
+
+test("hitTestStrokesPx: per-type distance math within 20px tolerance", () => {
+  const pencil = mkStroke({ points: [px(10, 10), px(100, 10), px(100, 100)] });
+  const line = mkStroke({ type: "line", points: [px(0, 200), px(200, 200)] });
+  const circle = mkStroke({ type: "circle", points: [px(200, 150), px(250, 150)] }); // r=50
+  const rect = mkStroke({ type: "rectangle", points: [px(300, 20), px(380, 80)] });
+
+  // pencil: 15px below the horizontal run
+  assert.equal(hitTestStrokesPx([pencil], 50, 25, W, H), pencil.id);
+  // pencil: 25px away — outside tolerance
+  assert.equal(hitTestStrokesPx([pencil], 50, 35, W, H), null);
+  // line: on the segment
+  assert.equal(hitTestStrokesPx([line], 100, 210, W, H), line.id);
+  // circle: near the RIM (center is NOT a hit — outline shape)
+  assert.equal(hitTestStrokesPx([circle], 200, 95, W, H), circle.id); // 5px off rim
+  assert.equal(hitTestStrokesPx([circle], 200, 150, W, H), null); // dead center, r=50 > tol
+  // rectangle: near an edge, and inside-bounds far from any edge
+  assert.equal(hitTestStrokesPx([rect], 295, 50, W, H), rect.id); // 5px left of edge
+  assert.equal(hitTestStrokesPx([rect], 340, 50, W, H), rect.id); // deep inside — contained
+  assert.equal(hitTestStrokesPx([rect], 250, 50, W, H), null); // 50px outside
+});
+
+test("hitTestStrokesPx: text hits by rendered bounds box", () => {
+  const text = mkStroke({
+    type: "text",
+    points: undefined,
+    x: 100 / W,
+    y: 100 / H,
+    content: "note",
+    fontSize: 20,
+  });
+  delete (text as { width?: number }).width;
+  // Inside the approx box (4 chars * 0.6 * 20 = 48 wide, 20 tall)
+  assert.equal(hitTestStrokesPx([text], 120, 110, W, H), text.id);
+  // Well outside
+  assert.equal(hitTestStrokesPx([text], 300, 110, W, H), null);
+});
+
+test("overlap: small shape inside a large rectangle wins on direct tap", () => {
+  const bigRect = mkStroke({ type: "rectangle", points: [px(0, 0), px(400, 300)] });
+  const smallPencil = mkStroke({ points: [px(190, 140), px(210, 160)] });
+  // Tap ON the pencil, deep inside the rect: pencil d~0 beats the rect's
+  // contained-floor (min(d, tol) = tol since edges are far).
+  assert.equal(
+    hitTestStrokesPx([bigRect, smallPencil], 200, 150, W, H),
+    smallPencil.id,
+  );
+  // Tap far from the pencil but still inside the rect: rect wins
+  // (contained), pencil out of tolerance.
+  assert.equal(hitTestStrokesPx([bigRect, smallPencil], 60, 60, W, H), bigRect.id);
+  // Order independence: pencil first in array, still wins on direct tap.
+  assert.equal(
+    hitTestStrokesPx([smallPencil, bigRect], 200, 150, W, H),
+    smallPencil.id,
+  );
+});
+
+test("hitTestStrokesPx: id-less strokes are unselectable; nearest wins", () => {
+  const noId = mkStroke({ points: [px(50, 50), px(60, 50)] });
+  delete (noId as { id?: string }).id;
+  assert.equal(hitTestStrokesPx([noId], 55, 50, W, H), null);
+  const near = mkStroke({ type: "line", points: [px(0, 100), px(400, 100)] });
+  const far = mkStroke({ type: "line", points: [px(0, 115), px(400, 115)] });
+  // Tap at y=104: near is 4px, far is 11px — both in tolerance, nearest wins.
+  assert.equal(hitTestStrokesPx([near, far], 200, 104, W, H), near.id);
+});
+
+test("distToSegment / hitDistancePx sanity", () => {
+  close(distToSegment(0, 10, 0, 0, 100, 0), 10);
+  close(distToSegment(-30, 0, 0, 0, 100, 0), 30); // beyond endpoint
+  const d = hitDistancePx(
+    { kind: "circle", color: "#111", strokeWidth: 3, cx: 100, cy: 100, r: 40 },
+    100,
+    50,
+  );
+  close(d.d, 10);
+  assert.equal(d.contained, false);
+  assert.ok(HIT_TOLERANCE_PX >= 15); // finger-usable floor
+});
+
+test("translateStroke: points translate and clamp; text moves via x/y; id preserved", () => {
+  const s = mkStroke({ points: [px(100, 100), px(200, 200)] });
+  const moved = translateStroke(s, 0.1, -0.1);
+  assert.equal(moved.id, s.id);
+  assert.ok("points" in moved && moved.points);
+  close(moved.points[0].x, 100 / W + 0.1);
+  close(moved.points[0].y, 100 / H - 0.1);
+  // Clamp safety net at the 0..1 boundary
+  const clamped = translateStroke(s, 10, 10);
+  assert.ok("points" in clamped && clamped.points);
+  close(clamped.points[0].x, 1);
+  close(clamped.points[0].y, 1);
+
+  const t = mkStroke({
+    type: "text",
+    points: undefined,
+    x: 0.5,
+    y: 0.5,
+    content: "hi",
+    fontSize: 20,
+  });
+  const tMoved = translateStroke(t, -0.25, 0.25);
+  assert.equal(tMoved.id, t.id);
+  assert.ok(tMoved.type === "text");
+  close(tMoved.x as number, 0.25);
+  close(tMoved.y as number, 0.75);
+});
+
+test("translateStroke canonicalizes legacy px-basis strokes into 0..1", () => {
+  // Legacy stroke: raw px points with canvasW/H metadata (old container
+  // basis). A move must come out canonical — never re-store px.
+  const legacy: StoredStroke = {
+    id: newStrokeId(),
+    type: "pencil",
+    color: "#111",
+    size: 3,
+    canvasW: 400,
+    canvasH: 300,
+    points: [{ x: 100, y: 150 }],
+  };
+  const moved = translateStroke(legacy, 0.1, 0.1);
+  assert.ok("points" in moved && moved.points);
+  close(moved.points[0].x, 100 / 400 + 0.1);
+  close(moved.points[0].y, 150 / 300 + 0.1);
+  assert.equal((moved as { canvasW?: number }).canvasW, undefined);
+});
+
+test("shapeBoundsPx: circle and text bounds", () => {
+  const c = shapeBoundsPx({
+    kind: "circle",
+    color: "#111",
+    strokeWidth: 3,
+    cx: 100,
+    cy: 100,
+    r: 40,
+  });
+  assert.deepEqual(c, { minX: 60, minY: 60, maxX: 140, maxY: 140 });
+  const t = shapeBoundsPx({
+    kind: "text",
+    color: "#111",
+    x: 10,
+    y: 20,
+    content: "abcd",
+    fontSize: 20,
+  });
+  close(t.minX, 10);
+  close(t.minY, 20);
+  close(t.maxX, 10 + 4 * 20 * 0.6);
+  close(t.maxY, 40);
 });
 
 test("isKnownStrokeType covers exactly the six wire types", () => {

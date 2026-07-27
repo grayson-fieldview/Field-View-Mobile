@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import Svg, {
   Circle,
+  G,
   Line,
   Path,
   Rect,
@@ -25,9 +26,12 @@ import {
   arrowHeadPath,
   fittedContainRect,
   hasMinDrag,
+  hitTestStrokesPx,
   rawToCanonical,
+  shapeBoundsPx,
   strokeToRenderShape,
   textToCanonical,
+  translateStroke,
 } from "@/services/annotations";
 import type { RenderShape } from "@/services/annotations";
 import type {
@@ -299,8 +303,11 @@ function LivePreview({
  * appends, shapes track [start, current]). Icons, not text labels —
  * four chips of text don't fit a phone-width row.
  */
+/** Toolbar entries: the five drawing tools plus select (not a stroke type). */
+type EditorTool = KnownStrokeType | "select";
+
 const TOOLS: {
-  key: KnownStrokeType;
+  key: EditorTool;
   label: string;
   icon: React.ComponentProps<typeof Feather>["name"];
 }[] = [
@@ -309,6 +316,7 @@ const TOOLS: {
   { key: "circle", label: "Circle", icon: "circle" },
   { key: "rectangle", label: "Rectangle", icon: "square" },
   { key: "text", label: "Text", icon: "type" },
+  { key: "select", label: "Select", icon: "mouse-pointer" },
 ];
 
 /**
@@ -328,6 +336,8 @@ export function AnnotationEditor({
   size,
   onSizeChange,
   onCommit,
+  onUpdateStroke,
+  onDeleteStroke,
   onClear,
   onDone,
   panelTop,
@@ -340,6 +350,10 @@ export function AnnotationEditor({
   size: number;
   onSizeChange: (s: number) => void;
   onCommit: (stroke: CanonicalStroke) => void;
+  /** Replace an OWN stroke (matched by id) after a move. */
+  onUpdateStroke: (stroke: CanonicalStroke) => void;
+  /** Delete an OWN stroke by id (own row minus that stroke). */
+  onDeleteStroke: (id: string) => void;
   onClear: () => void;
   onDone: () => void;
   /** Absolute top (px) for the edit tool rows, below the parent's row 1. */
@@ -347,7 +361,46 @@ export function AnnotationEditor({
 }) {
   // Active authoring tool. Commit reads the type from here instead of
   // hardcoding "pencil" — Phase 2 tools plug in without touching commit.
-  const [activeTool, setActiveTool] = useState<KnownStrokeType>("pencil");
+  const [activeTool, setActiveTool] = useState<EditorTool>("pencil");
+
+  // ----- Selection (select tool) -----
+  // Only OWN strokes are selectable — others' rows aren't ours to write.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // In-flight drag: rect-space px. bounds = selected shape's bbox at drag
+  // start, used to clamp the delta so the stroke stays inside the fitted
+  // rect. Ref (not state) — read/written synchronously by the responder.
+  const dragRef = useRef<{
+    startX: number;
+    startY: number;
+    bounds: { minX: number; minY: number; maxX: number; maxY: number };
+  } | null>(null);
+  // Live drag delta in px — state so the selected-stroke overlay re-renders.
+  const [dragDelta, setDragDelta] = useState<{ dx: number; dy: number }>({
+    dx: 0,
+    dy: 0,
+  });
+
+  const selectedStroke = useMemo(
+    () => ownStrokes.find((s) => s.id === selectedId) ?? null,
+    [ownStrokes, selectedId],
+  );
+  // Selection can go stale under it (undo popped it, clear-all, server
+  // reseed) — drop it instead of showing a ghost.
+  useEffect(() => {
+    if (selectedId && !selectedStroke) {
+      setSelectedId(null);
+      dragRef.current = null;
+      setDragDelta({ dx: 0, dy: 0 });
+    }
+  }, [selectedId, selectedStroke]);
+  // Leaving the select tool deselects.
+  useEffect(() => {
+    if (activeTool !== "select" && selectedId) {
+      setSelectedId(null);
+      dragRef.current = null;
+      setDragDelta({ dx: 0, dy: 0 });
+    }
+  }, [activeTool, selectedId]);
 
   const currentStroke = useRef<AnnotationStroke | null>(null);
   // Tool FROZEN at gesture start. extendStroke, the live preview, and the
@@ -452,6 +505,13 @@ export function AnnotationEditor({
       currentStroke.current = null;
       force((n) => n + 1);
     }
+    // An in-flight selection DRAG has the same problem: its start point
+    // and clamp bounds are px against the old rect. Keep the selection
+    // (it's normalized), drop the drag.
+    if (dragRef.current) {
+      dragRef.current = null;
+      setDragDelta({ dx: 0, dy: 0 });
+    }
   }, [fitRect]);
 
   // Clamp a container-space touch point into the fitted image rect —
@@ -473,6 +533,30 @@ export function AnnotationEditor({
     const rect = fitRectRef.current;
     if (!rect) return;
     const { x, y } = clampToRect(rawX, rawY, rect);
+    if (activeTool === "select") {
+      // Hit-test in RECT-SPACE px (container point minus rect origin) —
+      // strokes are stored normalized against the fitted rect, never the
+      // container. Only own strokes are candidates.
+      const hit = hitTestStrokesPx(
+        ownStrokes,
+        x - rect.x,
+        y - rect.y,
+        rect.w,
+        rect.h,
+      );
+      setSelectedId(hit);
+      setDragDelta({ dx: 0, dy: 0 });
+      if (hit) {
+        const s = ownStrokes.find((st) => st.id === hit);
+        const shape = s ? strokeToRenderShape(s, rect.w, rect.h) : null;
+        dragRef.current = shape
+          ? { startX: x, startY: y, bounds: shapeBoundsPx(shape) }
+          : null;
+      } else {
+        dragRef.current = null; // tap on empty space = deselect
+      }
+      return;
+    }
     if (activeTool === "text") {
       // Tap-to-place: no drag stroke. A second tap while the input is
       // open cancels the first (dismiss = save nothing) and re-anchors.
@@ -499,9 +583,28 @@ export function AnnotationEditor({
     force((n) => n + 1);
   };
   const extendStroke = (rawX: number, rawY: number) => {
-    const s = currentStroke.current;
     const rect = fitRectRef.current;
-    if (!s || !rect) return;
+    if (!rect) return;
+    if (activeTool === "select") {
+      const drag = dragRef.current;
+      if (!drag || !selectedId) return;
+      // Clamp the delta so the stroke's bbox stays inside the fitted
+      // rect — a stroke can be dragged flush against an edge but never
+      // out of the image.
+      const b = drag.bounds;
+      const dx = Math.max(
+        -b.minX,
+        Math.min(rawX - drag.startX, rect.w - b.maxX),
+      );
+      const dy = Math.max(
+        -b.minY,
+        Math.min(rawY - drag.startY, rect.h - b.maxY),
+      );
+      setDragDelta({ dx, dy });
+      return;
+    }
+    const s = currentStroke.current;
+    if (!s) return;
     const { x, y } = clampToRect(rawX, rawY, rect);
     if (strokeTool.current === "pencil") {
       s.points.push({ x, y });
@@ -515,6 +618,20 @@ export function AnnotationEditor({
     force((n) => n + 1);
   };
   const endStroke = () => {
+    if (activeTool === "select") {
+      const rect = fitRectRef.current;
+      const drag = dragRef.current;
+      dragRef.current = null;
+      const { dx, dy } = dragDelta;
+      setDragDelta({ dx: 0, dy: 0 });
+      if (!rect || !drag || !selectedStroke) return;
+      if (dx === 0 && dy === 0) return; // plain tap — selection only
+      // Commit the move: px delta -> NORMALIZED delta against the fitted
+      // rect (the storage basis). translateStroke canonicalizes legacy
+      // strokes and preserves the id.
+      onUpdateStroke(translateStroke(selectedStroke, dx / rect.w, dy / rect.h));
+      return;
+    }
     const s = currentStroke.current;
     const rect = fitRectRef.current;
     currentStroke.current = null;
@@ -558,11 +675,28 @@ export function AnnotationEditor({
 
   // Committed strokes render through the memoized AnnotationLayer; the
   // per-move force() re-render only re-draws the live path below it.
+  // The SELECTED stroke is excluded — it renders in the selection
+  // overlay instead (highlighted, translated by the live drag delta).
   const committed = useMemo(
-    () => [...othersStrokes, ...ownStrokes],
-    [othersStrokes, ownStrokes],
+    () =>
+      [...othersStrokes, ...ownStrokes].filter((s) => s.id !== selectedId),
+    [othersStrokes, ownStrokes, selectedId],
   );
   const live = currentStroke.current;
+
+  // Selection overlay geometry: resolved at the fitted-rect size (the
+  // storage basis), rendered inside the rect-positioned wrapper below.
+  const selectedShape = useMemo(
+    () =>
+      selectedStroke && fitRect
+        ? strokeToRenderShape(selectedStroke, fitRect.w, fitRect.h)
+        : null,
+    [selectedStroke, fitRect],
+  );
+  const selectedBounds = useMemo(
+    () => (selectedShape ? shapeBoundsPx(selectedShape) : null),
+    [selectedShape],
+  );
 
   return (
     <>
@@ -625,6 +759,26 @@ export function AnnotationEditor({
               width={fitRect.w}
               height={fitRect.h}
             />
+            {/* Selection overlay: the selected stroke re-rendered on top,
+                translated by the live drag delta, with a dashed bbox
+                highlight. Rect-space px throughout. */}
+            {selectedShape && selectedBounds ? (
+              <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
+                <G translateX={dragDelta.dx} translateY={dragDelta.dy}>
+                  {renderShape(selectedShape, "selected")}
+                  <Rect
+                    x={selectedBounds.minX - 6}
+                    y={selectedBounds.minY - 6}
+                    width={selectedBounds.maxX - selectedBounds.minX + 12}
+                    height={selectedBounds.maxY - selectedBounds.minY + 12}
+                    stroke="#fff"
+                    strokeWidth={1.5}
+                    strokeDasharray="6 4"
+                    fill="rgba(255,255,255,0.08)"
+                  />
+                </G>
+              </Svg>
+            ) : null}
           </View>
         ) : null}
         {live && live.points.length > 0 ? (
@@ -756,6 +910,24 @@ export function AnnotationEditor({
                   />
                 </Pressable>
               ))}
+          {selectedId ? (
+            // Delete the SELECTED stroke only — own row minus this one;
+            // the existing save path (PUT) carries it on flush.
+            <Pressable
+              onPress={() => {
+                const id = selectedId;
+                setSelectedId(null);
+                dragRef.current = null;
+                setDragDelta({ dx: 0, dy: 0 });
+                onDeleteStroke(id);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Delete selected annotation"
+              style={styles.clearBtn}
+            >
+              <Text style={styles.clearTxt}>Delete</Text>
+            </Pressable>
+          ) : null}
           {ownStrokes.length > 0 ? (
             <Pressable onPress={onClear} style={styles.clearBtn}>
               <Text style={styles.clearTxt}>Clear all</Text>

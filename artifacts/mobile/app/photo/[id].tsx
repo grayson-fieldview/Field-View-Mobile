@@ -328,6 +328,26 @@ export default function PhotoViewerScreen() {
     await persistLocalUnion(pid, next);
   };
 
+  // Replace one OWN stroke (matched by id) after a select-tool move. Same
+  // dirty/flush pipeline as commitStroke — the exit flush PUTs the row.
+  const replaceStroke = async (updated: StoredStroke) => {
+    const pid = currentPhoto.id;
+    const next = (strokesById[pid] ?? []).map((s) =>
+      s.id === updated.id ? updated : s,
+    );
+    setStrokesById((prev) => ({ ...prev, [pid]: next }));
+    await persistLocalUnion(pid, next);
+  };
+
+  // Delete one OWN stroke by id: own row minus that stroke, via the same
+  // save path (no new API surface).
+  const deleteStroke = async (id: string) => {
+    const pid = currentPhoto.id;
+    const next = (strokesById[pid] ?? []).filter((s) => s.id !== id);
+    setStrokesById((prev) => ({ ...prev, [pid]: next }));
+    await persistLocalUnion(pid, next);
+  };
+
   const undo = async () => {
     const pid = currentPhoto.id;
     const list = strokesById[pid] ?? [];
@@ -486,6 +506,8 @@ export default function PhotoViewerScreen() {
           size={size}
           onSizeChange={setSize}
           onCommit={(s) => void commitStroke(s)}
+          onUpdateStroke={(s) => void replaceStroke(s)}
+          onDeleteStroke={(id) => void deleteStroke(id)}
           onClear={() => void clearAll()}
           onDone={() => setEditing(false)}
           // Directly below the parent's persistent row 1 (30px buttons +

@@ -215,6 +215,239 @@ export function fittedContainRect(
   return { x: (containerW - w) / 2, y: (containerH - h) / 2, w, h };
 }
 
+// ---------- Selection: hit-testing, bounds, translation ----------
+
+/**
+ * Finger-friendly tap tolerance for selecting a stroke, in DISPLAY px
+ * (rect-space, same basis as the resolved RenderShape geometry). Never
+ * express tolerance in normalized units — 20px of finger is 20px
+ * regardless of photo aspect.
+ */
+export const HIT_TOLERANCE_PX = 20;
+
+function distToPoint(px: number, py: number, x: number, y: number): number {
+  return Math.hypot(px - x, py - y);
+}
+
+/** Distance from point to segment [a,b] (px). */
+export function distToSegment(
+  px: number,
+  py: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+): number {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return distToPoint(px, py, x1, y1);
+  const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / lenSq));
+  return distToPoint(px, py, x1 + t * dx, y1 + t * dy);
+}
+
+/**
+ * Hit metric for one resolved shape at a rect-space px point.
+ * `d` = distance to the shape's drawn geometry; `contained` = the point
+ * is inside the shape's closed bounds (rectangle interior / text box).
+ * Contained-only hits are accepted regardless of `d`, but RANK by an
+ * effective distance of min(d, tolerance) — so a small shape sitting
+ * inside a large rectangle/text box wins when tapped directly (its d is
+ * near 0; the big shape's effective distance floors at the tolerance).
+ */
+export function hitDistancePx(
+  shape: RenderShape,
+  px: number,
+  py: number,
+): { d: number; contained: boolean } {
+  switch (shape.kind) {
+    case "pencil": {
+      const pts = shape.points;
+      if (pts.length === 0) return { d: Infinity, contained: false };
+      if (pts.length === 1)
+        return { d: distToPoint(px, py, pts[0].x, pts[0].y), contained: false };
+      let best = Infinity;
+      for (let i = 1; i < pts.length; i++) {
+        best = Math.min(
+          best,
+          distToSegment(px, py, pts[i - 1].x, pts[i - 1].y, pts[i].x, pts[i].y),
+        );
+      }
+      return { d: best, contained: false };
+    }
+    case "line":
+    case "arrow":
+      // Arrow: the head is derived decoration off the same segment —
+      // testing the shaft alone is the contract.
+      return {
+        d: distToSegment(px, py, shape.x1, shape.y1, shape.x2, shape.y2),
+        contained: false,
+      };
+    case "circle":
+      return {
+        d: Math.abs(distToPoint(px, py, shape.cx, shape.cy) - shape.r),
+        contained: false,
+      };
+    case "rectangle": {
+      const x2 = shape.x + shape.w;
+      const y2 = shape.y + shape.h;
+      const d = Math.min(
+        distToSegment(px, py, shape.x, shape.y, x2, shape.y),
+        distToSegment(px, py, x2, shape.y, x2, y2),
+        distToSegment(px, py, x2, y2, shape.x, y2),
+        distToSegment(px, py, shape.x, y2, shape.x, shape.y),
+      );
+      const contained =
+        px >= shape.x && px <= x2 && py >= shape.y && py <= y2;
+      return { d, contained };
+    }
+    case "text": {
+      const b = shapeBoundsPx(shape);
+      const contained =
+        px >= b.minX && px <= b.maxX && py >= b.minY && py <= b.maxY;
+      const d = Math.min(
+        distToSegment(px, py, b.minX, b.minY, b.maxX, b.minY),
+        distToSegment(px, py, b.maxX, b.minY, b.maxX, b.maxY),
+        distToSegment(px, py, b.maxX, b.maxY, b.minX, b.maxY),
+        distToSegment(px, py, b.minX, b.maxY, b.minX, b.minY),
+      );
+      return { d, contained };
+    }
+  }
+}
+
+/**
+ * Axis-aligned bounds of a resolved shape in rect-space px. Text width
+ * is an approximation (~0.6em per glyph, weight 600) — SVG text can't
+ * be measured synchronously in RN; good enough for tap targets and
+ * drag clamping.
+ */
+export function shapeBoundsPx(shape: RenderShape): {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+} {
+  switch (shape.kind) {
+    case "pencil": {
+      let minX = Infinity,
+        minY = Infinity,
+        maxX = -Infinity,
+        maxY = -Infinity;
+      for (const p of shape.points) {
+        minX = Math.min(minX, p.x);
+        minY = Math.min(minY, p.y);
+        maxX = Math.max(maxX, p.x);
+        maxY = Math.max(maxY, p.y);
+      }
+      if (shape.points.length === 0) return { minX: 0, minY: 0, maxX: 0, maxY: 0 };
+      return { minX, minY, maxX, maxY };
+    }
+    case "line":
+    case "arrow":
+      return {
+        minX: Math.min(shape.x1, shape.x2),
+        minY: Math.min(shape.y1, shape.y2),
+        maxX: Math.max(shape.x1, shape.x2),
+        maxY: Math.max(shape.y1, shape.y2),
+      };
+    case "circle":
+      return {
+        minX: shape.cx - shape.r,
+        minY: shape.cy - shape.r,
+        maxX: shape.cx + shape.r,
+        maxY: shape.cy + shape.r,
+      };
+    case "rectangle":
+      return {
+        minX: shape.x,
+        minY: shape.y,
+        maxX: shape.x + shape.w,
+        maxY: shape.y + shape.h,
+      };
+    case "text": {
+      const w = Math.max(
+        shape.fontSize * 0.6,
+        shape.content.length * shape.fontSize * 0.6,
+      );
+      return {
+        minX: shape.x,
+        minY: shape.y,
+        maxX: shape.x + w,
+        maxY: shape.y + shape.fontSize,
+      };
+    }
+  }
+}
+
+/**
+ * Hit-test a rect-space px point against a list of stored strokes
+ * resolved at (w × h) — the FITTED IMAGE RECT size, never the container.
+ * Returns the stroke id of the best hit, or null.
+ *
+ * Overlap resolution: effective distance = contained ? min(d, tol) : d;
+ * lowest wins; ties go to the LATER stroke in the array (topmost in
+ * paint order) because iteration runs back-to-front with strict `<`.
+ * Strokes without a stable id are unselectable (nothing to write back).
+ */
+export function hitTestStrokesPx(
+  strokes: StoredStroke[],
+  px: number,
+  py: number,
+  w: number,
+  h: number,
+  tol: number = HIT_TOLERANCE_PX,
+): string | null {
+  let bestId: string | null = null;
+  let bestEff = Infinity;
+  for (let i = strokes.length - 1; i >= 0; i--) {
+    const s = strokes[i];
+    if (typeof s.id !== "string" || s.id.length === 0) continue;
+    const shape = strokeToRenderShape(s, w, h);
+    if (!shape) continue;
+    const { d, contained } = hitDistancePx(shape, px, py);
+    const eff = contained ? Math.min(d, tol) : d;
+    if (eff > tol) continue;
+    if (eff < bestEff) {
+      bestEff = eff;
+      bestId = s.id;
+    }
+  }
+  return bestId;
+}
+
+/**
+ * Translate a stroke by a NORMALIZED delta (fractions of the fitted
+ * rect — callers convert px drag deltas via dx/rect.w, dy/rect.h and
+ * pre-clamp so the stroke stays inside the rect; clamp01 here is a
+ * safety net only). Returns a CANONICAL stroke: legacy px-basis strokes
+ * are canonicalized first (toCanonicalForSave preserves ids), so a
+ * moved stroke is always stored in the fitted-rect basis.
+ */
+export function translateStroke(
+  s: StoredStroke,
+  dxN: number,
+  dyN: number,
+): CanonicalStroke {
+  const c = toCanonicalForSave(s);
+  if (c.type === "text") {
+    return {
+      ...c,
+      x: typeof c.x === "number" ? clamp01(c.x + dxN) : c.x,
+      y: typeof c.y === "number" ? clamp01(c.y + dyN) : c.y,
+    };
+  }
+  if (!Array.isArray((c as { points?: unknown }).points)) return c;
+  const pts = (c as { points: { x: number; y: number }[] }).points;
+  return {
+    ...c,
+    points: pts.map((p) => ({
+      x: clamp01(p.x + dxN),
+      y: clamp01(p.y + dyN),
+    })),
+  } as CanonicalStroke;
+}
+
 /** True when a stored stroke carries legacy px canvas metadata. */
 export function hasCanvasMeta(s: StoredStroke): boolean {
   return (
