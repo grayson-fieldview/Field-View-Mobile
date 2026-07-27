@@ -22,7 +22,6 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AssigneePickerSheet, type AssigneeSelection } from "@/components/AssigneePickerSheet";
-import { TaskPhotosSheet } from "@/components/TaskPhotosSheet";
 import { TaskStatusPill } from "@/components/TaskStatusPill";
 import { buildDuePresets } from "@/services/dueDate";
 import { AssignUserToProjectModal } from "@/components/AssignUserToProjectModal";
@@ -190,9 +189,6 @@ export default function ProjectDetailScreen() {
 
   const [tab, setTab] = useState<TabKey>("photos");
   const [showTaskModal, setShowTaskModal] = useState(false);
-  const [photoTask, setPhotoTask] = useState<
-    import("@/services/types").Task | null
-  >(null);
   const [showChecklistModal, setShowChecklistModal] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false);
   const [showAssignUserModal, setShowAssignUserModal] = useState(false);
@@ -1239,10 +1235,11 @@ export default function ProjectDetailScreen() {
                           {t.notes}
                         </Text>
                       ) : null}
-                      {/* Camera chip — always tappable, opens the task
-                          photos sheet. Amber while a requirement is unmet. */}
+                      {/* Camera chip — opens the task detail screen
+                          (which owns photo attach/detach now). Amber
+                          while a requirement is unmet. */}
                       <Pressable
-                        onPress={() => setPhotoTask(t)}
+                        onPress={() => router.push(`/task/${t.id}`)}
                         hitSlop={8}
                         accessibilityRole="button"
                         accessibilityLabel="Task photos"
@@ -1622,7 +1619,6 @@ export default function ProjectDetailScreen() {
       </ScrollView>
 
       {/* Task photos sheet — attach/detach existing project photos */}
-      <TaskPhotosSheet task={photoTask} onClose={() => setPhotoTask(null)} />
 
       <TaskModal
         visible={showTaskModal}

@@ -45,7 +45,14 @@ export function TaskStatusPill({
   if (!onPress) return inner;
   return (
     <Pressable
-      onPress={onPress}
+      // stopPropagation: pills often sit inside a pressable row (tasks
+      // list rows navigate to task detail). Native resolves nested
+      // pressables to the inner target, but RN Web bubbles — without
+      // this a pill tap would ALSO fire the row's navigation.
+      onPress={(e) => {
+        e?.stopPropagation?.();
+        onPress();
+      }}
       hitSlop={8}
       style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
       accessibilityRole="button"

@@ -14,18 +14,13 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import {
-  AssigneePickerSheet,
-  type AssigneeSelection,
-} from "@/components/AssigneePickerSheet";
 import { EmptyState } from "@/components/EmptyState";
 import { LoadingScreen } from "@/components/LoadingScreen";
-import { TaskPhotosSheet } from "@/components/TaskPhotosSheet";
 import { TaskStatusPill } from "@/components/TaskStatusPill";
 import { useData } from "@/contexts/DataContext";
 import { useColors } from "@/hooks/useColors";
 import { formatDueLabel, matchesDueFilter, type DueFilter } from "@/services/dueDate";
-import type { Task, TaskStatus } from "@/services/types";
+import type { TaskStatus } from "@/services/types";
 
 type StatusFilter = "all" | TaskStatus;
 
@@ -47,16 +42,12 @@ export default function TasksScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { tasks, projects, cycleTaskStatus, updateTask, ready } = useData();
+  const { tasks, projects, cycleTaskStatus, ready } = useData();
 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [projectFilter, setProjectFilter] = useState<string>("all");
   const [dueFilter, setDueFilter] = useState<DueFilter>("all");
   const [projectSheetOpen, setProjectSheetOpen] = useState(false);
-
-  // Task currently having its assignee changed (drives the picker sheet).
-  const [reassignTask, setReassignTask] = useState<Task | null>(null);
-  const [photoTask, setPhotoTask] = useState<Task | null>(null);
 
   const projectNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -91,20 +82,6 @@ export default function TasksScreen() {
     setStatusFilter("all");
     setProjectFilter("all");
     setDueFilter("all");
-  };
-
-  const onReassign = async (selection: AssigneeSelection) => {
-    if (!reassignTask) return;
-    const task = reassignTask;
-    setReassignTask(null);
-    try {
-      await updateTask(task.id, {
-        assignedToId: selection?.userId ?? null,
-        assignedToName: selection?.displayName ?? null,
-      });
-    } catch {
-      // updateTask reverts optimistic state on failure; nothing to do here.
-    }
   };
 
   if (!ready) return <LoadingScreen />;
@@ -209,12 +186,18 @@ export default function TasksScreen() {
           const dueLabel = formatDueLabel(item.dueDate);
           const isPast = matchesDueFilter(item.dueDate, "past") && !item.done;
           return (
-            <View
-              style={[
+            // The whole row opens task detail; the status pill (nested
+            // Pressable — inner wins the hit) keeps its tap-to-cycle.
+            <Pressable
+              onPress={() => router.push(`/task/${item.id}`)}
+              accessibilityRole="button"
+              accessibilityLabel={`Open task: ${item.title}`}
+              style={({ pressed }) => [
                 styles.row,
                 {
                   backgroundColor: colors.card,
                   borderColor: colors.border,
+                  opacity: pressed ? 0.85 : 1,
                 },
               ]}
             >
@@ -228,7 +211,12 @@ export default function TasksScreen() {
                     }}
                   />
                   <Pressable
-                    onPress={() => router.push(`/project/${item.projectId}`)}
+                    onPress={(e) => {
+                      // Don't let the row's open-detail press also fire
+                      // on RN Web (native picks the inner target).
+                      e?.stopPropagation?.();
+                      router.push(`/project/${item.projectId}`);
+                    }}
                     hitSlop={10}
                     style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
                     accessibilityRole="button"
@@ -295,18 +283,10 @@ export default function TasksScreen() {
                     </View>
                   ) : null}
 
-                  {/* Camera chip — always tappable, opens the task photos
-                      sheet. Amber while a photo requirement is unmet. */}
-                  <Pressable
-                    onPress={() => setPhotoTask(item)}
-                    hitSlop={8}
-                    accessibilityRole="button"
-                    accessibilityLabel="Task photos"
-                    style={({ pressed }) => [
-                      styles.metaItem,
-                      { opacity: pressed ? 0.6 : 1 },
-                    ]}
-                  >
+                  {/* Camera chip — display-only (row tap opens detail,
+                      which owns photo actions now). Amber while a photo
+                      requirement is unmet. */}
+                  <View style={styles.metaItem}>
                     <Feather
                       name="camera"
                       size={12}
@@ -337,19 +317,17 @@ export default function TasksScreen() {
                           ? `${item.attachedPhotoCount} photo${item.attachedPhotoCount === 1 ? "" : "s"}`
                           : "Photos"}
                     </Text>
-                  </Pressable>
+                  </View>
                 </View>
 
-                {/* Assignee chip — tap to reassign */}
-                <Pressable
-                  onPress={() => setReassignTask(item)}
-                  hitSlop={6}
-                  style={({ pressed }) => [
+                {/* Assignee chip — display-only; reassign lives on the
+                    detail screen now (row tap opens it). */}
+                <View
+                  style={[
                     styles.assigneeChip,
                     {
                       borderColor: colors.border,
                       backgroundColor: colors.background,
-                      opacity: pressed ? 0.7 : 1,
                     },
                   ]}
                 >
@@ -371,9 +349,9 @@ export default function TasksScreen() {
                   >
                     {item.assignedToName ?? "Unassigned"}
                   </Text>
-                </Pressable>
+                </View>
               </View>
-            </View>
+            </Pressable>
           );
         }}
         ListEmptyComponent={
@@ -408,19 +386,6 @@ export default function TasksScreen() {
         colors={colors}
       />
 
-      {/* Reassign picker — scoped to the task's project */}
-      {reassignTask ? (
-        <AssigneePickerSheet
-          visible
-          projectId={reassignTask.projectId}
-          selectedUserId={reassignTask.assignedToId ?? null}
-          onClose={() => setReassignTask(null)}
-          onSelect={onReassign}
-        />
-      ) : null}
-
-      {/* Task photos sheet — attach/detach existing project photos */}
-      <TaskPhotosSheet task={photoTask} onClose={() => setPhotoTask(null)} />
     </View>
   );
 }

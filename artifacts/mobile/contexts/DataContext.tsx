@@ -177,6 +177,13 @@ interface DataState {
    * in_progress (a binary toggle silently jumped in_progress → done).
    */
   cycleTaskStatus: (id: string) => Promise<void>;
+  /**
+   * Set a task's status DIRECTLY (e.g. the detail screen's "Mark done").
+   * Same path as cycleTaskStatus — in-flight guard, optimistic
+   * updateTask, and the 422 PHOTOS_REQUIRED alert — just with an
+   * explicit target instead of the computed next step.
+   */
+  setTaskStatus: (id: string, status: TaskStatus) => Promise<void>;
   deleteTask: (id: string) => Promise<void>;
 
   /** Wipe all local data (used by account-deletion / leave-team flows). */
@@ -1278,8 +1285,8 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     [setTasksList, bumpTaskVersion, getTaskVersion],
   );
 
-  const cycleTaskStatus: DataState["cycleTaskStatus"] = useCallback(
-    async (id) => {
+  const setTaskStatus: DataState["setTaskStatus"] = useCallback(
+    async (id, status) => {
       // Per-task in-flight guard. Without it, a tap while a PATCH is
       // pending reads the OPTIMISTIC status (e.g. "done" that the server
       // is about to reject with 422) and computes the next step from it —
@@ -1288,26 +1295,14 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       // has already been reverted and the next tap retries the SAME
       // transition.
       if (cyclingTasksRef.current.has(id)) return;
-      const current = tasksRef.current.find((t) => t.id === id);
-      if (!current) return;
-      // Web-matching forward cycle. Falls back to "todo" as the current
-      // status for any task whose status is somehow unset, so the first
-      // tap always advances to "in_progress".
-      const NEXT: Record<TaskStatus, TaskStatus> = {
-        todo: "in_progress",
-        in_progress: "done",
-        done: "todo",
-      };
-      const nextStatus: TaskStatus = NEXT[current.status ?? "todo"];
       cyclingTasksRef.current.add(id);
       try {
-        await updateTask(id, { status: nextStatus });
+        await updateTask(id, { status });
       } catch (err) {
         // Server-enforced photo requirement (no feature flag; live for
         // all accounts). updateTask has already reverted the optimistic
         // state, so the task is back at its pre-tap status and the next
-        // tap retries the same transition. Mobile has no attach UI yet
-        // (Phase 1+), so tell the crew member the actionable path.
+        // tap retries the same transition.
         if (
           err instanceof ApiError &&
           err.status === 422 &&
@@ -1320,7 +1315,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
           const attached = typeof b.attached === "number" ? b.attached : 0;
           Alert.alert(
             "Photos required",
-            `This task needs ${required} photo${required === 1 ? "" : "s"} attached to it before it can be completed (${attached} of ${required} attached so far).\n\nTap the camera chip on the task row to attach photos, then mark it done.`,
+            `This task needs ${required} photo${required === 1 ? "" : "s"} attached to it before it can be completed (${attached} of ${required} attached so far).\n\nOpen the task and attach photos, then mark it done.`,
           );
           return; // handled — don't propagate to the row's silent .catch
         }
@@ -1330,6 +1325,26 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       }
     },
     [updateTask],
+  );
+
+  const cycleTaskStatus: DataState["cycleTaskStatus"] = useCallback(
+    async (id) => {
+      // Reads the CURRENT (non-optimistic — setTaskStatus's guard keeps
+      // taps out while a PATCH is in flight) status and advances one step.
+      if (cyclingTasksRef.current.has(id)) return;
+      const current = tasksRef.current.find((t) => t.id === id);
+      if (!current) return;
+      // Web-matching forward cycle. Falls back to "todo" as the current
+      // status for any task whose status is somehow unset, so the first
+      // tap always advances to "in_progress".
+      const NEXT: Record<TaskStatus, TaskStatus> = {
+        todo: "in_progress",
+        in_progress: "done",
+        done: "todo",
+      };
+      await setTaskStatus(id, NEXT[current.status ?? "todo"]);
+    },
+    [setTaskStatus],
   );
 
   const setTaskAttachedPhotoCount: DataState["setTaskAttachedPhotoCount"] =
@@ -1413,6 +1428,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       updateTask,
       setTaskAttachedPhotoCount,
       cycleTaskStatus,
+      setTaskStatus,
       deleteTask,
       clearAll,
     }),
@@ -1438,6 +1454,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       updateTask,
       setTaskAttachedPhotoCount,
       cycleTaskStatus,
+      setTaskStatus,
       deleteTask,
       clearAll,
     ],
