@@ -2,7 +2,6 @@ import { Feather } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -21,6 +20,7 @@ import Svg, {
 import {
   DEFAULT_FONT_SIZE,
   LEGACY_PEN_SIZES_PX,
+  resolveFontSize,
   MAX_TEXT_CONTENT_LENGTH,
   TEXT_FONT_SIZES,
   arrowHeadPath,
@@ -52,14 +52,6 @@ export const COLORS = [
 // The pen set doubles as the legacy-width snap target in
 // services/annotations.ts — keep the two in lockstep.
 export const SIZES: number[] = [...LEGACY_PEN_SIZES_PX];
-
-/**
- * Flip to true once a device build confirms Android renders
- * alignmentBaseline="text-before-edge" at parity with web's canvas
- * textBaseline="top" (see the text case in renderShape). Until then
- * Android keeps the 0.8em approximation.
- */
-const ANDROID_TEXT_BEFORE_EDGE_VERIFIED = false;
 
 export function pointsToPath(pts: { x: number; y: number }[]): string {
   if (pts.length === 0) return "";
@@ -159,28 +151,41 @@ export function renderShape(shape: RenderShape, key: string | number) {
         />
       );
     case "text": {
-      // Top-anchoring parity with web's canvas textBaseline="top".
-      // iOS: alignmentBaseline="text-before-edge" — RNSVGTSpan.mm in
-      // react-native-svg 15.12.1 implements it as baselineShift =
-      // ascenderHeight, the direct text-top mapping. Android has the
-      // same code in TSpanView.java, but its baseline handling is
-      // historically patchy, so it KEEPS the 0.8em approximation until
-      // a device build visually verifies parity — then flip
-      // ANDROID_TEXT_BEFORE_EDGE_VERIFIED to true.
-      const useBeforeEdge =
-        Platform.OS === "ios" || ANDROID_TEXT_BEFORE_EDGE_VERIFIED;
+      // ONE anchoring rule, all surfaces, both platforms — mirrored from
+      // the web repo: explicit arithmetic offset, NO dominant-baseline /
+      // alignmentBaseline (their support differs across Safari,
+      // react-native-svg on Android, and the server-side PDF-flatten
+      // renderer; arithmetic behaves identically everywhere).
+      // shape.fontSize is already resolved (resolveFontSize) upstream.
+      const y = shape.y + shape.fontSize * 0.8;
+      // Contrast halo: react-native-svg does not honor paintOrder
+      // reliably, so render twice at identical coordinates — stroke-only
+      // underneath, fill-only on top.
       return (
-        <SvgText
-          key={key}
-          x={shape.x}
-          y={useBeforeEdge ? shape.y : shape.y + shape.fontSize * 0.8}
-          alignmentBaseline={useBeforeEdge ? "text-before-edge" : undefined}
-          fill={shape.color}
-          fontSize={shape.fontSize}
-          fontWeight="600"
-        >
-          {shape.content}
-        </SvgText>
+        <React.Fragment key={key}>
+          <SvgText
+            x={shape.x}
+            y={y}
+            fill="none"
+            stroke="rgba(0,0,0,0.9)"
+            strokeWidth={shape.fontSize / 8}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+            fontSize={shape.fontSize}
+            fontWeight="600"
+          >
+            {shape.content}
+          </SvgText>
+          <SvgText
+            x={shape.x}
+            y={y}
+            fill={shape.color}
+            fontSize={shape.fontSize}
+            fontWeight="600"
+          >
+            {shape.content}
+          </SvgText>
+        </React.Fragment>
       );
     }
   }
@@ -789,7 +794,8 @@ export function AnnotationEditor({
         {pendingText ? (
           // WYSIWYG placement: the input's own glyphs sit at the tap
           // point (top-left), styled exactly like the committed SVG text
-          // (fontSize px, weight 600, active color).
+          // (RESOLVED fontSize — same resolveFontSize(fs, fitRect.h)
+          // basis the committed render uses — weight 600, active color).
           <TextInput
             value={textDraft}
             onChangeText={setTextDraft}
@@ -807,7 +813,9 @@ export function AnnotationEditor({
               {
                 left: pendingText.x,
                 top: pendingText.y,
-                fontSize,
+                fontSize: fitRect
+                  ? resolveFontSize(fontSize, fitRect.h)
+                  : fontSize,
                 color,
                 maxWidth: Math.max(80, editBox.w - pendingText.x - 8),
               },

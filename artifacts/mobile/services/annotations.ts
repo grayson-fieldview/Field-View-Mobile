@@ -29,6 +29,23 @@ import { newStrokeId } from "./id.ts";
  */
 
 export const DEFAULT_STROKE_WIDTH = 3;
+
+/**
+ * Text-size resolution — mirrored EXACTLY from the web repo's
+ * client/src/lib/annotation-svg.tsx (same constant, same helper name,
+ * same signature; do not invent a variant). Stored fontSize is treated
+ * as units in a 1000-tall reference space and scaled to the surface's
+ * rendered height, so text keeps its proportion to the photo on every
+ * surface (thumbnail, full viewer, server-side PDF flatten).
+ */
+export const FONT_REFERENCE_HEIGHT = 1000;
+
+export function resolveFontSize(
+  strokeFontSize: number,
+  renderedHeightPx: number,
+): number {
+  return (strokeFontSize / FONT_REFERENCE_HEIGHT) * renderedHeightPx;
+}
 const DEFAULT_COLOR = "#ef4444";
 
 const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
@@ -589,10 +606,12 @@ export function strokeToRenderShape(
       x: clamp01(s.x) * w,
       y: clamp01(s.y) * h,
       content: s.content,
-      fontSize:
+      fontSize: resolveFontSize(
         typeof s.fontSize === "number" && s.fontSize > 0
           ? s.fontSize
           : DEFAULT_FONT_SIZE,
+        h,
+      ),
     };
   }
 

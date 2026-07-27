@@ -2204,19 +2204,16 @@ function AnnotationOverlay({
   // Strokes are never clipped, but they are not crop-compensated either.
   // We deliberately reproduce that (stretch, not slice) so a stroke near
   // a photo's edge appears in both grids at the same tile position —
-  // matching web beats matching the photo pixels here. Web's thumbnail
-  // overlay also skips text strokes (they render only in the full
-  // viewer), so we drop them too. Full-screen view keeps the exact
-  // fitted-rect basis.
+  // matching web beats matching the photo pixels here. Full-screen view
+  // keeps the exact fitted-rect basis. Text renders here too (web-parity
+  // after web's thumbnail-text fix): with the SVG height basis = 1000 =
+  // FONT_REFERENCE_HEIGHT, resolveFontSize is an identity, matching web.
   const shapes = useMemo(
     () =>
       strokes
         .slice(0, MAX_THUMB_STROKES)
         .map((s, i) => ({
-          shape:
-            (s.type ?? "pencil") === "text"
-              ? null
-              : strokeToRenderShape(s, 1000, 1000),
+          shape: strokeToRenderShape(s, 1000, 1000),
           key: s.id ?? `i${i}`,
         }))
         .filter(

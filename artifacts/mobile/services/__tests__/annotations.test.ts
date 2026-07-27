@@ -13,6 +13,7 @@ import { test } from "node:test";
 
 import {
   DEFAULT_STROKE_WIDTH,
+  resolveFontSize,
   MIN_DRAG_PX,
   arrowHeadPath,
   HIT_TOLERANCE_PX,
@@ -184,7 +185,7 @@ test("rectangle normalizes corner order", () => {
   );
 });
 
-test("text: top-level normalized x/y, raw px fontSize", () => {
+test("text: top-level normalized x/y, fontSize resolved vs 1000-tall reference", () => {
   const shape = strokeToRenderShape(
     { id: "t1", type: "text", x: 0.1, y: 0.2, content: "hi", fontSize: 24 },
     W,
@@ -193,8 +194,14 @@ test("text: top-level normalized x/y, raw px fontSize", () => {
   assert.ok(shape && shape.kind === "text");
   close(shape.x, 40);
   close(shape.y, 60);
-  assert.equal(shape.fontSize, 24);
+  // resolveFontSize: (24 / FONT_REFERENCE_HEIGHT) * H = 24/1000*300
+  close(shape.fontSize, 7.2);
   assert.equal(shape.content, "hi");
+});
+
+test("resolveFontSize is identity at the 1000-unit reference height", () => {
+  assert.equal(resolveFontSize(24, 1000), 24);
+  assert.equal(resolveFontSize(18, 500), 9);
 });
 
 test("unknown type renders as null (skipped, not crashed)", () => {
