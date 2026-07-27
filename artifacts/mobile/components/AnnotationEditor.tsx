@@ -23,6 +23,7 @@ import {
   MAX_TEXT_CONTENT_LENGTH,
   TEXT_FONT_SIZES,
   arrowHeadPath,
+  fittedContainRect,
   hasMinDrag,
   rawToCanonical,
   strokeToRenderShape,
@@ -382,14 +383,18 @@ export function AnnotationEditor({
     pendingAnchorRef.current = null;
     setPendingText(null);
     setTextDraft("");
+    // Anchor is container-space (the input is container-anchored);
+    // re-base to the fitted image rect — the web's coordinate basis.
+    const rect = fitRectRef.current;
+    if (!rect) return; // no basis → nothing can be committed correctly
     const stroke = textToCanonical({
-      xPx: anchor.x,
-      yPx: anchor.y,
+      xPx: anchor.x - rect.x,
+      yPx: anchor.y - rect.y,
       content: textDraft,
       color,
       fontSize,
-      canvasW: canvasSize.current.w,
-      canvasH: canvasSize.current.h,
+      canvasW: rect.w,
+      canvasH: rect.h,
     });
     if (stroke) onCommit(stroke); // null = empty/whitespace → cancelled
   };
@@ -402,17 +407,61 @@ export function AnnotationEditor({
     setTextDraft("");
   };
 
-  // Captured drawing-canvas size. Kept as a ref (read synchronously at draw
-  // time so freshly-drawn px points record the box they were laid out
-  // against) AND mirrored to state so the render can denormalize canonical
-  // strokes to px against the current box.
+  // Captured container box (the absoluteFill View). NOT the coordinate
+  // basis — that's fitRect below. Kept as a ref (read synchronously at
+  // draw time) AND mirrored to state so the render recomputes fitRect on
+  // layout changes (rotation, split view).
   const canvasSize = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
   const [editBox, setEditBox] = useState<{ w: number; h: number }>({
     w: 0,
     h: 0,
   });
+  // Intrinsic pixel size of the photo, from expo-image's onLoad. Arrives
+  // async (after first layout for remote URIs); until it does, fitRect is
+  // null and the editor renders NO committed strokes and accepts NO
+  // touches — never draw or normalize against the container basis.
+  const [imgSize, setImgSize] = useState<{ w: number; h: number } | null>(
+    null,
+  );
+  useEffect(() => setImgSize(null), [photoUri]);
 
-  const startStroke = (x: number, y: number) => {
+  // THE coordinate basis: the rect the contain-fitted image occupies
+  // inside the container. Matches the web editor, which normalizes
+  // against the fitted image rect — 0..1 must mean "fraction of the
+  // photo", not "fraction of the container incl. letterbox bars".
+  const fitRect = useMemo(
+    () =>
+      fittedContainRect(
+        editBox.w,
+        editBox.h,
+        imgSize?.w ?? 0,
+        imgSize?.h ?? 0,
+      ),
+    [editBox, imgSize],
+  );
+  // Ref mirror for the synchronous gesture handlers.
+  const fitRectRef = useRef(fitRect);
+  fitRectRef.current = fitRect;
+
+  // Clamp a container-space touch point into the fitted image rect —
+  // letterbox-bar touches snap to the nearest image edge instead of
+  // recording as valid coordinates outside the photo.
+  const clampToRect = (
+    x: number,
+    y: number,
+    r: { x: number; y: number; w: number; h: number },
+  ) => ({
+    x: Math.min(Math.max(x, r.x), r.x + r.w),
+    y: Math.min(Math.max(y, r.y), r.y + r.h),
+  });
+
+  const startStroke = (rawX: number, rawY: number) => {
+    // No basis yet (intrinsic size hasn't loaded) → accept nothing.
+    // A stroke normalized against the container would be stored in the
+    // wrong basis forever.
+    const rect = fitRectRef.current;
+    if (!rect) return;
+    const { x, y } = clampToRect(rawX, rawY, rect);
     if (activeTool === "text") {
       // Tap-to-place: no drag stroke. A second tap while the input is
       // open cancels the first (dismiss = save nothing) and re-anchors.
@@ -429,15 +478,20 @@ export function AnnotationEditor({
     currentStroke.current = {
       color,
       size,
+      // Live points stay in CONTAINER space (the preview SVG is
+      // container-anchored); they're re-based to the fitted rect at
+      // commit time in endStroke.
       points: [{ x, y }],
-      canvasW: canvasSize.current.w || undefined,
-      canvasH: canvasSize.current.h || undefined,
+      canvasW: rect.w || undefined,
+      canvasH: rect.h || undefined,
     };
     force((n) => n + 1);
   };
-  const extendStroke = (x: number, y: number) => {
+  const extendStroke = (rawX: number, rawY: number) => {
     const s = currentStroke.current;
-    if (!s) return;
+    const rect = fitRectRef.current;
+    if (!s || !rect) return;
+    const { x, y } = clampToRect(rawX, rawY, rect);
     if (strokeTool.current === "pencil") {
       s.points.push({ x, y });
     } else {
@@ -451,10 +505,12 @@ export function AnnotationEditor({
   };
   const endStroke = () => {
     const s = currentStroke.current;
+    const rect = fitRectRef.current;
     currentStroke.current = null;
     // Discard taps / sub-threshold drags: the server has no min-length on
     // `points`, so a zero-length arrow/circle would validate and sync.
-    if (!s || !hasMinDrag(s.points)) {
+    // A vanished rect mid-gesture (photo swapped) also discards.
+    if (!s || !rect || !hasMinDrag(s.points)) {
       force((n) => n + 1);
       return;
     }
@@ -463,16 +519,26 @@ export function AnnotationEditor({
     // Shape strokes are hardened to exactly [start, end] here — the
     // accumulation rule already maintains that, but a malformed live
     // buffer must never reach the wire with extra points.
+    //
+    // BASIS: points are re-based from container space to the fitted
+    // image rect (subtract the letterbox origin) and normalized against
+    // the RECT's size — the web editor's basis. Never normalize against
+    // the container (pre-build-42 bug: strokes stored in a
+    // container-relative basis never lined up on any other client).
     const tool = strokeTool.current;
-    const points =
+    const containerPts =
       tool === "pencil" ? s.points : [s.points[0], s.points[s.points.length - 1]];
+    const points = containerPts.map((p) => ({
+      x: p.x - rect.x,
+      y: p.y - rect.y,
+    }));
     onCommit(
       rawToCanonical(
         {
           ...s,
           points,
-          canvasW: canvasSize.current.w || undefined,
-          canvasH: canvasSize.current.h || undefined,
+          canvasW: rect.w || undefined,
+          canvasH: rect.h || undefined,
         },
         tool,
       ),
@@ -514,12 +580,42 @@ export function AnnotationEditor({
           source={{ uri: photoUri }}
           style={StyleSheet.absoluteFill}
           contentFit="contain"
+          onLoad={(e) => {
+            // Intrinsic pixel size — the other half of the fitRect
+            // basis. Until this fires, fitRect is null and no strokes
+            // render / no touches register.
+            const w = e.source?.width;
+            const h = e.source?.height;
+            if (w && h) {
+              setImgSize((prev) =>
+                prev && prev.w === w && prev.h === h ? prev : { w, h },
+              );
+            }
+          }}
         />
-        <AnnotationLayer
-          strokes={committed}
-          width={editBox.w}
-          height={editBox.h}
-        />
+        {/* Committed strokes denormalize against the FITTED IMAGE RECT
+            (web parity), so the layer is positioned at the rect, not
+            stretched over the container. Nothing renders until the rect
+            is known — a frame with no annotations beats a frame with
+            annotations in the wrong place. */}
+        {fitRect ? (
+          <View
+            pointerEvents="none"
+            style={{
+              position: "absolute",
+              left: fitRect.x,
+              top: fitRect.y,
+              width: fitRect.w,
+              height: fitRect.h,
+            }}
+          >
+            <AnnotationLayer
+              strokes={committed}
+              width={fitRect.w}
+              height={fitRect.h}
+            />
+          </View>
+        ) : null}
         {live && live.points.length > 0 ? (
           <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
             <LivePreview stroke={live} tool={strokeTool.current} />

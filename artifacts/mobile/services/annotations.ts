@@ -181,6 +181,40 @@ export function textToCanonical(input: {
   };
 }
 
+/**
+ * The rectangle a contain-fitted image occupies inside a container
+ * (expo-image contentFit="contain", centered — same math as CSS
+ * object-fit: contain). This is the coordinate basis the WEB editor
+ * normalizes against; mobile must normalize/denormalize against this
+ * rect, never the raw container box, or strokes land in a different
+ * basis per client (the container includes letterbox bars the web's
+ * basis excludes).
+ *
+ * Returns null until both boxes are known — callers must render NO
+ * annotations and accept NO touches rather than fall back to the
+ * container (drawing against the wrong basis for even a frame writes
+ * wrong coordinates).
+ */
+export function fittedContainRect(
+  containerW: number,
+  containerH: number,
+  imageW: number,
+  imageH: number,
+): { x: number; y: number; w: number; h: number } | null {
+  if (
+    !(containerW > 0) ||
+    !(containerH > 0) ||
+    !(imageW > 0) ||
+    !(imageH > 0)
+  ) {
+    return null;
+  }
+  const scale = Math.min(containerW / imageW, containerH / imageH);
+  const w = imageW * scale;
+  const h = imageH * scale;
+  return { x: (containerW - w) / 2, y: (containerH - h) / 2, w, h };
+}
+
 /** True when a stored stroke carries legacy px canvas metadata. */
 export function hasCanvasMeta(s: StoredStroke): boolean {
   return (

@@ -25,6 +25,7 @@ import {
   COLORS,
   SIZES,
 } from "@/components/AnnotationEditor";
+import { fittedContainRect } from "@/services/annotations";
 import { useData } from "@/contexts/DataContext";
 import { useToast } from "@/contexts/ToastContext";
 import { ApiError, api, buildMediaReferencesMessage } from "@/services/api";
@@ -130,11 +131,19 @@ export default function PhotoViewerScreen() {
   );
 
   // Read-mode (gallery) box. Items are absoluteFill, so a single captured
-  // size denormalizes every sibling's canonical strokes.
+  // size applies to every sibling. NOT the coordinate basis — that's the
+  // per-photo fitted image rect (readBox + intrinsic dims), matching the
+  // web editor's basis.
   const [readBox, setReadBox] = useState<{ w: number; h: number }>({
     w: 0,
     h: 0,
   });
+  // Per-photo intrinsic pixel size from expo-image's onLoad, needed to
+  // compute each photo's fitted rect. Until a photo's size is known its
+  // annotations render NOWHERE — never against the container basis.
+  const [imgDimsById, setImgDimsById] = useState<
+    Record<string, { w: number; h: number }>
+  >({});
 
   // Photos with unsaved buffer changes since the last server flush. We flush
   // on edit-mode exit (and unmount) rather than per-stroke to avoid spamming
@@ -537,26 +546,58 @@ export default function PhotoViewerScreen() {
                     // REQUIRED by react-native-awesome-gallery — without
                     // this its zoom math treats the image as 0×0 and
                     // pinch breaks. expo-image's onLoad gives us the
-                    // intrinsic pixel size of the source.
+                    // intrinsic pixel size of the source. Also captured
+                    // per-photo to compute the fitted-rect annotation
+                    // basis below.
                     const w = e.source?.width;
                     const h = e.source?.height;
-                    if (w && h) setImageDimensions({ width: w, height: h });
+                    if (w && h) {
+                      setImageDimensions({ width: w, height: h });
+                      setImgDimsById((prev) =>
+                        prev[item.id]?.w === w && prev[item.id]?.h === h
+                          ? prev
+                          : { ...prev, [item.id]: { w, h } },
+                      );
+                    }
                   }}
                 />
                 {/* Read mode renders the photo's UNION render set
                     (item.annotations = others + own) via the shared
                     memoized layer — all six stroke types, denormalized
-                    against the captured read box. The gallery wraps
+                    against this photo's FITTED IMAGE RECT (web-parity
+                    basis), not the container. The gallery wraps
                     renderItem in an Animated.View whose transform is
                     [translateX, translateY, scale]; both the Image AND
                     this layer are inside that wrapper, so pinch/pan
                     scales them together — annotations stay pinned to
-                    their photo pixels at every zoom level. */}
-                <AnnotationLayer
-                  strokes={item.annotations ?? []}
-                  width={readBox.w}
-                  height={readBox.h}
-                />
+                    their photo pixels at every zoom level. Until the
+                    intrinsic size arrives, render nothing rather than
+                    a frame in the wrong basis. */}
+                {(() => {
+                  const dims = imgDimsById[item.id];
+                  const rect = dims
+                    ? fittedContainRect(readBox.w, readBox.h, dims.w, dims.h)
+                    : null;
+                  if (!rect) return null;
+                  return (
+                    <View
+                      pointerEvents="none"
+                      style={{
+                        position: "absolute",
+                        left: rect.x,
+                        top: rect.y,
+                        width: rect.w,
+                        height: rect.h,
+                      }}
+                    >
+                      <AnnotationLayer
+                        strokes={item.annotations ?? []}
+                        width={rect.w}
+                        height={rect.h}
+                      />
+                    </View>
+                  );
+                })()}
               </View>
             );
           }}
