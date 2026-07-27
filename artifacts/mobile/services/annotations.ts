@@ -95,6 +95,12 @@ function isKnownPxStrokeId(id: unknown): boolean {
  */
 let unclassifiedIdReporter: ((id: unknown, width: number) => void) | null =
   null;
+/** Ids already reported this app run (String(id), so undefined dedupes too). */
+const warnedUnclassifiedIds = new Set<string>();
+/** Test hook: reset the per-run warn dedupe. */
+export function resetUnclassifiedStrokeIdWarnings(): void {
+  warnedUnclassifiedIds.clear();
+}
 export function setUnclassifiedStrokeIdReporter(
   fn: ((id: unknown, width: number) => void) | null,
 ): void {
@@ -115,8 +121,12 @@ export function widthToPx(
   }
   // Step 2: bare base-36 id → legacy mobile → 1000-units, always.
   if (isLegacyMobileStrokeId(id)) return (width * boxW) / 1000;
-  // Step 3: everything else is px. Report shapes we don't recognize.
-  if (!isKnownPxStrokeId(id)) {
+  // Step 3: everything else is px. Report shapes we don't recognize —
+  // ONCE per id per app run: widthToPx is called from render-path
+  // useMemos that re-run on every layout change, so an undeduped warn +
+  // Sentry breadcrumb would fire repeatedly for the same stroke.
+  if (!isKnownPxStrokeId(id) && !warnedUnclassifiedIds.has(String(id))) {
+    warnedUnclassifiedIds.add(String(id));
     console.warn(
       `[annotations] stroke id matches no known shape; width read as px (id=${String(id)}, width=${width})`,
     );
@@ -167,8 +177,11 @@ export function toPixels(s: StoredStroke, w: number, h: number): PixelStroke {
   if (typeof s.width === "number") {
     sizePx = widthToPx(s.width, w, s.id);
   } else if (typeof s.size === "number" && hasCanvasMeta(s)) {
-    // Legacy raw px on its own canvas → scale to this box.
-    sizePx = (s.size / (s.canvasW as number)) * w;
+    // Gen-1 legacy px: use RAW px, unscaled — this must agree with what
+    // toCanonicalForSave writes (Math.round(s.size)), or the same stroke
+    // renders at one thickness before save and another after. Raw px is
+    // also the web convention (web never scales widths by canvas).
+    sizePx = s.size;
   } else if (typeof s.size === "number") {
     sizePx = (s.size * w) / 1000;
   } else {
@@ -277,8 +290,10 @@ export function strokeToRenderShape(
   const strokeWidth =
     typeof s.width === "number"
       ? widthToPx(s.width, w, s.id)
-      : typeof s.size === "number" && hasCanvasMeta(s)
-        ? (s.size / (s.canvasW as number)) * w
+      : // Gen-1 legacy px: raw, unscaled — must agree with the saved
+        // width (toCanonicalForSave writes Math.round(s.size)).
+        typeof s.size === "number" && hasCanvasMeta(s)
+        ? s.size
         : typeof s.size === "number"
           ? (s.size * w) / 1000
           : DEFAULT_STROKE_WIDTH;
@@ -472,9 +487,10 @@ export function toCanonicalForSave(s: StoredStroke): CanonicalStroke {
     };
   }
   if (s.type !== undefined && !isKnownStrokeType(s.type)) {
-    // Forward-compat pass-through: keep every field exactly as stored
-    // (minus mobile-local legacy px metadata, which was never on the wire
-    // for these strokes — they can only have arrived FROM the wire).
+    // Forward-compat pass-through: keep EVERY field exactly as stored —
+    // including any local px metadata (size/canvasW/canvasH) if present.
+    // The server strips unknown keys (Zod strip mode), so extra fields
+    // are harmless on the wire; narrowing here could only lose data.
     return { ...s, id };
   }
   if (hasCanvasMeta(s)) {

@@ -19,6 +19,7 @@ import {
   isLegacyMobileStrokeId,
   rawToCanonical,
   recoverLegacyPen,
+  resetUnclassifiedStrokeIdWarnings,
   strokeToRenderShape,
   toCanonicalForSave,
   toPixels,
@@ -443,6 +444,63 @@ test("arrowHeadPath: head length max(12, width*4), two barbs", () => {
   assert.ok(d.startsWith("M100.0 0.0"));
   // len = max(12, 12) = 12 → barb x = 100 - 12*cos(30°) ≈ 89.6
   assert.ok(d.includes("89.6"));
+});
+
+// ---------- Phase 2: shape tools + review fixes ----------
+
+test("rawToCanonical stamps the active tool's type for shape tools", () => {
+  for (const type of ["arrow", "circle", "rectangle"] as const) {
+    const c = rawToCanonical(
+      {
+        color: "#111",
+        size: 6,
+        points: [{ x: 100, y: 100 }, { x: 300, y: 200 }],
+        canvasW: 400,
+        canvasH: 400,
+      },
+      type,
+    ) as StoredStroke;
+    assert.equal(c.type, type);
+    assert.equal(c.width, 6); // integer px (ladder step-3 path)
+    assert.ok((c.id as string).startsWith("fv-"));
+    assert.deepEqual(c.points, [
+      { x: 0.25, y: 0.25 },
+      { x: 0.75, y: 0.5 },
+    ]);
+  }
+});
+
+test("Gen-1 read and write widths agree (raw px, unscaled)", () => {
+  const s = {
+    points: [{ x: 100, y: 100 }, { x: 200, y: 200 }],
+    size: 6,
+    canvasW: 400,
+    canvasH: 400,
+  } as StoredStroke;
+  // Render on a DIFFERENT box than the authoring canvas: still 6px.
+  assert.equal(toPixels(s, 800, 800).size, 6);
+  const shape = strokeToRenderShape(s, 800, 800);
+  assert.ok(shape && "strokeWidth" in shape);
+  assert.equal(shape.strokeWidth, 6);
+  // And the save path writes the same 6.
+  assert.equal((toCanonicalForSave(s) as StoredStroke).width, 6);
+});
+
+test("widthToPx warns ONCE per unclassified id per run", () => {
+  resetUnclassifiedStrokeIdWarnings();
+  const warnings: unknown[] = [];
+  const orig = console.warn;
+  console.warn = (...a: unknown[]) => warnings.push(a);
+  try {
+    widthToPx(3, W, "!weird!");
+    widthToPx(3, W, "!weird!"); // dedup
+    widthToPx(3, W); // different key: String(undefined)
+    widthToPx(3, W); // dedup
+  } finally {
+    console.warn = orig;
+  }
+  assert.equal(warnings.length, 2);
+  resetUnclassifiedStrokeIdWarnings();
 });
 
 test("isKnownStrokeType covers exactly the six wire types", () => {

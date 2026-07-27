@@ -1,3 +1,4 @@
+import { Feather } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
@@ -194,11 +195,87 @@ export const AnnotationLayer = React.memo(function AnnotationLayer({
 });
 
 /**
- * Tool scaffold. Phase 1 ships pencil only — later phases append entries
- * here and the toolbar/commit path already respect the selection.
+ * Live in-progress drag preview. Reads the raw px stroke from the
+ * currentStroke ref (via prop) so the memoized AnnotationLayer above it
+ * never re-resolves committed strokes on move. Geometry mirrors
+ * strokeToRenderShape / renderShape exactly — arrow head derived, circle
+ * = center + radius point — so the committed shape lands where the
+ * preview showed it.
  */
-const TOOLS: { key: KnownStrokeType; label: string }[] = [
-  { key: "pencil", label: "Pencil" },
+function LivePreview({
+  stroke,
+  tool,
+}: {
+  stroke: AnnotationStroke;
+  tool: KnownStrokeType;
+}) {
+  const pts = stroke.points;
+  if (tool === "pencil" || pts.length < 2) {
+    return (
+      <Path
+        d={pointsToPath(pts)}
+        stroke={stroke.color}
+        strokeWidth={stroke.size}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    );
+  }
+  const a = pts[0];
+  const b = pts[pts.length - 1];
+  const common = {
+    stroke: stroke.color,
+    strokeWidth: stroke.size,
+    fill: "none" as const,
+  };
+  if (tool === "circle") {
+    return (
+      <Circle cx={a.x} cy={a.y} r={Math.hypot(b.x - a.x, b.y - a.y)} {...common} />
+    );
+  }
+  if (tool === "rectangle") {
+    return (
+      <Rect
+        x={Math.min(a.x, b.x)}
+        y={Math.min(a.y, b.y)}
+        width={Math.abs(b.x - a.x)}
+        height={Math.abs(b.y - a.y)}
+        {...common}
+      />
+    );
+  }
+  // arrow (and any future 2-point line-like tool)
+  return (
+    <>
+      <Line x1={a.x} y1={a.y} x2={b.x} y2={b.y} strokeLinecap="round" {...common} />
+      {tool === "arrow" ? (
+        <Path
+          d={arrowHeadPath(a.x, a.y, b.x, b.y, stroke.size)}
+          strokeLinecap="round"
+          {...common}
+        />
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * Authoring tools (Phase 2: pencil + arrow + circle + rectangle). All
+ * shapes are single drag gestures through the same grant → move →
+ * release pipeline; only the point-accumulation rule differs (pencil
+ * appends, shapes track [start, current]). Icons, not text labels —
+ * four chips of text don't fit a phone-width row.
+ */
+const TOOLS: {
+  key: KnownStrokeType;
+  label: string;
+  icon: React.ComponentProps<typeof Feather>["name"];
+}[] = [
+  { key: "pencil", label: "Pencil", icon: "edit-2" },
+  { key: "arrow", label: "Arrow", icon: "arrow-up-right" },
+  { key: "circle", label: "Circle", icon: "circle" },
+  { key: "rectangle", label: "Rectangle", icon: "square" },
 ];
 
 /**
@@ -240,6 +317,11 @@ export function AnnotationEditor({
   const [activeTool, setActiveTool] = useState<KnownStrokeType>("pencil");
 
   const currentStroke = useRef<AnnotationStroke | null>(null);
+  // Tool FROZEN at gesture start. extendStroke, the live preview, and the
+  // commit all read this snapshot — never the live activeTool — so
+  // switching tools mid-drag can't mix accumulation semantics (append vs
+  // replace-second-point) or commit a different type than was drawn.
+  const strokeTool = useRef<KnownStrokeType>("pencil");
   const [, force] = useState(0);
 
   // Captured drawing-canvas size. Kept as a ref (read synchronously at draw
@@ -253,6 +335,7 @@ export function AnnotationEditor({
   });
 
   const startStroke = (x: number, y: number) => {
+    strokeTool.current = activeTool;
     currentStroke.current = {
       color,
       size,
@@ -263,8 +346,17 @@ export function AnnotationEditor({
     force((n) => n + 1);
   };
   const extendStroke = (x: number, y: number) => {
-    if (!currentStroke.current) return;
-    currentStroke.current.points.push({ x, y });
+    const s = currentStroke.current;
+    if (!s) return;
+    if (strokeTool.current === "pencil") {
+      s.points.push({ x, y });
+    } else {
+      // Shape tools hold exactly [start, current]: the current finger
+      // position REPLACES the second point. Matches the wire contract —
+      // arrow/rectangle: [start, end]; circle: [center, radiusPoint]
+      // (drag starts at the CENTER; radius = distance to the finger).
+      s.points[1] = { x, y };
+    }
     force((n) => n + 1);
   };
   const endStroke = () => {
@@ -277,15 +369,22 @@ export function AnnotationEditor({
       return;
     }
     // Convert the freshly-drawn raw px stroke to canonical 0..1 at the
-    // edge; the stroke type comes from the active tool.
+    // edge; the type comes from the TOOL SNAPSHOT taken at gesture start.
+    // Shape strokes are hardened to exactly [start, end] here — the
+    // accumulation rule already maintains that, but a malformed live
+    // buffer must never reach the wire with extra points.
+    const tool = strokeTool.current;
+    const points =
+      tool === "pencil" ? s.points : [s.points[0], s.points[s.points.length - 1]];
     onCommit(
       rawToCanonical(
         {
           ...s,
+          points,
           canvasW: canvasSize.current.w || undefined,
           canvasH: canvasSize.current.h || undefined,
         },
-        activeTool,
+        tool,
       ),
     );
   };
@@ -333,14 +432,7 @@ export function AnnotationEditor({
         />
         {live && live.points.length > 0 ? (
           <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
-            <Path
-              d={pointsToPath(live.points)}
-              stroke={live.color}
-              strokeWidth={live.size}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              fill="none"
-            />
+            <LivePreview stroke={live} tool={strokeTool.current} />
           </Svg>
         ) : null}
       </View>
@@ -362,7 +454,11 @@ export function AnnotationEditor({
                   activeTool === t.key && styles.toolChipActive,
                 ]}
               >
-                <Text style={styles.toolChipTxt}>{t.label}</Text>
+                <Feather
+                  name={t.icon}
+                  size={16}
+                  color={activeTool === t.key ? "#fff" : "#111"}
+                />
               </Pressable>
             ))}
           </View>
