@@ -53,13 +53,38 @@ export interface QueuedUpload {
    */
   taskId?: string;
   /**
+   * "uploaded_pending_attach" = the bytes are on S3 and the Media row
+   * exists, but the item carries an attach target (checklistItemId /
+   * taskId) whose join-row POST hasn't succeeded yet. The record stays
+   * in the queue (and persists across relaunches) so the tick loop can
+   * resume the attach, exactly like it resumes uploads. Only when the
+   * attach succeeds — or terminally fails after MAX_ATTACH_ROUNDS —
+   * does the item become "uploaded".
+   *
    * "unrecoverable" = the local file no longer exists on device (iOS
    * evicted it, or a legacy cache-dir item's bytes were purged before
    * the documentDirectory migration). Excluded from all retry/backoff
    * processing — the only valid user action is Remove.
    */
-  status: "pending" | "uploading" | "uploaded" | "failed" | "unrecoverable";
+  status:
+    | "pending"
+    | "uploading"
+    | "uploaded"
+    | "uploaded_pending_attach"
+    | "failed"
+    | "unrecoverable";
   attemptCount: number;
+  /**
+   * Attach-step retry rounds consumed (each round = one in-memory
+   * [0,2s,8s] ladder). Persisted so relaunches resume the count instead
+   * of restarting it — the terminal-failure alert must fire exactly
+   * once, not on every launch.
+   */
+  attachAttemptCount?: number;
+  /** Per-target success flags so an idempotent re-run after a partial
+   *  round (or relaunch) doesn't re-emit success events. */
+  checklistAttached?: boolean;
+  taskAttached?: boolean;
   nextRetryAt?: number;
   lastError?: string;
   /**
@@ -204,8 +229,15 @@ async function migrateAndSweep(): Promise<void> {
     let changed = false;
     const migrated: QueuedUpload[] = [];
     for (const it of queue) {
-      // Terminal states keep their record as-is.
-      if (it.status === "uploaded" || it.status === "unrecoverable") {
+      // States whose bytes are already on S3 (or gone for good) keep
+      // their record as-is. "uploaded_pending_attach" belongs here: its
+      // local file was already deleted after media-create, so the
+      // missing-file check below must never mark it unrecoverable.
+      if (
+        it.status === "uploaded" ||
+        it.status === "uploaded_pending_attach" ||
+        it.status === "unrecoverable"
+      ) {
         migrated.push(it);
         continue;
       }
@@ -336,20 +368,28 @@ function emitTaskAttach(event: TaskAttachEvent): void {
 }
 
 const ATTACH_RETRY_DELAYS_MS = [0, 2_000, 8_000];
+/**
+ * Max attach ROUNDS per item. One round = one in-memory [0,2s,8s]
+ * ladder (3 HTTP attempts), run inside a single processing pass.
+ * Rounds are persisted (attachAttemptCount) so backoff — and the
+ * exactly-once terminal alert — survive app relaunches. 3 rounds =
+ * up to 9 attempts total, spread across tick backoff / relaunches.
+ */
+const MAX_ATTACH_ROUNDS = 3;
 
 /**
- * Task mirror of attachWithRetry: POST /api/tasks/:taskId/photos with
- * the new mediaId, retried on the same ladder. Idempotent server-side
- * per (task, media), so a retry after an ambiguous failure is safe.
- * Terminal failure emits an error event — the media row exists on the
- * project but is NOT attached to the task; subscribers must surface
- * that, never swallow it.
+ * One retry-ladder round of POST /api/tasks/:taskId/photos with the new
+ * mediaId. Idempotent server-side per (task, media), so re-attempting
+ * an attach that already landed (ambiguous failure, relaunch) is
+ * harmless. Emits the SUCCESS event itself; returns false on round
+ * failure — the caller (processAttach) owns round accounting and the
+ * exactly-once terminal error event.
  */
-async function attachTaskWithRetry(
+async function attachTaskRound(
   taskId: string,
   mediaId: number,
   uploadedUrl?: string,
-): Promise<void> {
+): Promise<boolean> {
   let lastErr: unknown;
   for (let i = 0; i < ATTACH_RETRY_DELAYS_MS.length; i++) {
     const delay = ATTACH_RETRY_DELAYS_MS[i] ?? 0;
@@ -376,7 +416,7 @@ async function attachTaskWithRetry(
         `[upload-queue] ✓ attached media ${mediaId} → task ${taskId} (attempt ${i + 1})`,
       );
       emitTaskAttach({ taskId, mediaId, photo });
-      return;
+      return true;
     } catch (e) {
       lastErr = e;
       console.log(
@@ -385,16 +425,20 @@ async function attachTaskWithRetry(
       );
     }
   }
-  const message =
-    lastErr instanceof Error ? lastErr.message : String(lastErr ?? "unknown error");
-  emitTaskAttach({ taskId, mediaId, error: message });
+  void lastErr;
+  return false;
 }
 
-async function attachWithRetry(
+/**
+ * One retry-ladder round of the checklist attach. Same contract as
+ * attachTaskRound: emits success itself, returns false on round
+ * failure, terminal error events are owned by processAttach.
+ */
+async function attachChecklistRound(
   checklistItemId: string,
   mediaId: number,
   uploadedUrl?: string,
-): Promise<void> {
+): Promise<boolean> {
   let lastErr: unknown;
   for (let i = 0; i < ATTACH_RETRY_DELAYS_MS.length; i++) {
     const delay = ATTACH_RETRY_DELAYS_MS[i] ?? 0;
@@ -421,7 +465,7 @@ async function attachWithRetry(
         `[upload-queue] ✓ attached media ${mediaId} → item ${checklistItemId} (attempt ${i + 1})`,
       );
       emitAttach({ checklistItemId, mediaId, photo });
-      return;
+      return true;
     } catch (e) {
       lastErr = e;
       console.log(
@@ -430,9 +474,107 @@ async function attachWithRetry(
       );
     }
   }
-  const message =
-    lastErr instanceof Error ? lastErr.message : String(lastErr ?? "unknown error");
-  emitAttach({ checklistItemId, mediaId, error: message });
+  void lastErr;
+  return false;
+}
+
+/**
+ * Persisted post-upload attach step. Runs one round of each still-
+ * unattached target (checklist item and/or task), then settles the
+ * item:
+ * - all targets attached → status "uploaded" (done; DataContext's
+ *   reconcile removes the record as usual).
+ * - round failed and rounds remain → stays "uploaded_pending_attach"
+ *   with backoff, so the tick loop retries later — INCLUDING after an
+ *   app relaunch, because status + attachAttemptCount are persisted.
+ * - rounds exhausted → emits the terminal error event(s) (exactly once
+ *   ever, since the transition to "uploaded" is persisted before/with
+ *   the emit) and gives up: the photo stays on the project, subscribers
+ *   alert the user to attach it manually.
+ */
+async function processAttach(item: QueuedUpload): Promise<void> {
+  const mediaId = item.uploadedMediaId;
+  if (typeof mediaId !== "number" || !Number.isFinite(mediaId)) {
+    // Defensive: a pending_attach item without a mediaId can't proceed.
+    updateItem(item.id, { status: "uploaded" });
+    return;
+  }
+  const wantChecklist = !!item.checklistItemId && !item.checklistAttached;
+  const wantTask = !!item.taskId && !item.taskAttached;
+  if (!wantChecklist && !wantTask) {
+    updateItem(item.id, { status: "uploaded", nextRetryAt: undefined });
+    return;
+  }
+
+  const checklistOk = wantChecklist
+    ? await attachChecklistRound(
+        item.checklistItemId as string,
+        mediaId,
+        item.uploadedUrl,
+      )
+    : true;
+  const taskOk = wantTask
+    ? await attachTaskRound(item.taskId as string, mediaId, item.uploadedUrl)
+    : true;
+
+  const flags: Partial<QueuedUpload> = {};
+  if (wantChecklist && checklistOk) flags.checklistAttached = true;
+  if (wantTask && taskOk) flags.taskAttached = true;
+
+  if (checklistOk && taskOk) {
+    updateItem(item.id, {
+      ...flags,
+      status: "uploaded",
+      lastError: undefined,
+      lastErrorStatus: undefined,
+      nextRetryAt: undefined,
+    });
+    return;
+  }
+
+  const rounds = (item.attachAttemptCount ?? 0) + 1;
+  if (rounds >= MAX_ATTACH_ROUNDS) {
+    // Terminal: persist the settled state DURABLY first — awaited, not
+    // debounced — so a kill right after the alert can't resurrect the
+    // retry (and re-alert every launch). The residual window is a kill
+    // between the awaited write and the emit, which loses the alert but
+    // never duplicates it (at-most-once by design).
+    updateItem(item.id, {
+      ...flags,
+      status: "uploaded",
+      attachAttemptCount: rounds,
+      lastError: "Attach failed after retries",
+      nextRetryAt: undefined,
+    });
+    await persistNow();
+    const message = "Couldn't reach the server after repeated attempts";
+    if (wantChecklist && !checklistOk) {
+      emitAttach({
+        checklistItemId: item.checklistItemId as string,
+        mediaId,
+        error: message,
+      });
+    }
+    if (wantTask && !taskOk) {
+      emitTaskAttach({ taskId: item.taskId as string, mediaId, error: message });
+    }
+    console.log(
+      `[upload-queue] ✗ attach terminally failed for ${item.id} after ${rounds} rounds`,
+    );
+    return;
+  }
+
+  const delay = backoffDelay(rounds);
+  updateItem(item.id, {
+    ...flags,
+    status: "uploaded_pending_attach",
+    attachAttemptCount: rounds,
+    lastError: "Attach pending retry",
+    nextRetryAt: Date.now() + delay,
+  });
+  console.log(
+    `[upload-queue] attach round ${rounds} failed for ${item.id} — retry in ${delay}ms`,
+  );
 }
 
 function schedulePersist(): void {
@@ -455,6 +597,26 @@ function updateItem(
   queue[idx] = { ...queue[idx], ...patch };
   schedulePersist();
   return queue[idx];
+}
+
+/**
+ * Flush the (debounced) queue persist to AsyncStorage NOW and await the
+ * write. Used for transitions that must be durable before observable
+ * side effects — e.g. the terminal attach failure must hit disk before
+ * its alert is emitted, otherwise a kill in the debounce window would
+ * resurrect the retry and re-alert on the next launch.
+ */
+async function persistNow(): Promise<void> {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  notifySubscribers();
+  try {
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(queue));
+  } catch (e) {
+    console.log("[upload-queue] persistNow failed:", e);
+  }
 }
 
 async function processItem(item: QueuedUpload): Promise<void> {
@@ -548,8 +710,15 @@ async function processItem(item: QueuedUpload): Promise<void> {
     }
     const mediaId =
       typeof created.id === "number" ? created.id : Number(created.id);
-    updateItem(item.id, {
-      status: "uploaded",
+    const hasAttachTarget =
+      Number.isFinite(mediaId) && !!(item.checklistItemId || item.taskId);
+    // Items with an attach target park in "uploaded_pending_attach" —
+    // PERSISTED — until the join-row POST succeeds, so an app kill
+    // between media-create and attach can't strand the photo silently
+    // off its checklist item / task. The tick loop resumes them exactly
+    // like it resumes uploads.
+    const updated = updateItem(item.id, {
+      status: hasAttachTarget ? "uploaded_pending_attach" : "uploaded",
       uploadedMediaId: Number.isFinite(mediaId) ? mediaId : undefined,
       uploadedUrl: created.url,
       lastError: undefined,
@@ -561,18 +730,11 @@ async function processItem(item: QueuedUpload): Promise<void> {
     // no longer needed. Best-effort; the startup sweep catches leftovers.
     void deleteLocalFile(item.localUri);
 
-    // Post-upload tagger: if this upload was scoped to a checklist item,
-    // attach the new media to that item. Async-with-retry — the upload
-    // itself stays "uploaded" regardless (the photo is already on the
-    // project). The result of the attach (success or final failure) is
-    // emitted via subscribeAttach so the checklist UI can react without
-    // polling/timing hacks.
-    if (item.checklistItemId && Number.isFinite(mediaId)) {
-      void attachWithRetry(item.checklistItemId, mediaId, created.url);
-    }
-    // Same for uploads scoped to a task (capture-to-task).
-    if (item.taskId && Number.isFinite(mediaId)) {
-      void attachTaskWithRetry(item.taskId, mediaId, created.url);
+    // Post-upload tagger: run the first attach round immediately (still
+    // under this item's inFlight guard). Success/terminal results are
+    // emitted via subscribeAttach / subscribeTaskAttach.
+    if (hasAttachTarget && updated) {
+      await processAttach(updated);
     }
     // TODO: notify DataContext to refresh project media after successful upload
   } catch (e) {
@@ -623,13 +785,22 @@ function tick(): void {
       (it) =>
         !inFlight.has(it.id) &&
         (it.status === "pending" ||
-          (it.status === "failed" && (it.nextRetryAt ?? 0) <= now)),
+          (it.status === "failed" && (it.nextRetryAt ?? 0) <= now) ||
+          (it.status === "uploaded_pending_attach" &&
+            (it.nextRetryAt ?? 0) <= now)),
     )
     .sort((a, b) => a.createdAt - b.createdAt);
 
   for (const item of eligible) {
     if (inFlight.size >= MAX_CONCURRENT) break;
     inFlight.add(item.id);
+    if (item.status === "uploaded_pending_attach") {
+      // Bytes + Media row already exist — resume only the attach step
+      // (this is the relaunch-recovery path; status must NOT be reset
+      // to "uploading", the local file is already deleted).
+      void processAttach(item).finally(() => inFlight.delete(item.id));
+      continue;
+    }
     updateItem(item.id, { status: "uploading" });
     void processItem({ ...item, status: "uploading" });
   }
@@ -643,7 +814,7 @@ function handleNetChange(isConnected: boolean): void {
     const now = Date.now();
     let changed = false;
     queue = queue.map((it) => {
-      if (it.status === "failed") {
+      if (it.status === "failed" || it.status === "uploaded_pending_attach") {
         changed = true;
         return { ...it, nextRetryAt: now };
       }
