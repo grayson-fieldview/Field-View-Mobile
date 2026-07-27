@@ -1,7 +1,14 @@
 import { Feather } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import {
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 import Svg, {
   Circle,
   Line,
@@ -11,11 +18,15 @@ import Svg, {
 } from "react-native-svg";
 
 import {
+  DEFAULT_FONT_SIZE,
   LEGACY_PEN_SIZES_PX,
+  MAX_TEXT_CONTENT_LENGTH,
+  TEXT_FONT_SIZES,
   arrowHeadPath,
   hasMinDrag,
   rawToCanonical,
   strokeToRenderShape,
+  textToCanonical,
 } from "@/services/annotations";
 import type { RenderShape } from "@/services/annotations";
 import type {
@@ -36,6 +47,14 @@ export const COLORS = [
 // The pen set doubles as the legacy-width snap target in
 // services/annotations.ts — keep the two in lockstep.
 export const SIZES: number[] = [...LEGACY_PEN_SIZES_PX];
+
+/**
+ * Flip to true once a device build confirms Android renders
+ * alignmentBaseline="text-before-edge" at parity with web's canvas
+ * textBaseline="top" (see the text case in renderShape). Until then
+ * Android keeps the 0.8em approximation.
+ */
+const ANDROID_TEXT_BEFORE_EDGE_VERIFIED = false;
 
 export function pointsToPath(pts: { x: number; y: number }[]): string {
   if (pts.length === 0) return "";
@@ -134,12 +153,23 @@ function renderShape(shape: RenderShape, key: string | number) {
           fill="none"
         />
       );
-    case "text":
+    case "text": {
+      // Top-anchoring parity with web's canvas textBaseline="top".
+      // iOS: alignmentBaseline="text-before-edge" — RNSVGTSpan.mm in
+      // react-native-svg 15.12.1 implements it as baselineShift =
+      // ascenderHeight, the direct text-top mapping. Android has the
+      // same code in TSpanView.java, but its baseline handling is
+      // historically patchy, so it KEEPS the 0.8em approximation until
+      // a device build visually verifies parity — then flip
+      // ANDROID_TEXT_BEFORE_EDGE_VERIFIED to true.
+      const useBeforeEdge =
+        Platform.OS === "ios" || ANDROID_TEXT_BEFORE_EDGE_VERIFIED;
       return (
         <SvgText
           key={key}
           x={shape.x}
-          y={shape.y + shape.fontSize * 0.8}
+          y={useBeforeEdge ? shape.y : shape.y + shape.fontSize * 0.8}
+          alignmentBaseline={useBeforeEdge ? "text-before-edge" : undefined}
           fill={shape.color}
           fontSize={shape.fontSize}
           fontWeight="600"
@@ -147,6 +177,7 @@ function renderShape(shape: RenderShape, key: string | number) {
           {shape.content}
         </SvgText>
       );
+    }
   }
 }
 
@@ -276,6 +307,7 @@ const TOOLS: {
   { key: "arrow", label: "Arrow", icon: "arrow-up-right" },
   { key: "circle", label: "Circle", icon: "circle" },
   { key: "rectangle", label: "Rectangle", icon: "square" },
+  { key: "text", label: "Text", icon: "type" },
 ];
 
 /**
@@ -324,6 +356,52 @@ export function AnnotationEditor({
   const strokeTool = useRef<KnownStrokeType>("pencil");
   const [, force] = useState(0);
 
+  // Text tool: a tap opens an inline input anchored at the tap point
+  // (raw px, TOP-LEFT of the text — web draws with textBaseline="top").
+  // Commit on submit with non-empty trimmed content; cancel (dismiss or
+  // empty) creates NOTHING — an empty content would 400 the whole row.
+  const [pendingText, setPendingText] = useState<{ x: number; y: number } | null>(
+    null,
+  );
+  const [textDraft, setTextDraft] = useState("");
+  const [fontSize, setFontSize] = useState<number>(DEFAULT_FONT_SIZE);
+  // Anchor token, updated SYNCHRONOUSLY with every open/commit/cancel.
+  // Blur and submit both pass the anchor they were rendered for; a
+  // handler whose anchor no longer matches is stale (the session was
+  // already finalized, or a re-tap re-anchored the input) and must
+  // no-op. This makes commit/cancel deterministic regardless of
+  // platform blur-vs-submit event ordering:
+  //   submit → blur: submit commits + clears the ref; blur no-ops.
+  //   re-tap while open: startStroke installs a NEW anchor first; the
+  //   old input's blur no longer matches and can't cancel the new one.
+  //   plain dismiss: anchor still matches → cancel, nothing saved.
+  const pendingAnchorRef = useRef<{ x: number; y: number } | null>(null);
+
+  const commitPendingText = (anchor: { x: number; y: number }) => {
+    if (pendingAnchorRef.current !== anchor) return; // stale handler
+    pendingAnchorRef.current = null;
+    setPendingText(null);
+    setTextDraft("");
+    const stroke = textToCanonical({
+      xPx: anchor.x,
+      yPx: anchor.y,
+      content: textDraft,
+      color,
+      fontSize,
+      canvasW: canvasSize.current.w,
+      canvasH: canvasSize.current.h,
+    });
+    if (stroke) onCommit(stroke); // null = empty/whitespace → cancelled
+  };
+  const cancelPendingText = (anchor?: { x: number; y: number } | null) => {
+    // Called with an anchor from the input's blur (guarded), or with
+    // none for unconditional dismissal (tool-switch draw).
+    if (anchor !== undefined && pendingAnchorRef.current !== anchor) return;
+    pendingAnchorRef.current = null;
+    setPendingText(null);
+    setTextDraft("");
+  };
+
   // Captured drawing-canvas size. Kept as a ref (read synchronously at draw
   // time so freshly-drawn px points record the box they were laid out
   // against) AND mirrored to state so the render can denormalize canonical
@@ -335,6 +413,18 @@ export function AnnotationEditor({
   });
 
   const startStroke = (x: number, y: number) => {
+    if (activeTool === "text") {
+      // Tap-to-place: no drag stroke. A second tap while the input is
+      // open cancels the first (dismiss = save nothing) and re-anchors.
+      const anchor = { x, y };
+      pendingAnchorRef.current = anchor; // synchronous: outranks any in-flight blur
+      setTextDraft("");
+      setPendingText(anchor);
+      return;
+    }
+    // Drawing with any other tool while a text input is open dismisses
+    // it (dismiss = save nothing, per contract).
+    if (pendingText) cancelPendingText();
     strokeTool.current = activeTool;
     currentStroke.current = {
       color,
@@ -435,6 +525,34 @@ export function AnnotationEditor({
             <LivePreview stroke={live} tool={strokeTool.current} />
           </Svg>
         ) : null}
+        {pendingText ? (
+          // WYSIWYG placement: the input's own glyphs sit at the tap
+          // point (top-left), styled exactly like the committed SVG text
+          // (fontSize px, weight 600, active color).
+          <TextInput
+            value={textDraft}
+            onChangeText={setTextDraft}
+            autoFocus
+            multiline={false}
+            maxLength={MAX_TEXT_CONTENT_LENGTH}
+            returnKeyType="done"
+            onSubmitEditing={() => commitPendingText(pendingText)}
+            onBlur={() => cancelPendingText(pendingText)}
+            accessibilityLabel="Annotation text"
+            placeholder="Text"
+            placeholderTextColor="rgba(255,255,255,0.55)"
+            style={[
+              styles.textDraftInput,
+              {
+                left: pendingText.x,
+                top: pendingText.y,
+                fontSize,
+                color,
+                maxWidth: Math.max(80, editBox.w - pendingText.x - 8),
+              },
+            ]}
+          />
+        ) : null}
       </View>
 
       {/* Edit tool rows — same layout/styles as when they lived inside the
@@ -483,28 +601,54 @@ export function AnnotationEditor({
         </View>
         <View style={styles.toolRow}>
           <Text style={styles.sizeLabel}>Size</Text>
-          {SIZES.map((s) => (
-            <Pressable
-              key={s}
-              onPress={() => onSizeChange(s)}
-              accessibilityRole="button"
-              accessibilityLabel={`Brush size ${s}`}
-              accessibilityState={{ selected: size === s }}
-              style={[
-                styles.sizeDot,
-                { borderColor: size === s ? "#fff" : "transparent" },
-              ]}
-            >
-              <View
-                style={{
-                  width: s * 1.5,
-                  height: s * 1.5,
-                  borderRadius: s,
-                  backgroundColor: color,
-                }}
-              />
-            </Pressable>
-          ))}
+          {activeTool === "text"
+            ? // Text gets its OWN size ladder — the pen set {3,6,12} is
+              // stroke widths in px and means nothing for type.
+              TEXT_FONT_SIZES.map((s) => (
+                <Pressable
+                  key={s}
+                  onPress={() => setFontSize(s)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Text size ${s}`}
+                  accessibilityState={{ selected: fontSize === s }}
+                  style={[
+                    styles.sizeDot,
+                    { borderColor: fontSize === s ? "#fff" : "transparent" },
+                  ]}
+                >
+                  <Text
+                    style={{
+                      color,
+                      fontFamily: "Inter_600SemiBold",
+                      fontSize: 10 + TEXT_FONT_SIZES.indexOf(s) * 2,
+                    }}
+                  >
+                    A
+                  </Text>
+                </Pressable>
+              ))
+            : SIZES.map((s) => (
+                <Pressable
+                  key={s}
+                  onPress={() => onSizeChange(s)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Brush size ${s}`}
+                  accessibilityState={{ selected: size === s }}
+                  style={[
+                    styles.sizeDot,
+                    { borderColor: size === s ? "#fff" : "transparent" },
+                  ]}
+                >
+                  <View
+                    style={{
+                      width: s * 1.5,
+                      height: s * 1.5,
+                      borderRadius: s,
+                      backgroundColor: color,
+                    }}
+                  />
+                </Pressable>
+              ))}
           {ownStrokes.length > 0 ? (
             <Pressable onPress={onClear} style={styles.clearBtn}>
               <Text style={styles.clearTxt}>Clear all</Text>
@@ -552,6 +696,16 @@ const styles = StyleSheet.create({
     color: "#111",
     fontFamily: "Inter_600SemiBold",
     fontSize: 11,
+  },
+  textDraftInput: {
+    position: "absolute",
+    // Match the committed SVG text: weight 600, top-anchored glyphs. No
+    // padding/border offsets — the glyph box's top-left IS the tap point.
+    padding: 0,
+    margin: 0,
+    borderWidth: 0,
+    fontWeight: "600",
+    backgroundColor: "rgba(0,0,0,0.25)",
   },
   swatch: {
     width: 22,

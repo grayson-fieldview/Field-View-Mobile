@@ -137,6 +137,49 @@ export function widthToPx(
 
 /** fontSize is display px on both clients (web renders `${fontSize}px`). */
 export const DEFAULT_FONT_SIZE = 18;
+/**
+ * Text tool size ladder. Deliberately NOT the pen set — {3,6,12} are
+ * stroke widths in px and are unreadable as type. 18 is the web default.
+ * Server clamps fontSize to 8..96; keep the ladder inside that range.
+ */
+export const TEXT_FONT_SIZES = [14, 18, 24, 32] as const;
+/** Server contract: content is z.string().min(1).max(500). */
+export const MAX_TEXT_CONTENT_LENGTH = 500;
+
+/**
+ * Build a canonical text stroke from a tap point (raw px, TOP-LEFT of the
+ * text — web draws with canvas textBaseline="top") plus typed content.
+ *
+ * Returns null when the trimmed content is empty: an empty `content`
+ * fails the server's z.string().min(1) and 400s the ENTIRE annotation
+ * row, destroying every other stroke on the photo. Callers must treat
+ * null as "user cancelled — commit nothing".
+ */
+export function textToCanonical(input: {
+  xPx: number;
+  yPx: number;
+  content: string;
+  color: string;
+  fontSize: number;
+  canvasW: number;
+  canvasH: number;
+}): CanonicalStroke | null {
+  const content = input.content.trim().slice(0, MAX_TEXT_CONTENT_LENGTH);
+  if (content.length === 0) return null;
+  if (!(input.canvasW > 0) || !(input.canvasH > 0)) return null;
+  return {
+    id: newStrokeId(),
+    type: "text",
+    x: clamp01(input.xPx / input.canvasW),
+    y: clamp01(input.yPx / input.canvasH),
+    content,
+    color: input.color,
+    fontSize: Math.min(
+      96,
+      Math.max(8, Number.isFinite(input.fontSize) ? input.fontSize : DEFAULT_FONT_SIZE),
+    ),
+  };
+}
 
 /** True when a stored stroke carries legacy px canvas metadata. */
 export function hasCanvasMeta(s: StoredStroke): boolean {

@@ -21,6 +21,7 @@ import {
   recoverLegacyPen,
   resetUnclassifiedStrokeIdWarnings,
   strokeToRenderShape,
+  textToCanonical,
   toCanonicalForSave,
   toPixels,
   widthToPx,
@@ -501,6 +502,72 @@ test("widthToPx warns ONCE per unclassified id per run", () => {
   }
   assert.equal(warnings.length, 2);
   resetUnclassifiedStrokeIdWarnings();
+});
+
+// ---------- Phase 3: text authoring ----------
+
+test("textToCanonical builds a wire-shaped text stroke from a tap", () => {
+  const c = textToCanonical({
+    xPx: 100,
+    yPx: 300,
+    content: "  crack here  ",
+    color: "#ef4444",
+    fontSize: 18,
+    canvasW: 400,
+    canvasH: 600,
+  });
+  assert.ok(c && c.type === "text");
+  assert.equal(c.x, 0.25);
+  assert.equal(c.y, 0.5);
+  assert.equal(c.content, "crack here"); // trimmed
+  assert.equal(c.fontSize, 18);
+  assert.equal(c.color, "#ef4444");
+  assert.ok((c.id as string).startsWith("fv-"));
+  // Wire contract: NO points array, NO width on text strokes.
+  assert.ok(!("points" in c));
+  assert.ok(!("width" in c));
+});
+
+test("textToCanonical: empty/whitespace content → null (never a row-killer)", () => {
+  const base = {
+    xPx: 10,
+    yPx: 10,
+    color: "#111",
+    fontSize: 18,
+    canvasW: 400,
+    canvasH: 400,
+  };
+  assert.equal(textToCanonical({ ...base, content: "" }), null);
+  assert.equal(textToCanonical({ ...base, content: "   \n\t " }), null);
+  assert.equal(textToCanonical({ ...base, content: "x", canvasW: 0 }), null);
+});
+
+test("textToCanonical clamps fontSize 8..96, content to 500, x/y to 0..1", () => {
+  const long = "a".repeat(600);
+  const c = textToCanonical({
+    xPx: -50,
+    yPx: 9999,
+    content: long,
+    color: "#111",
+    fontSize: 200,
+    canvasW: 400,
+    canvasH: 400,
+  });
+  assert.ok(c && c.type === "text");
+  assert.equal((c.content as string).length, 500);
+  assert.equal(c.fontSize, 96);
+  assert.equal(c.x, 0);
+  assert.equal(c.y, 1);
+  const small = textToCanonical({
+    xPx: 0,
+    yPx: 0,
+    content: "b",
+    color: "#111",
+    fontSize: 2,
+    canvasW: 400,
+    canvasH: 400,
+  });
+  assert.ok(small && small.type === "text" && small.fontSize === 8);
 });
 
 test("isKnownStrokeType covers exactly the six wire types", () => {
