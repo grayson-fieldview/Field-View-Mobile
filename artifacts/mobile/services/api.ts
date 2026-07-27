@@ -832,6 +832,27 @@ export interface BackendReportSection {
   updatedAt?: string;
 }
 
+/**
+ * A task_photos join row from GET /api/tasks/:id/photos. The list
+ * endpoint nests the joined media row (with a presigned `url`) under
+ * `media`; POST responses may omit it (same tolerance as checklist /
+ * report section photo rows).
+ */
+export interface BackendTaskPhoto {
+  /** Junction row id — pass to detachTaskPhoto. */
+  id: number | string;
+  taskId?: number | string;
+  mediaId: number;
+  sortOrder?: number;
+  createdAt?: string;
+  media?: {
+    id?: number;
+    url?: string;
+    originalName?: string | null;
+    mimeType?: string;
+  };
+}
+
 export interface BackendReportSectionPhoto {
   /** Junction row id — pass to detachSectionPhoto / updateSectionPhoto. */
   id: number | string;
@@ -1075,6 +1096,34 @@ export const api = {
     apiFetch<BackendTask>(`/api/tasks/${taskId}`, {
       method: "PATCH",
       json: patch,
+    }),
+
+  /**
+   * List a task's attached photos (task_photos join rows with the
+   * joined media nested under `media`, including a presigned `url` —
+   * same shape family as checklist item photos).
+   */
+  getTaskPhotos: (taskId: string | number) =>
+    apiFetch<BackendTaskPhoto[]>(`/api/tasks/${taskId}/photos`),
+
+  /**
+   * Attach existing media rows to a task (bulk). Idempotent per
+   * (task, media) pair — re-attaching an already-attached media is not
+   * an error. Server rejects cross-project media with 400 and
+   * cross-account media with 403; the picker only offers the task's own
+   * project photos, so those are defensive paths, not expected flows.
+   */
+  attachPhotosToTask: (taskId: string | number, mediaIds: number[]) =>
+    apiFetch<BackendTaskPhoto | BackendTaskPhoto[]>(
+      `/api/tasks/${taskId}/photos`,
+      { method: "POST", json: { mediaIds } },
+    ),
+
+  /** Detach a task photo by JOIN ROW id (not mediaId). Media row survives. */
+  detachTaskPhoto: (taskPhotoId: string | number) =>
+    apiFetch<void>(`/api/task-photos/${taskPhotoId}`, {
+      method: "DELETE",
+      allowEmptyBody: true,
     }),
 
   /** Delete a task. Server returns 204 No Content on success. */

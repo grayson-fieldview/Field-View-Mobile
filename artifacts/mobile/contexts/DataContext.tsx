@@ -97,6 +97,15 @@ interface DataState {
   ) => Promise<boolean>;
 
   /**
+   * Local-only reconcile of a task's attachedPhotoCount after the photo
+   * sheet attaches/detaches. No server round-trip — the caller derives
+   * the count from the authoritative GET /api/tasks/:id/photos rows (or
+   * an optimistic delta) and this just updates the cached row so list
+   * hints ("1 of 2 photos") react immediately.
+   */
+  setTaskAttachedPhotoCount: (taskId: string, count: number) => void;
+
+  /**
    * Create a server-backed task. The optimistic row is prepended with
    * a synthetic `tmp-...` id and replaced with the server row on
    * success. On failure the optimistic row is removed and the error
@@ -1006,7 +1015,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
           const attached = typeof b.attached === "number" ? b.attached : 0;
           Alert.alert(
             "Photos required",
-            `This task needs ${required} photo${required === 1 ? "" : "s"} attached to it before it can be completed (${attached} of ${required} attached so far).\n\nAttaching photos to a task isn't available in the app yet — please attach them from the web app, then mark the task done here.`,
+            `This task needs ${required} photo${required === 1 ? "" : "s"} attached to it before it can be completed (${attached} of ${required} attached so far).\n\nTap the camera chip on the task row to attach photos, then mark it done.`,
           );
           return; // handled — don't propagate to the row's silent .catch
         }
@@ -1017,6 +1026,21 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     },
     [updateTask],
   );
+
+  const setTaskAttachedPhotoCount: DataState["setTaskAttachedPhotoCount"] =
+    useCallback(
+      (taskId, count) => {
+        const safe = Math.max(0, Math.floor(count));
+        setTasksList(
+          tasksRef.current.map((t) =>
+            t.id === taskId && t.attachedPhotoCount !== safe
+              ? { ...t, attachedPhotoCount: safe }
+              : t,
+          ),
+        );
+      },
+      [setTasksList],
+    );
 
   const deleteTask: DataState["deleteTask"] = useCallback(
     async (id) => {
@@ -1082,6 +1106,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       saveAnnotations,
       createTask,
       updateTask,
+      setTaskAttachedPhotoCount,
       cycleTaskStatus,
       deleteTask,
       clearAll,
@@ -1106,6 +1131,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       saveAnnotations,
       createTask,
       updateTask,
+      setTaskAttachedPhotoCount,
       cycleTaskStatus,
       deleteTask,
       clearAll,

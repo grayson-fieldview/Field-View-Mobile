@@ -21,18 +21,29 @@ interface Props {
   visible: boolean;
   onClose: () => void;
   projectId: string;
-  itemId: string;
-  /** mediaIds already attached to this item — filtered out of the grid. */
+  /**
+   * Checklist mode: the item to attach to via api.attachPhotoToItem.
+   * Omit when using `onAttachMediaIds` (task mode).
+   */
+  itemId?: string;
+  /** mediaIds already attached to this item/task — filtered out of the grid. */
   alreadyAttachedMediaIds: Set<number>;
   /**
-   * Called once for each successful attach, then after all complete.
-   * Lets the parent insert the new junction row into local state without
-   * a round-trip and surface a toast on settle.
+   * Checklist mode: called once with each successful attach's junction
+   * row after all complete. Lets the parent insert rows into local
+   * state without a round-trip and surface a toast on settle.
    */
-  onAttached: (
+  onAttached?: (
     photos: BackendChecklistItemPhoto[],
     failedCount: number,
   ) => void;
+  /**
+   * Generic mode (tasks): the picker only collects mediaIds; the caller
+   * performs the attach (e.g. one bulk POST) and owns success/error
+   * handling. Errors must be caught inside — the picker closes either
+   * way. Mutually exclusive with itemId/onAttached.
+   */
+  onAttachMediaIds?: (mediaIds: number[]) => Promise<void>;
 }
 
 const TILE_GAP = 8;
@@ -51,6 +62,7 @@ export function PhotoPickerModal({
   itemId,
   alreadyAttachedMediaIds,
   onAttached,
+  onAttachMediaIds,
 }: Props) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
@@ -121,6 +133,23 @@ export function PhotoPickerModal({
       const fallbackUrl = nonEmpty(c.photo.remoteUrl) ?? nonEmpty(c.photo.uri);
       if (fallbackUrl) urlByMediaId.set(c.mediaId, fallbackUrl);
     }
+    if (onAttachMediaIds) {
+      // Generic (task) mode: hand the ids to the caller, who does the
+      // attach and owns error handling. Close either way.
+      try {
+        await onAttachMediaIds(mediaIds);
+      } finally {
+        setAttaching(false);
+        onClose();
+      }
+      return;
+    }
+    if (!itemId) {
+      // Misconfigured caller: no attach target. Fail soft.
+      setAttaching(false);
+      onClose();
+      return;
+    }
     const results = await Promise.allSettled(
       mediaIds.map(async (mediaId) => {
         const photo = await api.attachPhotoToItem(itemId, mediaId);
@@ -137,7 +166,7 @@ export function PhotoPickerModal({
       if (r.status === "fulfilled") succeeded.push(r.value);
       else failedCount += 1;
     }
-    onAttached(succeeded, failedCount);
+    onAttached?.(succeeded, failedCount);
     setAttaching(false);
     onClose();
   };

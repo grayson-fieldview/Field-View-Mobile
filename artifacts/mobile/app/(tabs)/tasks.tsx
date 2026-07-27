@@ -20,6 +20,7 @@ import {
 } from "@/components/AssigneePickerSheet";
 import { EmptyState } from "@/components/EmptyState";
 import { LoadingScreen } from "@/components/LoadingScreen";
+import { TaskPhotosSheet } from "@/components/TaskPhotosSheet";
 import { TaskStatusPill } from "@/components/TaskStatusPill";
 import { useData } from "@/contexts/DataContext";
 import { useColors } from "@/hooks/useColors";
@@ -55,6 +56,7 @@ export default function TasksScreen() {
 
   // Task currently having its assignee changed (drives the picker sheet).
   const [reassignTask, setReassignTask] = useState<Task | null>(null);
+  const [photoTask, setPhotoTask] = useState<Task | null>(null);
 
   const projectNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -293,36 +295,49 @@ export default function TasksScreen() {
                     </View>
                   ) : null}
 
-                  {(item.requiredPhotoCount ?? 0) > 0 ? (
-                    <View style={styles.metaItem}>
-                      <Feather
-                        name="camera"
-                        size={12}
-                        color={
-                          !item.done &&
-                          (item.attachedPhotoCount ?? 0) <
-                            (item.requiredPhotoCount ?? 0)
-                            ? "#D97706"
-                            : colors.mutedForeground
-                        }
-                      />
-                      <Text
-                        style={[
-                          styles.metaText,
-                          {
-                            color:
-                              !item.done &&
-                              (item.attachedPhotoCount ?? 0) <
-                                (item.requiredPhotoCount ?? 0)
-                                ? "#D97706"
-                                : colors.mutedForeground,
-                          },
-                        ]}
-                      >
-                        {`${item.attachedPhotoCount ?? 0} of ${item.requiredPhotoCount} photos`}
-                      </Text>
-                    </View>
-                  ) : null}
+                  {/* Camera chip — always tappable, opens the task photos
+                      sheet. Amber while a photo requirement is unmet. */}
+                  <Pressable
+                    onPress={() => setPhotoTask(item)}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Task photos"
+                    style={({ pressed }) => [
+                      styles.metaItem,
+                      { opacity: pressed ? 0.6 : 1 },
+                    ]}
+                  >
+                    <Feather
+                      name="camera"
+                      size={12}
+                      color={
+                        !item.done &&
+                        (item.attachedPhotoCount ?? 0) <
+                          (item.requiredPhotoCount ?? 0)
+                          ? "#D97706"
+                          : colors.mutedForeground
+                      }
+                    />
+                    <Text
+                      style={[
+                        styles.metaText,
+                        {
+                          color:
+                            !item.done &&
+                            (item.attachedPhotoCount ?? 0) <
+                              (item.requiredPhotoCount ?? 0)
+                              ? "#D97706"
+                              : colors.mutedForeground,
+                        },
+                      ]}
+                    >
+                      {(item.requiredPhotoCount ?? 0) > 0
+                        ? `${item.attachedPhotoCount ?? 0} of ${item.requiredPhotoCount} photos`
+                        : (item.attachedPhotoCount ?? 0) > 0
+                          ? `${item.attachedPhotoCount} photo${item.attachedPhotoCount === 1 ? "" : "s"}`
+                          : "Photos"}
+                    </Text>
+                  </Pressable>
                 </View>
 
                 {/* Assignee chip — tap to reassign */}
@@ -403,6 +418,9 @@ export default function TasksScreen() {
           onSelect={onReassign}
         />
       ) : null}
+
+      {/* Task photos sheet — attach/detach existing project photos */}
+      <TaskPhotosSheet task={photoTask} onClose={() => setPhotoTask(null)} />
     </View>
   );
 }
