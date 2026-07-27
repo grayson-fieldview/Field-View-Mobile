@@ -1042,6 +1042,12 @@ export const api = {
       priority?: BackendTaskPriority | null;
       assignedToId?: string | null;
       dueDate?: string | null;
+      /**
+       * Photo requirement (admin-only server-side; silently stripped
+       * for non-admins). Server validates integer 0-100 — callers must
+       * clamp before sending. Omit / null = no requirement.
+       */
+      requiredPhotoCount?: number | null;
     },
   ) =>
     apiFetch<BackendTask>(`/api/projects/${projectId}/tasks`, {

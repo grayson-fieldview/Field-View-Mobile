@@ -1611,7 +1611,7 @@ export default function ProjectDetailScreen() {
         visible={showTaskModal}
         projectId={project.id}
         onClose={() => setShowTaskModal(false)}
-        onSubmit={async ({ title, notes, assignee, dueDate }) => {
+        onSubmit={async ({ title, notes, assignee, dueDate, requiredPhotoCount }) => {
           try {
             await createTask(project.id, {
               title,
@@ -1619,6 +1619,7 @@ export default function ProjectDetailScreen() {
               assignedToId: assignee?.userId ?? null,
               assignedToName: assignee?.displayName,
               dueDate: dueDate ?? undefined,
+              requiredPhotoCount,
             });
             setShowTaskModal(false);
           } catch (e) {
@@ -2652,11 +2653,21 @@ function TaskModal({
     notes?: string;
     assignee: AssigneeSelection;
     dueDate: string | null;
+    /** Integer 1-100; undefined = no photo requirement. Admin-only. */
+    requiredPhotoCount?: number;
   }) => Promise<void>;
 }) {
   const colors = useColors();
+  const { user: currentUser } = useAuth();
+  // Admin-only field: the server strips requiredPhotoCount for
+  // non-admins, so showing it to anyone else would silently no-op.
+  // null role = legacy user row = treated as non-admin.
+  const isAdmin = currentUser?.role === "admin";
   const [title, setTitle] = useState("");
   const [notes, setNotes] = useState("");
+  // Kept as raw text so partial input ("1" on the way to "12") never
+  // fights the keyboard; parsed + clamped to integer 0-100 on save.
+  const [photosRequired, setPhotosRequired] = useState("");
   // null = explicitly Unassigned. The picker emits this shape directly so
   // the modal doesn't have to maintain parallel id/name state.
   const [assignee, setAssignee] = useState<AssigneeSelection>(null);
@@ -2674,6 +2685,7 @@ function TaskModal({
       setNotes("");
       setAssignee(null);
       setDueDate(null);
+      setPhotosRequired("");
     }
   }, [visible]);
 
@@ -2681,11 +2693,19 @@ function TaskModal({
     if (!title.trim()) return;
     setSaving(true);
     try {
+      // Clamp to the server's range (integer 0-100) so a bad value can
+      // never 400 the create; empty / 0 / garbage = no requirement.
+      const parsedPhotos = Math.min(
+        100,
+        Math.max(0, Math.floor(Number(photosRequired) || 0)),
+      );
       await onSubmit({
         title: title.trim(),
         notes: notes.trim() || undefined,
         assignee,
         dueDate,
+        requiredPhotoCount:
+          isAdmin && parsedPhotos > 0 ? parsedPhotos : undefined,
       });
     } catch {
       // Toast handled by parent; keep modal open so user can retry.
@@ -2803,6 +2823,29 @@ function TaskModal({
           multiline
           style={{ minHeight: 80, textAlignVertical: "top" }}
         />
+        {isAdmin ? (
+          <View style={{ gap: 6 }}>
+            <Input
+              label="Photos required"
+              value={photosRequired}
+              onChangeText={(t) => setPhotosRequired(t.replace(/[^0-9]/g, ""))}
+              keyboardType="number-pad"
+              maxLength={3}
+              placeholder="0"
+            />
+            <Text
+              style={{
+                color: colors.mutedForeground,
+                fontFamily: "Inter_400Regular",
+                fontSize: 12,
+              }}
+            >
+              The task can't be marked done until this many photos are
+              attached (from the web app for now). Leave empty or 0 for no
+              requirement.
+            </Text>
+          </View>
+        ) : null}
         <Button title="Add task" onPress={save} loading={saving} size="lg" />
       </ModalShell>
 

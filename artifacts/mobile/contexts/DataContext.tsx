@@ -112,6 +112,12 @@ interface DataState {
       /** Optimistic display name; preserved if the POST response omits the join. */
       assignedToName?: string;
       dueDate?: string;
+      /**
+       * Photo requirement. Admin-only on the server (silently stripped
+       * for non-admins); clamped to integer 0-100 before sending.
+       * undefined / 0 = no requirement.
+       */
+      requiredPhotoCount?: number;
     },
   ) => Promise<Task>;
   /**
@@ -150,6 +156,15 @@ interface DataState {
 const DataContext = createContext<DataState | undefined>(undefined);
 
 /** Merge backend items into an array keyed by id, preserving any local-only rows. */
+/**
+ * Clamp a task photo requirement to the server's validation range —
+ * integer 0..100 — so a bad value can never 400 a create/patch.
+ */
+function clampPhotoRequirement(n: number): number {
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(100, Math.max(0, Math.floor(n)));
+}
+
 function mergeById<T extends { id: string; remote?: boolean }>(
   existing: T[],
   incoming: T[],
@@ -810,6 +825,10 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         assignedToId: input.assignedToId ?? undefined,
         assignedToName: input.assignedToName,
         dueDate: input.dueDate,
+        requiredPhotoCount:
+          input.requiredPhotoCount && input.requiredPhotoCount > 0
+            ? clampPhotoRequirement(input.requiredPhotoCount)
+            : undefined,
         createdAt: new Date().toISOString(),
         // Intentionally NOT remote=true — the row is local until the
         // POST resolves. mergeById preserves it across refreshes during
@@ -823,13 +842,28 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
           priority: input.priority ?? null,
           assignedToId: input.assignedToId ?? null,
           dueDate: input.dueDate ?? null,
+          // Clamped to integer 0-100 client-side so a bad value can
+          // never 400 the create. Omitted entirely when no requirement
+          // (0 / undefined) — admin-only server-side; non-admins have
+          // it silently stripped, which is fine (the field is only
+          // shown to admins anyway).
+          requiredPhotoCount:
+            input.requiredPhotoCount && input.requiredPhotoCount > 0
+              ? clampPhotoRequirement(input.requiredPhotoCount)
+              : undefined,
         });
         const mapped = mapBackendTask(backend);
         // Preserve the picker-supplied display name if the server's
-        // response didn't include the join.
+        // response didn't include the join, and the photo requirement
+        // if the POST serializer omitted the computed task_photos
+        // fields (mapBackendTask only sets it when present and > 0) —
+        // otherwise the value the admin just set would vanish until
+        // the next authoritative task refresh.
         const final: Task = {
           ...mapped,
           assignedToName: mapped.assignedToName ?? input.assignedToName,
+          requiredPhotoCount:
+            mapped.requiredPhotoCount ?? optimistic.requiredPhotoCount,
         };
         setTasksList(
           tasksRef.current.map((t) => (t.id === tmpId ? final : t)),
