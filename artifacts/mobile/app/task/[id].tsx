@@ -2,9 +2,11 @@ import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { Image } from "expo-image";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -19,6 +21,8 @@ import {
 } from "@/components/AssigneePickerSheet";
 import { Button } from "@/components/Button";
 import { EmptyState } from "@/components/EmptyState";
+import { Input } from "@/components/Input";
+import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { PhotoPickerModal } from "@/components/PhotoPickerModal";
 import { TaskStatusPill } from "@/components/TaskStatusPill";
 import { useData } from "@/contexts/DataContext";
@@ -72,6 +76,7 @@ export default function TaskDetailScreen() {
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const [reassignOpen, setReassignOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [markingDone, setMarkingDone] = useState(false);
 
   const onReassign = async (selection: AssigneeSelection) => {
@@ -129,7 +134,12 @@ export default function TaskDetailScreen() {
         { backgroundColor: colors.background, paddingTop: insets.top + 8 },
       ]}
     >
-      <Header title="Task" onBack={() => router.back()} colors={colors} />
+      <Header
+        title="Task"
+        onBack={() => router.back()}
+        onEdit={() => setEditOpen(true)}
+        colors={colors}
+      />
 
       <ScrollView
         contentContainerStyle={{
@@ -333,6 +343,29 @@ export default function TaskDetailScreen() {
         onAttachMediaIds={attach}
       />
 
+      <EditTaskSheet
+        visible={editOpen}
+        initialTitle={task.title}
+        initialNotes={task.notes ?? ""}
+        onClose={() => setEditOpen(false)}
+        onSave={async ({ title, notes }) => {
+          // Both fields via the existing PATCH; empty notes clears
+          // explicitly (null), matching updateTask's contract.
+          try {
+            await updateTask(task.id, {
+              title,
+              description: notes || null,
+            });
+          } catch (e) {
+            Alert.alert(
+              "Couldn't save changes",
+              e instanceof Error ? e.message : "Please try again.",
+            );
+            throw e; // sheet stays open with the draft intact
+          }
+        }}
+      />
+
       {reassignOpen ? (
         <AssigneePickerSheet
           visible
@@ -349,10 +382,13 @@ export default function TaskDetailScreen() {
 function Header({
   title,
   onBack,
+  onEdit,
   colors,
 }: {
   title: string;
   onBack: () => void;
+  /** Shows a pencil on the right that opens the edit sheet. */
+  onEdit?: () => void;
   colors: ReturnType<typeof useColors>;
 }) {
   return (
@@ -369,8 +405,125 @@ function Header({
       <Text style={[styles.headerTitle, { color: colors.foreground }]}>
         {title}
       </Text>
-      <View style={{ width: 22 }} />
+      {onEdit ? (
+        <Pressable
+          onPress={onEdit}
+          hitSlop={10}
+          accessibilityRole="button"
+          accessibilityLabel="Edit task"
+          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+        >
+          <Feather name="edit-2" size={19} color={colors.foreground} />
+        </Pressable>
+      ) : (
+        <View style={{ width: 22 }} />
+      )}
     </View>
+  );
+}
+
+/**
+ * Edit title/notes sheet — clones the add-task modal pattern from the
+ * project screen (full-screen slide Modal, Cancel/title header,
+ * keyboard-aware form). Both fields go through the existing updateTask
+ * PATCH (`notes` maps to `description` on the wire; empty notes clears
+ * with null). Due date / requiredPhotoCount are intentionally not here.
+ */
+function EditTaskSheet({
+  visible,
+  initialTitle,
+  initialNotes,
+  onClose,
+  onSave,
+}: {
+  visible: boolean;
+  initialTitle: string;
+  initialNotes: string;
+  onClose: () => void;
+  onSave: (input: { title: string; notes: string }) => Promise<void>;
+}) {
+  const colors = useColors();
+  const insets = useSafeAreaInsets();
+  const [title, setTitle] = useState(initialTitle);
+  const [notes, setNotes] = useState(initialNotes);
+  const [saving, setSaving] = useState(false);
+
+  // Re-seed from the task each time the sheet opens, so a reopened
+  // sheet reflects edits saved in the meantime (and discards a
+  // previously-cancelled draft).
+  useEffect(() => {
+    if (visible) {
+      setTitle(initialTitle);
+      setNotes(initialNotes);
+    }
+  }, [visible, initialTitle, initialNotes]);
+
+  const save = async () => {
+    if (!title.trim() || saving) return;
+    setSaving(true);
+    try {
+      await onSave({ title: title.trim(), notes: notes.trim() });
+      onClose();
+    } catch {
+      // Alert handled by caller; keep the sheet open so edits survive.
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+      <View style={{ flex: 1, backgroundColor: colors.background }}>
+        <View
+          style={[
+            styles.header,
+            { paddingTop: insets.top + 8, borderBottomColor: colors.border },
+          ]}
+        >
+          <Pressable onPress={onClose} hitSlop={10} disabled={saving}>
+            <Text
+              style={{
+                color: colors.primary,
+                fontFamily: "Inter_600SemiBold",
+                fontSize: 16,
+              }}
+            >
+              Cancel
+            </Text>
+          </Pressable>
+          <Text style={[styles.headerTitle, { color: colors.foreground }]}>
+            Edit task
+          </Text>
+          <View style={{ width: 50 }} />
+        </View>
+        <KeyboardAwareScrollViewCompat
+          contentContainerStyle={{
+            padding: 20,
+            gap: 14,
+            paddingBottom: insets.bottom + 40,
+          }}
+          bottomOffset={24}
+          keyboardShouldPersistTaps="handled"
+        >
+          <Input label="Title" value={title} onChangeText={setTitle} autoFocus />
+          <Input
+            label="Notes"
+            value={notes}
+            onChangeText={setNotes}
+            multiline
+            numberOfLines={4}
+            style={{ minHeight: 96, textAlignVertical: "top" }}
+          />
+          <Button
+            title="Save"
+            size="lg"
+            loading={saving}
+            disabled={!title.trim()}
+            onPress={save}
+          />
+        </KeyboardAwareScrollViewCompat>
+      </View>
+    </Modal>
   );
 }
 
