@@ -33,9 +33,14 @@ export default function LoginScreen() {
     try {
       await signIn(email, password);
       router.replace("/(tabs)");
+      // Deliberately NOT re-enabling here: the login screen stays
+      // mounted while navigation commits, and a re-armed button in that
+      // window lets a second tap POST /api/login carrying the fresh sid
+      // — passport regenerate() then destroys it (the double-login bug).
+      // The screen unmounts moments later; if navigation somehow fails,
+      // the auth gate re-renders this screen fresh with loading=false.
     } catch (e) {
       setError(e instanceof Error ? e.message : "Sign in failed.");
-    } finally {
       setLoading(false);
     }
   };

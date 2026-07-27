@@ -126,7 +126,7 @@ export async function loadSession(): Promise<string | null> {
     `[boot] cookieJar size = ${snap.size}, names = [${snap.names.join(", ")}]`,
   );
   if (cleaned !== raw) {
-    secureStorage.setItem(COOKIE_STORAGE_KEY, cleaned).catch(() => {});
+    queueJarWrite(cleaned);
   }
   lastPersistedJar = cleaned;
   return cleaned || null;
@@ -137,7 +137,13 @@ export async function clearSession(): Promise<void> {
   cookieJar.clear();
   loaded = true;
   lastPersistedJar = null;
-  await secureStorage.removeItem(COOKIE_STORAGE_KEY);
+  // Chain the removal behind any pending jar writes: a queued persist
+  // completing AFTER this removeItem would resurrect the cleared
+  // session in the Keychain (sign-out that un-signs-out on relaunch).
+  jarWriteChain = jarWriteChain.then(() =>
+    secureStorage.removeItem(COOKIE_STORAGE_KEY),
+  );
+  await jarWriteChain;
 }
 
 export function hasSession(): boolean {
@@ -171,6 +177,36 @@ function setCookieMatchesJar(raw: string): boolean {
   return pairs > 0;
 }
 
+/**
+ * Serialization chain for Keychain jar writes. The persists are
+ * intentionally not awaited by request handling (fire-and-forget), but
+ * they MUST land in issue order: two close-together writes (sid A from
+ * login #1, sid B from login #2) completing out of order leave the
+ * Keychain holding a destroyed sid while memory holds the live one —
+ * works all session, then 401s from the next cold start when
+ * loadSession resurrects the stale sid.
+ */
+let jarWriteChain: Promise<void> = Promise.resolve();
+
+function queueJarWrite(serialized: string): void {
+  jarWriteChain = jarWriteChain.then(async () => {
+    try {
+      await secureStorage.setItem(COOKIE_STORAGE_KEY, serialized);
+      console.log(`[login] keychain write = SUCCESS (len=${serialized.length})`);
+    } catch (e) {
+      // secureStorage.setItem is non-throwing by design (it captures to
+      // Sentry internally), so this is belt-and-braces: a failed jar
+      // write means silent logout on next cold start — be loud.
+      const msg = e instanceof Error ? e.message : String(e);
+      console.log(`[login] keychain write = FAILED: ${msg}`);
+      Sentry.captureMessage("session jar Keychain write failed", {
+        level: "error",
+        extra: { serializedLen: serialized.length },
+      });
+    }
+  });
+}
+
 function parseAndPersistSetCookie(raw: string | null): void {
   if (!raw) return;
   // Parse all `name=value` pairs out of the combined set-cookie header,
@@ -196,17 +232,7 @@ function parseAndPersistSetCookie(raw: string | null): void {
   // "on actual cookie change" instead of "on every 4xx".
   if (serialized === lastPersistedJar) return;
   lastPersistedJar = serialized;
-  secureStorage
-    .setItem(COOKIE_STORAGE_KEY, serialized)
-    .then(() => {
-      console.log(
-        `[login] keychain write = SUCCESS (len=${serialized.length})`,
-      );
-    })
-    .catch((e) => {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.log(`[login] keychain write = FAILED: ${msg}`);
-    });
+  queueJarWrite(serialized);
 }
 
 /**
