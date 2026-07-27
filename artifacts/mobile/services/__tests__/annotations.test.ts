@@ -15,6 +15,7 @@ import {
   DEFAULT_STROKE_WIDTH,
   MIN_DRAG_PX,
   arrowHeadPath,
+  fittedContainRect,
   hasMinDrag,
   isLegacyMobileStrokeId,
   rawToCanonical,
@@ -568,6 +569,97 @@ test("textToCanonical clamps fontSize 8..96, content to 500, x/y to 0..1", () =>
     canvasH: 400,
   });
   assert.ok(small && small.type === "text" && small.fontSize === 8);
+});
+
+// ---------- Fitted-rect coordinate basis (web parity, build 42) ----------
+// The web editor normalizes against the contain-fitted image rect;
+// mobile must produce the identical rect from container + intrinsic size.
+
+test("fittedContainRect: portrait phone container, portrait photo (width-bound)", () => {
+  // 393x852 container, 3024x4032 photo (AR 0.75) -> fitted 393x524,
+  // letterboxed top/bottom by 164.
+  const r = fittedContainRect(393, 852, 3024, 4032);
+  assert.ok(r);
+  close(r.w, 393);
+  close(r.h, 524);
+  close(r.x, 0);
+  close(r.y, 164);
+});
+
+test("fittedContainRect: portrait phone container, landscape photo (width-bound)", () => {
+  // 393x852 container, 4032x3024 photo (AR 1.333) -> fitted 393x294.75,
+  // letterboxed top/bottom by 278.625.
+  const r = fittedContainRect(393, 852, 4032, 3024);
+  assert.ok(r);
+  close(r.w, 393);
+  close(r.h, 294.75);
+  close(r.x, 0);
+  close(r.y, 278.625);
+});
+
+test("fittedContainRect: LANDSCAPE container is height-bound — x diverges, not y", () => {
+  // Rotated phone: 852x393 container, portrait photo 3024x4032 ->
+  // fitted (393*0.75)x393 = 294.75x393, pillarboxed left/right.
+  const r = fittedContainRect(852, 393, 3024, 4032);
+  assert.ok(r);
+  close(r.h, 393);
+  close(r.w, 294.75);
+  close(r.y, 0);
+  close(r.x, (852 - 294.75) / 2); // 278.625 — letterbox moved to the x axis
+});
+
+test("fittedContainRect: null until both boxes are known", () => {
+  assert.equal(fittedContainRect(0, 852, 3024, 4032), null);
+  assert.equal(fittedContainRect(393, 852, 0, 0), null);
+  assert.equal(fittedContainRect(393, 0, 3024, 4032), null);
+});
+
+test("fitted-rect round trip: web stroke at (0.5,0.5) renders at container (196.5,426) and re-saves as (0.5,0.5)", () => {
+  const r = fittedContainRect(393, 852, 3024, 4032)!;
+  // DENORMALIZE (read/render path): canonical 0..1 against the rect,
+  // then offset by the rect origin into container space.
+  const cx = r.x + 0.5 * r.w;
+  const cy = r.y + 0.5 * r.h;
+  close(cx, 196.5);
+  close(cy, 426); // 164 + 262 — image center IS the container center here
+  // NORMALIZE (save path, endStroke): container point re-based to the
+  // rect origin, divided by the rect size (canvasW/H = the rect) — must
+  // round-trip exactly.
+  const s2 = rawToCanonical(
+    {
+      color: "#ef4444",
+      size: 3,
+      points: [{ x: cx - r.x, y: cy - r.y }],
+      canvasW: r.w,
+      canvasH: r.h,
+    },
+    "pencil",
+  );
+  assert.ok("points" in s2 && s2.points); // pencil, not text — narrows the union
+  close(s2.points[0].x, 0.5);
+  close(s2.points[0].y, 0.5);
+});
+
+test("fitted-rect round trip: landscape container, off-center point", () => {
+  const r = fittedContainRect(852, 393, 3024, 4032)!;
+  // Web-authored point at (0.25, 0.75) of the image.
+  const cx = r.x + 0.25 * r.w;
+  const cy = r.y + 0.75 * r.h;
+  close(cx, 278.625 + 73.6875);
+  close(cy, 294.75);
+  const s = rawToCanonical(
+    {
+      color: "#22c55e",
+      size: 6,
+      points: [{ x: cx - r.x, y: cy - r.y }],
+      canvasW: r.w,
+      canvasH: r.h,
+    },
+    "pencil",
+  );
+  assert.ok("points" in s && s.points); // pencil, not text — narrows the union
+  close(s.points[0].x, 0.25);
+  close(s.points[0].y, 0.75);
 });
 
 test("isKnownStrokeType covers exactly the six wire types", () => {

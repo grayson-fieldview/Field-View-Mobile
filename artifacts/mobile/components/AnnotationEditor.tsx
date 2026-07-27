@@ -443,6 +443,17 @@ export function AnnotationEditor({
   const fitRectRef = useRef(fitRect);
   fitRectRef.current = fitRect;
 
+  // Basis changed mid-gesture (rotation, split-view resize, intrinsic
+  // size re-report): DISCARD the in-progress stroke. Its points are
+  // container-space against the OLD rect; committing them against the
+  // new rect would store wrong coordinates.
+  useEffect(() => {
+    if (currentStroke.current) {
+      currentStroke.current = null;
+      force((n) => n + 1);
+    }
+  }, [fitRect]);
+
   // Clamp a container-space touch point into the fitted image rect —
   // letterbox-bar touches snap to the nearest image edge instead of
   // recording as valid coordinates outside the photo.
