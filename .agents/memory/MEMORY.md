@@ -2,6 +2,6 @@
 - [Mobile mutations server-first](mobile-mutations-server-first.md) — locally-cached entities (projects/photos) resync via mergeById; mutate server FIRST then prune local, else change silently reverts
 - [Annotation stroke wire contract](annotation-stroke-id.md) — every stroke needs a stable per-stroke `id: string` or the web Zod union 400s the whole row; preserve incoming ids, never regenerate
 - [Annotation wire contract](annotation-wire-contract.md) — width int=px vs non-int=1000-units heuristic; circle=[center,radiusPoint]; arrowhead derived; text top-anchored raw-px fontSize
-- [Session cookie guard](session-cookie-guard.md) — server rolls same-sid Set-Cookie on ALL responses incl. 4xx; persist on sid match, discard only differing sids, never status-only gating
+- [Session cookie handling](session-cookie-guard.md) — build 41: status-only (2xx) gating restored by user decision; Keychain jar writes MUST use the serialized chain; login button stays disabled post-success
 - [Upload-queue attach persistence](upload-queue-attach-persistence.md) — checklist/task attach is a persisted queue state; awaited flush before terminal alert = at-most-once across relaunches
 - [Android v1 location model](android-v1-location.md) — Android is manual/foreground clock-in only; no background location, no FGS, no geofencing. iOS keeps full background/geofencing.
