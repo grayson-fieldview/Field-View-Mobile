@@ -443,60 +443,28 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
   // clearSession() explicitly, which wipes the jar and Keychain.
   const setCookie = res.headers.get("set-cookie");
   if (setCookie) {
-    // LOGIN-FAMILY EXEMPTION: after passport's session regenerate(), the
-    // sid on the /api/login | /api/register | /api/verify-email-code
-    // response is the ONLY live session — the previous server row is
-    // already destroyed. That's true regardless of status code: the
-    // server has confirmed paths where a 500 (and OAuth's 302) carries
-    // the only surviving sid after a successful regenerate. Discarding
-    // a differing sid here guarantees a dead jar, so these endpoints
-    // bypass the differing-sid guard entirely. All other endpoints keep
-    // the guard (build 40: anonymous-sid clobber protection).
-    const isLoginFamily =
-      path === "/api/login" ||
-      path === "/api/register" ||
-      path === "/api/verify-email-code";
-    if (res.ok || isLoginFamily || setCookieMatchesJar(setCookie)) {
-      if (isLoginFamily && !res.ok && !setCookieMatchesJar(setCookie)) {
-        Sentry.addBreadcrumb({
-          category: "session",
-          level: "warning",
-          message: "Set-Cookie accepted on non-2xx login-family response",
-          data: { path, status: res.status },
-        });
-      }
-      // 2xx, OR a non-2xx whose cookie value(s) exactly match the jar —
-      // a rolling-session refresh (same sid, extended Expires). Persist
-      // it so 4xx-heavy sessions still extend the 14-day sliding window;
-      // discarding these was starving the session of refreshes and aging
-      // valid cookies out despite daily use (build 39 logout bug).
+    // REVERTED (build 41): back to pre-guard, status-only gating — only
+    // 2xx responses may write to the jar. The differing-sid guard and
+    // the login-family exemption are removed while the real session
+    // killer is isolated; breadcrumbs below keep the discard visible.
+    // KNOWN TRADEOFF: same-sid rolling refreshes on 4xx are discarded
+    // again (the build-39 sliding-window starvation concern).
+    if (res.ok) {
       parseAndPersistSetCookie(setCookie);
     } else {
-      // Non-2xx with a DIFFERENT cookie value: the real hazard — e.g. a
-      // fresh anonymous sid on an unauthenticated response that would
-      // clobber the authenticated session. Discard + report. Never log
-      // cookie values; sidMatch=false is implied by reaching this branch.
-      const discardMsg = `[api] DISCARDED Set-Cookie on error response: ${opts.method ?? "GET"} ${path} status=${res.status} (sid differs from jar)`;
-      console.warn(discardMsg);
+      const sidMatch = setCookieMatchesJar(setCookie);
+      console.warn(
+        `[api] DISCARDED Set-Cookie on non-2xx: ${opts.method ?? "GET"} ${path} status=${res.status} sidMatch=${sidMatch}`,
+      );
       Sentry.addBreadcrumb({
         category: "session",
         level: "warning",
-        message: "Set-Cookie discarded on error response",
+        message: "Set-Cookie discarded on non-2xx response",
         data: {
           method: opts.method ?? "GET",
           path,
           status: res.status,
-          sidMatch: false,
-          jarSize: cookieJar.size,
-        },
-      });
-      Sentry.captureMessage("Set-Cookie discarded on error response", {
-        level: "warning",
-        extra: {
-          method: opts.method ?? "GET",
-          path,
-          status: res.status,
-          sidMatch: false,
+          sidMatch,
           jarSize: cookieJar.size,
         },
       });
