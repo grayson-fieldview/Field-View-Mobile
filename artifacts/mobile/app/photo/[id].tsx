@@ -181,7 +181,21 @@ export default function PhotoViewerScreen() {
         // flag stays set so the unmount flush (or next exit) retries — the
         // edit is never silently dropped.
         const ok = await saveAnnotations(pid, strokesById[pid] ?? []);
-        if (ok) dirtyRef.current.delete(pid);
+        if (ok) {
+          dirtyRef.current.delete(pid);
+          // Clobber-guard merge: the server row now holds MORE than the
+          // buffer (recovered strokes). Adopt the merged set so a later
+          // re-edit of this photo can't re-drop them.
+          if (Array.isArray(ok)) {
+            setStrokesById((prev) => ({ ...prev, [pid]: ok }));
+          }
+        } else {
+          // A failed server flush was previously 100% silent — the user
+          // walked away believing their markup synced (build 40 Bug A).
+          // The edit is safe locally and retries on next exit/unmount,
+          // but say so.
+          showToast("Markup saved on this phone — couldn't sync yet");
+        }
       })();
     }
   }, [editing, currentPhotoId, saveAnnotations, strokesById]);
@@ -197,6 +211,8 @@ export default function PhotoViewerScreen() {
         // but the local buffer is already persisted so nothing is lost).
         const ok = await saveAnnotations(pid, strokesById[pid] ?? []);
         if (ok) dirtyRef.current.delete(pid);
+        // No setStrokesById here — the screen is unmounting; the merged
+        // union was already persisted to Photo.annotations by the save.
       })();
     }
   };

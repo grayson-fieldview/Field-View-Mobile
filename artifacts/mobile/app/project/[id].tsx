@@ -2858,8 +2858,7 @@ function TaskModal({
               }}
             >
               The task can't be marked done until this many photos are
-              attached (from the web app for now). Leave empty or 0 for no
-              requirement.
+              attached. Leave empty or 0 for no requirement.
             </Text>
           </View>
         ) : null}

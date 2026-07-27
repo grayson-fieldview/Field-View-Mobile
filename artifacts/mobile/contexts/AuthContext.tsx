@@ -332,6 +332,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const applyConfirmed401 = useCallback(async (trigger: string) => {
     sessionEpochRef.current += 1;
     breadcrumbAuthState("signed-out", trigger);
+    // TEMP DIAG (build 41): the attached breadcrumb trail carries the
+    // last ~100 api responses (path/status/hadCookie) plus Set-Cookie
+    // shapes — the exact sequence that preceded this logout.
+    Sentry.captureMessage("confirmed-401 logout", {
+      level: "warning",
+      extra: { trigger },
+    });
     await clearSession().catch(() => {});
     await clearUserSnapshot();
     setUser(null);

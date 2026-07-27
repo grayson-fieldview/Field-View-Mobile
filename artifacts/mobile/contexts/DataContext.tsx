@@ -17,7 +17,12 @@ import {
   mapBackendProject,
   mapBackendTask,
 } from "@/services/mappers";
-import { toCanonicalForSave, hasCanvasMeta } from "@/services/annotations";
+import {
+  toCanonicalForSave,
+  hasCanvasMeta,
+  strokeToRenderShape,
+} from "@/services/annotations";
+import { Sentry } from "@/services/sentry";
 import { storage } from "@/services/storage";
 import type {
   Photo,
@@ -98,11 +103,19 @@ interface DataState {
    * server (PUT existing row / POST new row, keyed by Photo.mediaId) and
    * updates the local render-set union. For not-yet-uploaded local photos
    * it persists locally only (server flush deferred to upload).
+   *
+   * Returns:
+   * - `false`   — server rejected/unreachable; caller keeps dirty + retries.
+   * - `true`    — saved; payload was exactly `ownStrokes`.
+   * - stroke[]  — saved, but the clobber guard merged recovered server
+   *   strokes into the row. The caller MUST replace its editable buffer
+   *   with this array, or the next save from the stale buffer would drop
+   *   the recovered strokes again.
    */
   saveAnnotations: (
     photoId: string,
     ownStrokes: StoredStroke[],
-  ) => Promise<boolean>;
+  ) => Promise<boolean | StoredStroke[]>;
 
   /**
    * Local-only reconcile of a task's attachedPhotoCount after the photo
@@ -263,6 +276,17 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   //    save without re-fetching every collaborator.
   const annotationRowIdRef = useRef<Record<string, string>>({});
   const annotationOthersRef = useRef<Record<string, StoredStroke[]>>({});
+  /**
+   * Media whose last annotation GET FAILED — the server row state is
+   * unknown. While set, saveAnnotations must not blind-write the own
+   * row (it would replace server strokes with only the local buffer).
+   * Instead it re-GETs, merges by stroke id, and only then writes.
+   */
+  const annotationLoadFailedRef = useRef<Record<string, true>>({});
+  /** Media already reported by the "annot-diag GET ok" Sentry event this
+   *  session — sampled to once per media so photo browsing doesn't spam
+   *  Sentry (review finding). Breadcrumbs still fire on every GET. */
+  const annotationDiagSentRef = useRef<Set<string>>(new Set());
 
   // Throttle + dedupe refreshes triggered from many places (auth ready, app
   // foreground, screen focus, manual pull-to-refresh).
@@ -836,8 +860,54 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
           err instanceof ApiError ? `ApiError status=${err.status}` : err,
           `→ falling back to legacyOwn=${legacyOwn.length}, others=0`,
         );
+        Sentry.captureMessage("annot-diag GET failed", {
+          level: "warning",
+          extra: {
+            mediaId: photo.mediaId,
+            status: err instanceof ApiError ? err.status : "network",
+            legacyOwn: legacyOwn.length,
+          },
+        });
+        // CLOBBER GUARD: the server row state is unknown. Block the next
+        // save's server write until a GET succeeds — otherwise a PUT/POST
+        // would replace the row with only the local buffer, silently
+        // destroying strokes authored elsewhere (web) since the last
+        // successful load.
+        annotationLoadFailedRef.current[mediaKey] = true;
         // Tolerant: keep whatever we have rather than blanking the photo.
         return { ownStrokes: legacyOwn, othersStrokes: [] };
+      }
+      delete annotationLoadFailedRef.current[mediaKey];
+      // TEMP DIAG (build 41): ship the row shape to Sentry — TestFlight
+      // has no console. Counts + ids only, never stroke contents.
+      // Sampled: one event per media per app session (breadcrumb trail
+      // still records every GET via the api-response breadcrumbs).
+      if (!annotationDiagSentRef.current.has(mediaKey)) {
+        annotationDiagSentRef.current.add(mediaKey);
+        Sentry.captureMessage("annot-diag GET ok", {
+          level: "info",
+          extra: {
+            mediaId: photo.mediaId,
+            rows: Array.isArray(rows) ? rows.length : -1,
+            rowMeta: Array.isArray(rows)
+              ? rows.map((r) => ({
+                  id: r.id,
+                  userId: r.userId,
+                  strokes: Array.isArray(r.strokes) ? r.strokes.length : -1,
+                  resolvedShapes: Array.isArray(r.strokes)
+                    ? r.strokes.filter(
+                        (s: { type?: unknown }) =>
+                          strokeToRenderShape(
+                            s as StoredStroke,
+                            1000,
+                            1000,
+                          ) != null,
+                      ).length
+                    : -1,
+                }))
+              : String(rows),
+          },
+        });
       }
 
       const uid = userRef.current?.id;
@@ -914,28 +984,137 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         ),
       );
 
+      // CLOBBER GUARD: if the last GET for this media failed, the buffer
+      // was seeded from local legacy strokes — NOT the server row. A
+      // blind PUT/POST here would replace the row (or shadow it with a
+      // duplicate) and destroy strokes authored on other clients. Re-GET
+      // first; on success, union the server's own-row strokes with the
+      // buffer by stroke id (buffer wins on id collision — an edit; a
+      // server stroke absent from the buffer is one the buffer never saw,
+      // so deletion can't have been intended). If the re-GET also fails,
+      // do NOT write — return false so the caller keeps the photo dirty.
+      let payload = canonical;
+      if (annotationLoadFailedRef.current[mediaKey]) {
+        try {
+          const rows = await api.listMediaAnnotations(mediaId);
+          const uid = userRef.current?.id;
+          const ownRow = (rows ?? []).find(
+            (r) => uid != null && String(r.userId) === String(uid),
+          );
+          if (ownRow) {
+            annotationRowIdRef.current[mediaKey] = String(ownRow.id);
+            const bufferIds = new Set(
+              canonical.map((s) => (s as { id?: unknown }).id).filter(Boolean),
+            );
+            // Fingerprint of canonical geometry/appearance — dedupe
+            // fallback for LEGACY strokes without a stable id (old
+            // builds), where canonicalization mints fresh ids and an
+            // id-only merge would keep both copies.
+            const fp = (s: StoredStroke): string =>
+              JSON.stringify({
+                t: s.type ?? "pencil",
+                c: s.color,
+                w: s.width,
+                p: s.points,
+                x: (s as { x?: unknown }).x,
+                y: (s as { y?: unknown }).y,
+                text: (s as { text?: unknown }).text,
+              });
+            const bufferFps = new Set(canonical.map(fp));
+            const serverOnly = (
+              Array.isArray(ownRow.strokes) ? ownRow.strokes : []
+            )
+              .map(toCanonicalForSave)
+              .filter((s) => {
+                const id = (s as { id?: unknown }).id;
+                if (id && bufferIds.has(id)) return false; // buffer wins
+                return !bufferFps.has(fp(s)); // legacy dup fallback
+              });
+            payload = [...serverOnly, ...canonical];
+          } else {
+            delete annotationRowIdRef.current[mediaKey];
+          }
+          delete annotationLoadFailedRef.current[mediaKey];
+        } catch {
+          console.warn(
+            `[annot-diag] save blocked for media=${mediaId}: row state unknown (GET failed twice)`,
+          );
+          Sentry.captureMessage("annot save blocked — row state unknown", {
+            level: "warning",
+            extra: { mediaId },
+          });
+          return false;
+        }
+      }
+
       // Server write. Self-heals a stale/invalid own-row id: a failed PUT
       // drops the cached id and falls back to POST so a remotely-deleted row
       // can't permanently block syncing. Row id is cached only on success.
       // Returns whether the server actually accepted the write so the caller
       // can keep the photo dirty and retry on failure (no silent data loss).
       const existingId = annotationRowIdRef.current[mediaKey];
+      // TEMP DIAG (build 41): the annotation WRITE path was completely
+      // silent on failure (mirror of the pre-build-40 silent GET). Track
+      // each attempt's status and ship failures to Sentry.
+      let putStatus: number | string | undefined;
       try {
         if (existingId) {
           try {
-            const row = await api.updateAnnotation(existingId, canonical);
+            const row = await api.updateAnnotation(existingId, payload);
             if (row?.id) annotationRowIdRef.current[mediaKey] = String(row.id);
-          } catch {
+          } catch (e) {
+            putStatus = e instanceof ApiError ? e.status : "network";
             delete annotationRowIdRef.current[mediaKey];
-            const row = await api.createMediaAnnotation(mediaId, canonical);
+            const row = await api.createMediaAnnotation(mediaId, payload);
             if (row?.id) annotationRowIdRef.current[mediaKey] = String(row.id);
           }
         } else {
-          const row = await api.createMediaAnnotation(mediaId, canonical);
+          const row = await api.createMediaAnnotation(mediaId, payload);
           if (row?.id) annotationRowIdRef.current[mediaKey] = String(row.id);
         }
+        if (putStatus !== undefined) {
+          // Write eventually landed, but only via the PUT→POST fallback —
+          // worth knowing (stale row id? PUT 401 but POST ok?).
+          Sentry.captureMessage("annot-diag PUT fell back to POST", {
+            level: "warning",
+            extra: { mediaId, putStatus, hadRowId: true },
+          });
+        }
+        if (payload !== canonical) {
+          // Guard merged recovered strokes into the row: re-persist the
+          // local union to match what the server now holds, and hand the
+          // merged own-row back so the caller can replace its buffer —
+          // otherwise the next save from the stale buffer would re-drop
+          // the recovered strokes (re-clobber).
+          await persistPhotos(
+            photosRef.current.map((p) =>
+              p.id === photoId
+                ? { ...p, annotations: [...others, ...payload] }
+                : p,
+            ),
+          );
+          return payload;
+        }
         return true;
-      } catch {
+      } catch (e) {
+        // TEMP DIAG (build 41): the final write failure — previously
+        // swallowed with zero telemetry (the "mobile strokes never reached
+        // the server, silently" bug). Ship the status; the breadcrumb
+        // trail carries the surrounding request sequence.
+        const status = e instanceof ApiError ? e.status : "network";
+        console.warn(
+          `[annot-diag] SAVE failed media=${mediaId}: status=${status}, putStatus=${putStatus ?? "n/a"}, strokes=${payload.length}`,
+        );
+        Sentry.captureMessage("annot-diag SAVE failed", {
+          level: "warning",
+          extra: {
+            mediaId,
+            status,
+            putStatus: putStatus ?? null,
+            hadRowId: !!existingId,
+            strokes: payload.length,
+          },
+        });
         // Tolerant: optimistic local state already persisted above; signal
         // failure so the caller keeps the dirty flag and retries later.
         return false;

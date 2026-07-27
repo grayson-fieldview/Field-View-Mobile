@@ -87,7 +87,15 @@ export function AssigneePickerSheet({
         setUsers(live);
       } catch (e) {
         if (cancelled) return;
-        if (e instanceof ApiError && e.status === 401) return;
+        // A 401 used to bail silently here, leaving an empty, unusable
+        // picker with no explanation (build 40 Bug C). Make it loud —
+        // it's almost always a dropped session.
+        if (e instanceof ApiError && e.status === 401) {
+          setLoadError(
+            "Your session expired — couldn't load teammates. Pull to retry or sign in again.",
+          );
+          return;
+        }
         setLoadError(
           e instanceof Error ? e.message : "Couldn't load teammates.",
         );

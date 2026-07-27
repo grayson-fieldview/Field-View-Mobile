@@ -222,6 +222,63 @@ function breadcrumbApiError(method: string, path: string, status: number): void 
   });
 }
 
+/**
+ * TEMP DIAG (build 41): breadcrumb EVERY api response — method, path,
+ * status, and whether the request carried a session cookie. Sentry
+ * attaches the trailing breadcrumbs to any captured event, so the
+ * confirmed-401 logout event in AuthContext arrives with the exact
+ * request sequence (last ~100) that preceded it. Never bodies, never
+ * cookie values.
+ */
+function breadcrumbApiResponse(
+  method: string,
+  path: string,
+  status: number,
+  hadCookie: boolean,
+): void {
+  Sentry.addBreadcrumb({
+    category: "api",
+    level: status >= 400 ? "warning" : "info",
+    message: `${status} ${method} ${path}${hadCookie ? "" : " (no cookie)"}`,
+    data: { method, path, status, hadCookie },
+  });
+}
+
+/**
+ * TEMP DIAG (build 41): sanitized shape of a raw Set-Cookie header —
+ * to check whether RN's fetch comma-concatenates multiple cookies and
+ * whether the parser could mis-split. Reports structure only: header
+ * length, comma count, cookie names (attribute names excluded), how
+ * many times each name repeats, and per-value lengths. NEVER values.
+ */
+function breadcrumbSetCookieShape(raw: string, path: string): void {
+  try {
+    const re = /([\w.!#$%&'*+\-^`|~]+)=([^;,]*)/g;
+    let m: RegExpExecArray | null;
+    const names: string[] = [];
+    const valueLens: number[] = [];
+    while ((m = re.exec(raw)) !== null) {
+      if (COOKIE_ATTR_RE.test(m[1])) continue;
+      names.push(m[1]);
+      valueLens.push(m[2].length);
+    }
+    Sentry.addBreadcrumb({
+      category: "session",
+      level: "info",
+      message: "Set-Cookie shape",
+      data: {
+        path,
+        headerLen: raw.length,
+        commas: (raw.match(/,/g) ?? []).length,
+        names,
+        valueLens,
+      },
+    });
+  } catch {
+    /* diagnostics must never break the request */
+  }
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -337,7 +394,14 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
       credentials: Platform.OS === "web" ? "include" : "omit",
     });
     console.log("[api] ←", res.status, path);
+    breadcrumbApiResponse(
+      opts.method ?? "GET",
+      path,
+      res.status,
+      !!headers["Cookie"],
+    );
     const setCookieHeader = res.headers.get("set-cookie");
+    if (setCookieHeader) breadcrumbSetCookieShape(setCookieHeader, path);
     if (setCookieHeader)
       console.log(
         "[api] Set-Cookie received:",
