@@ -606,12 +606,14 @@ export function strokeToRenderShape(
       x: clamp01(s.x) * w,
       y: clamp01(s.y) * h,
       content: s.content,
-      fontSize: resolveFontSize(
+      // RAW stored px — the full-size viewer's fitted rect is the basis
+      // these values were authored against. resolveFontSize is applied
+      // ONLY by callers whose render basis is the 1000-unit reference
+      // space (the thumbnail overlay), never here.
+      fontSize:
         typeof s.fontSize === "number" && s.fontSize > 0
           ? s.fontSize
           : DEFAULT_FONT_SIZE,
-        h,
-      ),
     };
   }
 

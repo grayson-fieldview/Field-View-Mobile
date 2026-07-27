@@ -20,7 +20,6 @@ import Svg, {
 import {
   DEFAULT_FONT_SIZE,
   LEGACY_PEN_SIZES_PX,
-  resolveFontSize,
   MAX_TEXT_CONTENT_LENGTH,
   TEXT_FONT_SIZES,
   arrowHeadPath,
@@ -156,7 +155,8 @@ export function renderShape(shape: RenderShape, key: string | number) {
       // alignmentBaseline (their support differs across Safari,
       // react-native-svg on Android, and the server-side PDF-flatten
       // renderer; arithmetic behaves identically everywhere).
-      // shape.fontSize is already resolved (resolveFontSize) upstream.
+      // shape.fontSize is raw stored px (authoring basis); only the
+      // thumbnail overlay pre-resolves before reaching this switch.
       const y = shape.y + shape.fontSize * 0.8;
       // Contrast halo: react-native-svg does not honor paintOrder
       // reliably, so render twice at identical coordinates — stroke-only
@@ -794,8 +794,9 @@ export function AnnotationEditor({
         {pendingText ? (
           // WYSIWYG placement: the input's own glyphs sit at the tap
           // point (top-left), styled exactly like the committed SVG text
-          // (RESOLVED fontSize — same resolveFontSize(fs, fitRect.h)
-          // basis the committed render uses — weight 600, active color).
+          // (raw fontSize px — the committed render uses raw px in the
+          // same fitted-rect basis, so this is WYSIWYG — weight 600,
+          // active color).
           <TextInput
             value={textDraft}
             onChangeText={setTextDraft}
@@ -813,9 +814,7 @@ export function AnnotationEditor({
               {
                 left: pendingText.x,
                 top: pendingText.y,
-                fontSize: fitRect
-                  ? resolveFontSize(fontSize, fitRect.h)
-                  : fontSize,
+                fontSize,
                 color,
                 maxWidth: Math.max(80, editBox.w - pendingText.x - 8),
               },

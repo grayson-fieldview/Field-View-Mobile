@@ -1,7 +1,7 @@
 - [Mobile task status](mobile-task-status.md) — status enum is source of truth; done is derived; never binary-toggle (clobbers in_progress)
 - [Mobile mutations server-first](mobile-mutations-server-first.md) — locally-cached entities (projects/photos) resync via mergeById; mutate server FIRST then prune local, else change silently reverts
 - [Annotation stroke wire contract](annotation-stroke-id.md) — every stroke needs a stable per-stroke `id: string` or the web Zod union 400s the whole row; preserve incoming ids, never regenerate
-- [Thumbnail overlay basis](thumbnail-overlay-basis.md) — grids match web: stretch unit square (preserveAspectRatio none), no crop compensation; text: resolveFontSize vs 1000-ref height, y+0.8em offset, double-render halo (no paintOrder/baseline attrs)
+- [Thumbnail overlay basis](thumbnail-overlay-basis.md) — grids match web: stretch unit square (preserveAspectRatio none), no crop compensation; text: raw px everywhere EXCEPT thumbnails (resolveFontSize, 1000-ref); y+0.8em offset + double-render halo everywhere
 - [Annotation wire contract](annotation-wire-contract.md) — width int=px vs non-int=1000-units heuristic; circle=[center,radiusPoint]; arrowhead derived; text top-anchored raw-px fontSize
 - [Session cookie handling](session-cookie-guard.md) — build 41: status-only (2xx) gating restored by user decision; Keychain jar writes MUST use the serialized chain; login button stays disabled post-success
 - [Upload-queue attach persistence](upload-queue-attach-persistence.md) — checklist/task attach is a persisted queue state; awaited flush before terminal alert = at-most-once across relaunches

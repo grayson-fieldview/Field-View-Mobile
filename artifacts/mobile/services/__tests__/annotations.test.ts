@@ -185,7 +185,7 @@ test("rectangle normalizes corner order", () => {
   );
 });
 
-test("text: top-level normalized x/y, fontSize resolved vs 1000-tall reference", () => {
+test("text: top-level normalized x/y, RAW px fontSize (authoring basis)", () => {
   const shape = strokeToRenderShape(
     { id: "t1", type: "text", x: 0.1, y: 0.2, content: "hi", fontSize: 24 },
     W,
@@ -194,8 +194,9 @@ test("text: top-level normalized x/y, fontSize resolved vs 1000-tall reference",
   assert.ok(shape && shape.kind === "text");
   close(shape.x, 40);
   close(shape.y, 60);
-  // resolveFontSize: (24 / FONT_REFERENCE_HEIGHT) * H = 24/1000*300
-  close(shape.fontSize, 7.2);
+  // Raw stored px — resolveFontSize is applied only by the thumbnail
+  // overlay (1000-unit basis), never inside strokeToRenderShape.
+  assert.equal(shape.fontSize, 24);
   assert.equal(shape.content, "hi");
 });
 

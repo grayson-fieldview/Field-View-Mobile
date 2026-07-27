@@ -24,6 +24,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AssigneePickerSheet, type AssigneeSelection } from "@/components/AssigneePickerSheet";
 import { renderShape } from "@/components/AnnotationEditor";
 import {
+  resolveFontSize,
   strokeToRenderShape,
   type RenderShape,
 } from "@/services/annotations";
@@ -2206,16 +2207,25 @@ function AnnotationOverlay({
   // a photo's edge appears in both grids at the same tile position —
   // matching web beats matching the photo pixels here. Full-screen view
   // keeps the exact fitted-rect basis. Text renders here too (web-parity
-  // after web's thumbnail-text fix): with the SVG height basis = 1000 =
-  // FONT_REFERENCE_HEIGHT, resolveFontSize is an identity, matching web.
+  // after web's thumbnail-text fix): this is the ONLY surface where
+  // resolveFontSize applies — the render basis is the 1000-unit
+  // reference space (height 1000 = FONT_REFERENCE_HEIGHT, so it is an
+  // identity today, kept explicit for web parity). Everywhere else text
+  // renders at raw stored px in the authoring (fitted-rect) basis.
   const shapes = useMemo(
     () =>
       strokes
         .slice(0, MAX_THUMB_STROKES)
-        .map((s, i) => ({
-          shape: strokeToRenderShape(s, 1000, 1000),
-          key: s.id ?? `i${i}`,
-        }))
+        .map((s, i) => {
+          const shape = strokeToRenderShape(s, 1000, 1000);
+          return {
+            shape:
+              shape && shape.kind === "text"
+                ? { ...shape, fontSize: resolveFontSize(shape.fontSize, 1000) }
+                : shape,
+            key: s.id ?? `i${i}`,
+          };
+        })
         .filter(
           (x): x is { shape: RenderShape; key: string } => x.shape !== null,
         ),
