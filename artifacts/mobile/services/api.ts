@@ -29,6 +29,12 @@ const COOKIE_STORAGE_KEY = "fv_session_cookies";
 // Map prevents the "connect.sid=A; connect.sid=B" duplication bug.
 const cookieJar: Map<string, string> = new Map();
 let loaded = false;
+/**
+ * Serialized jar as last written to (or read from) the Keychain — used
+ * by parseAndPersistSetCookie to skip byte-identical rewrites (rolling
+ * refreshes carry the same value on every response, including 4xx).
+ */
+let lastPersistedJar: string | null = null;
 
 // Attributes that should NOT be stored as cookies — these are cookie
 // metadata (Path, Expires, etc.), not name/value pairs.
@@ -122,6 +128,7 @@ export async function loadSession(): Promise<string | null> {
   if (cleaned !== raw) {
     secureStorage.setItem(COOKIE_STORAGE_KEY, cleaned).catch(() => {});
   }
+  lastPersistedJar = cleaned;
   return cleaned || null;
 }
 
@@ -129,6 +136,7 @@ export async function loadSession(): Promise<string | null> {
 export async function clearSession(): Promise<void> {
   cookieJar.clear();
   loaded = true;
+  lastPersistedJar = null;
   await secureStorage.removeItem(COOKIE_STORAGE_KEY);
 }
 
@@ -181,6 +189,13 @@ function parseAndPersistSetCookie(raw: string | null): void {
   }
   if (!updated) return;
   const serialized = serializeCookieJar();
+  // Skip the Keychain write when the jar is byte-identical to what we
+  // last persisted. Rolling-session refreshes (same sid, new Expires —
+  // now ingested even on 4xx) hit this constantly; only metadata changed,
+  // so there is nothing new to store. Keeps Keychain write volume at
+  // "on actual cookie change" instead of "on every 4xx".
+  if (serialized === lastPersistedJar) return;
+  lastPersistedJar = serialized;
   secureStorage
     .setItem(COOKIE_STORAGE_KEY, serialized)
     .then(() => {
