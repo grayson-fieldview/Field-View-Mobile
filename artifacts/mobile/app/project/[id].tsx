@@ -2037,20 +2037,6 @@ function PhotoTile({
   // we fall back to the grey videoTile placeholder — never block the grid,
   // never crash. Non-video tiles skip this entirely.
   const [videoPoster, setVideoPoster] = useState<string | null>(null);
-  // Intrinsic pixel size of the tile's source (photo, or the video's
-  // generated poster — same pixel space as the video frames). Needed by
-  // AnnotationOverlay to reproduce the cover crop; until it arrives the
-  // overlay renders nothing rather than strokes in a wrong basis (same
-  // gating rule as the full-screen viewer).
-  const [imgDims, setImgDims] = useState<{ w: number; h: number } | null>(
-    null,
-  );
-  const captureDims = (e: { source?: { width?: number; height?: number } }) => {
-    const w = e.source?.width;
-    const h = e.source?.height;
-    if (w && h)
-      setImgDims((prev) => (prev?.w === w && prev?.h === h ? prev : { w, h }));
-  };
   useEffect(() => {
     if (!photo.isVideo || !photo.uri) return;
     let cancelled = false;
@@ -2137,7 +2123,6 @@ function PhotoTile({
               style={StyleSheet.absoluteFill}
               contentFit="cover"
               transition={120}
-              onLoad={captureDims}
             />
           ) : null}
           <View style={styles.videoPlayBadge}>
@@ -2150,15 +2135,10 @@ function PhotoTile({
           style={styles.photo}
           contentFit="cover"
           transition={120}
-          onLoad={captureDims}
         />
       )}
-      {photo.annotations && photo.annotations.length > 0 && imgDims ? (
-        <AnnotationOverlay
-          strokes={photo.annotations}
-          imgW={imgDims.w}
-          imgH={imgDims.h}
-        />
+      {photo.annotations && photo.annotations.length > 0 ? (
+        <AnnotationOverlay strokes={photo.annotations} />
       ) : null}
       {uploadStatus === "uploading" ? (
         <View pointerEvents="none" style={styles.uploadingDim} />
@@ -2213,46 +2193,44 @@ const MAX_THUMB_STROKES = 60;
 
 function AnnotationOverlay({
   strokes,
-  imgW,
-  imgH,
 }: {
   strokes: import("@/services/types").StoredStroke[];
-  imgW: number;
-  imgH: number;
 }) {
-  // Thumbnail overlay — ALL six stroke types, correct basis. Canonical
-  // strokes are normalized 0..1 over the photo's pixels, so the only
-  // thing needed to place them on a cover-cropped tile is the photo's
-  // ASPECT RATIO (from expo-image onLoad, passed in by PhotoTile).
-  // We denormalize into a nominal 1000-wide space with matching aspect
-  // (H = 1000·imgH/imgW) and let the viewBox with xMidYMid slice apply
-  // the exact same cover crop the <Image contentFit="cover"> applies —
-  // strokes land on the same photo pixels at any tile size. Canonical
-  // widths (widthToPx) scale with the 1000 basis; legacy px widths and
-  // text fontSize render at their raw px in that space, which is the
-  // web-canvas scale — acceptable at thumbnail size.
-  const shapes = useMemo(() => {
-    if (!imgW || !imgH) return [];
-    const w = 1000;
-    const h = (1000 * imgH) / imgW;
-    return strokes
-      .slice(0, MAX_THUMB_STROKES)
-      .map((s, i) => ({
-        shape: strokeToRenderShape(s, w, h),
-        key: s.id ?? `i${i}`,
-      }))
-      .filter(
-        (x): x is { shape: RenderShape; key: string } => x.shape !== null,
-      );
-  }, [strokes, imgW, imgH]);
-  if (shapes.length === 0 || !imgW || !imgH) return null;
-  const h = (1000 * imgH) / imgW;
+  // Thumbnail overlay — WEB-PARITY basis, verified against the prod web
+  // bundle's grid tile (data-testid="annotation-overlay"): the web grid
+  // cover-crops the <img> but renders the overlay with viewBox
+  // "0 0 1000 1000" and preserveAspectRatio="none" and NO aspect input —
+  // i.e. it STRETCHES the normalized unit square onto the tile box.
+  // Strokes are never clipped, but they are not crop-compensated either.
+  // We deliberately reproduce that (stretch, not slice) so a stroke near
+  // a photo's edge appears in both grids at the same tile position —
+  // matching web beats matching the photo pixels here. Web's thumbnail
+  // overlay also skips text strokes (they render only in the full
+  // viewer), so we drop them too. Full-screen view keeps the exact
+  // fitted-rect basis.
+  const shapes = useMemo(
+    () =>
+      strokes
+        .slice(0, MAX_THUMB_STROKES)
+        .map((s, i) => ({
+          shape:
+            (s.type ?? "pencil") === "text"
+              ? null
+              : strokeToRenderShape(s, 1000, 1000),
+          key: s.id ?? `i${i}`,
+        }))
+        .filter(
+          (x): x is { shape: RenderShape; key: string } => x.shape !== null,
+        ),
+    [strokes],
+  );
+  if (shapes.length === 0) return null;
   return (
     <Svg
       pointerEvents="none"
       style={StyleSheet.absoluteFill}
-      viewBox={`0 0 1000 ${h}`}
-      preserveAspectRatio="xMidYMid slice"
+      viewBox="0 0 1000 1000"
+      preserveAspectRatio="none"
     >
       {shapes.map(({ shape, key }) => renderShape(shape, key))}
     </Svg>
