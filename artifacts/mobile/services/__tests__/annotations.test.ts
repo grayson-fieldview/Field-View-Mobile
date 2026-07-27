@@ -13,6 +13,7 @@ import { test } from "node:test";
 
 import {
   DEFAULT_STROKE_WIDTH,
+  nextFontSizeNorm,
   resolveFontSize,
   MIN_DRAG_PX,
   arrowHeadPath,
@@ -185,7 +186,7 @@ test("rectangle normalizes corner order", () => {
   );
 });
 
-test("text: top-level normalized x/y, RAW px fontSize (authoring basis)", () => {
+test("text render: legacy stroke (no norm) resolves fontSize/600 * h", () => {
   const shape = strokeToRenderShape(
     { id: "t1", type: "text", x: 0.1, y: 0.2, content: "hi", fontSize: 24 },
     W,
@@ -194,15 +195,41 @@ test("text: top-level normalized x/y, RAW px fontSize (authoring basis)", () => 
   assert.ok(shape && shape.kind === "text");
   close(shape.x, 40);
   close(shape.y, 60);
-  // Raw stored px — resolveFontSize is applied only by the thumbnail
-  // overlay (1000-unit basis), never inside strokeToRenderShape.
-  assert.equal(shape.fontSize, 24);
+  // Legacy (no fontSizeNorm): 24/600 * 300 = 12
+  close(shape.fontSize, 12);
   assert.equal(shape.content, "hi");
 });
 
-test("resolveFontSize is identity at the 1000-unit reference height", () => {
-  assert.equal(resolveFontSize(24, 1000), 24);
-  assert.equal(resolveFontSize(18, 500), 9);
+test("text render: norm-bearing stroke is identity at authoring height", () => {
+  // Authored: typedPx 18 on a 520-tall fitted rect → norm 18/520.
+  const s = {
+    id: "t2",
+    type: "text" as const,
+    x: 0.5,
+    y: 0.5,
+    content: "hi",
+    fontSize: 18,
+    fontSizeNorm: 18 / 520,
+  };
+  const atAuthoring = strokeToRenderShape(s, 390, 520);
+  assert.ok(atAuthoring && atAuthoring.kind === "text");
+  close(atAuthoring.fontSize, 18); // (18/520) * 520 = 18 exactly
+  const atThumb = strokeToRenderShape(s, 1000, 1000);
+  assert.ok(atThumb && atThumb.kind === "text");
+  close(atThumb.fontSize, (18 / 520) * 1000); // norm wins over fontSize/600
+});
+
+test("resolveFontSize: norm ?? fontSize/600, times rendered height", () => {
+  assert.equal(resolveFontSize({ fontSize: 24 }, 600), 24); // legacy identity at 600
+  assert.equal(resolveFontSize({ fontSize: 18 }, 500), 15); // 18/600*500
+  assert.equal(resolveFontSize({ fontSize: 18, fontSizeNorm: 0.05 }, 500), 25);
+});
+
+test("nextFontSizeNorm: computes from measured rect, preserves prev otherwise", () => {
+  close(nextFontSizeNorm(18, 520) as number, 18 / 520);
+  assert.equal(nextFontSizeNorm(18, null, 0.05), 0.05); // rect unmeasured → preserve
+  assert.equal(nextFontSizeNorm(18, undefined), undefined); // nothing to preserve
+  assert.equal(nextFontSizeNorm(96, 10), 4); // schema cap max(4)
 });
 
 test("unknown type renders as null (skipped, not crashed)", () => {
@@ -413,6 +440,53 @@ test("text save clamps x/y to 0..1 and fontSize to 8..96", () => {
   );
 });
 
+test("fontSizeNorm round-trips through save (single and double), verbatim", () => {
+  const stroke = {
+    id: "fv-t5",
+    type: "text" as const,
+    x: 0.5,
+    y: 0.5,
+    content: "hi",
+    color: "#fff",
+    fontSize: 18,
+    fontSizeNorm: 18 / 520,
+  };
+  const once = toCanonicalForSave(stroke);
+  assert.ok(once.type === "text");
+  assert.equal((once as { fontSizeNorm?: number }).fontSizeNorm, 18 / 520);
+  const twice = toCanonicalForSave(once);
+  assert.ok(twice.type === "text");
+  // Preserved verbatim, never recomputed (save has no rect measurement).
+  assert.equal((twice as { fontSizeNorm?: number }).fontSizeNorm, 18 / 520);
+});
+
+test("malformed fontSizeNorm never reaches the wire (row-killer guard)", () => {
+  const base = { id: "fv-t7", type: "text" as const, x: 0.5, y: 0.5, content: "hi", fontSize: 18 };
+  // >4 violates z.max(4) → clamped, not preserved verbatim.
+  assert.equal(
+    (toCanonicalForSave({ ...base, fontSizeNorm: 9 }) as { fontSizeNorm?: number }).fontSizeNorm,
+    4,
+  );
+  // Non-finite / non-positive → key dropped (degrades to legacy).
+  assert.ok(!("fontSizeNorm" in toCanonicalForSave({ ...base, fontSizeNorm: NaN })));
+  assert.ok(!("fontSizeNorm" in toCanonicalForSave({ ...base, fontSizeNorm: 0 })));
+  assert.ok(!("fontSizeNorm" in toCanonicalForSave({ ...base, fontSizeNorm: -1 })));
+});
+
+test("legacy text stroke does not grow a fontSizeNorm key on save", () => {
+  const saved = toCanonicalForSave({
+    id: "fv-t6",
+    type: "text",
+    x: 0.5,
+    y: 0.5,
+    content: "hi",
+    color: "#fff",
+    fontSize: 18,
+  });
+  assert.ok(saved.type === "text");
+  assert.ok(!("fontSizeNorm" in saved)); // no undefined-valued key either
+});
+
 // ---------- degenerate-shape guard ----------
 
 test("hasMinDrag: taps and micro-drags rejected, real drags accepted", () => {
@@ -535,7 +609,8 @@ test("textToCanonical builds a wire-shaped text stroke from a tap", () => {
   assert.equal(c.x, 0.25);
   assert.equal(c.y, 0.5);
   assert.equal(c.content, "crack here"); // trimmed
-  assert.equal(c.fontSize, 18);
+  assert.equal(c.fontSize, 18); // legacy field: typedPx, unchanged
+  close(c.fontSizeNorm as number, 18 / 600); // norm: typedPx / fitRect.h
   assert.equal(c.color, "#ef4444");
   assert.ok((c.id as string).startsWith("fv-"));
   // Wire contract: NO points array, NO width on text strokes.
@@ -583,6 +658,9 @@ test("textToCanonical clamps fontSize 8..96, content to 500, x/y to 0..1", () =>
     canvasH: 400,
   });
   assert.ok(small && small.type === "text" && small.fontSize === 8);
+  // Norm derives from the CLAMPED px, so resolution at the authoring
+  // basis reproduces the stored fontSize exactly.
+  close(small.fontSizeNorm as number, 8 / 400); // clampedPx / canvasH
 });
 
 // ---------- Fitted-rect coordinate basis (web parity, build 42) ----------

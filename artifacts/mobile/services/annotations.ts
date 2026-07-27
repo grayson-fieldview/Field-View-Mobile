@@ -33,18 +33,53 @@ export const DEFAULT_STROKE_WIDTH = 3;
 /**
  * Text-size resolution — mirrored EXACTLY from the web repo's
  * client/src/lib/annotation-svg.tsx (same constant, same helper name,
- * same signature; do not invent a variant). Stored fontSize is treated
- * as units in a 1000-tall reference space and scaled to the surface's
- * rendered height, so text keeps its proportion to the photo on every
- * surface (thumbnail, full viewer, server-side PDF flatten).
+ * same signature; do not invent a variant).
+ *
+ *   resolveFontSize(stroke, h) = (stroke.fontSizeNorm ?? stroke.fontSize / 600) * h
+ *
+ * One resolution rule on EVERY surface (full viewer, editor, thumbnail
+ * overlay, selection bounds/hit-testing), legacy rows included:
+ *   - norm-bearing strokes: (typedPx / authoringH) * renderedH — identity
+ *     at the authoring basis, proportional everywhere else.
+ *   - legacy strokes (no fontSizeNorm): fontSize is treated as units in a
+ *     600-tall reference space. On a ~520px rect that renders ~13%
+ *     smaller than raw px — accepted, matches web's call.
  */
-export const FONT_REFERENCE_HEIGHT = 1000;
+export const FONT_REFERENCE_HEIGHT = 600;
 
 export function resolveFontSize(
-  strokeFontSize: number,
+  stroke: { fontSize?: number; fontSizeNorm?: number },
   renderedHeightPx: number,
 ): number {
-  return (strokeFontSize / FONT_REFERENCE_HEIGHT) * renderedHeightPx;
+  const fs =
+    typeof stroke.fontSize === "number" && stroke.fontSize > 0
+      ? stroke.fontSize
+      : DEFAULT_FONT_SIZE;
+  const norm =
+    typeof stroke.fontSizeNorm === "number" && stroke.fontSizeNorm > 0
+      ? stroke.fontSizeNorm
+      : fs / FONT_REFERENCE_HEIGHT;
+  return norm * renderedHeightPx;
+}
+
+/**
+ * Write-path norm derivation — mirror of web's nextFontSizeNorm guard
+ * (client/src/lib/annotation-convert.ts): if the fitted rect is not yet
+ * measured, PRESERVE the previous norm rather than recomputing it.
+ * Silently recomputing to undefined on an edit re-save would downgrade
+ * a stroke to legacy. Clamped to the server schema cap
+ * (z.number().positive().max(4)) — an out-of-range value would 400 the
+ * entire row.
+ */
+export function nextFontSizeNorm(
+  typedPx: number,
+  fittedRectH: number | null | undefined,
+  prevNorm?: number,
+): number | undefined {
+  if (typeof fittedRectH === "number" && fittedRectH > 0) {
+    return Math.min(4, typedPx / fittedRectH);
+  }
+  return prevNorm;
 }
 const DEFAULT_COLOR = "#ef4444";
 
@@ -184,6 +219,16 @@ export function textToCanonical(input: {
   const content = input.content.trim().slice(0, MAX_TEXT_CONTENT_LENGTH);
   if (content.length === 0) return null;
   if (!(input.canvasW > 0) || !(input.canvasH > 0)) return null;
+  const fontSize = Math.min(
+    96,
+    Math.max(8, Number.isFinite(input.fontSize) ? input.fontSize : DEFAULT_FONT_SIZE),
+  );
+  // Write BOTH fields: fontSize = typedPx (legacy, unchanged meaning),
+  // fontSizeNorm = typedPx / fittedRectH (canvasH here IS the fitted
+  // rect height — callers pass rect.w/rect.h). Norm derives from the
+  // CLAMPED px so a norm-bearing stroke resolves to exactly the stored
+  // fontSize at the authoring basis.
+  const fontSizeNorm = nextFontSizeNorm(fontSize, input.canvasH);
   return {
     id: newStrokeId(),
     type: "text",
@@ -191,10 +236,8 @@ export function textToCanonical(input: {
     y: clamp01(input.yPx / input.canvasH),
     content,
     color: input.color,
-    fontSize: Math.min(
-      96,
-      Math.max(8, Number.isFinite(input.fontSize) ? input.fontSize : DEFAULT_FONT_SIZE),
-    ),
+    fontSize,
+    ...(fontSizeNorm !== undefined ? { fontSizeNorm } : {}),
   };
 }
 
@@ -606,14 +649,12 @@ export function strokeToRenderShape(
       x: clamp01(s.x) * w,
       y: clamp01(s.y) * h,
       content: s.content,
-      // RAW stored px — the full-size viewer's fitted rect is the basis
-      // these values were authored against. resolveFontSize is applied
-      // ONLY by callers whose render basis is the 1000-unit reference
-      // space (the thumbnail overlay), never here.
-      fontSize:
-        typeof s.fontSize === "number" && s.fontSize > 0
-          ? s.fontSize
-          : DEFAULT_FONT_SIZE,
+      // ONE resolution rule on every surface (fontSizeNorm scheme):
+      // norm-bearing strokes resolve to (typedPx/authoringH)*h —
+      // identity at the authoring basis; legacy strokes resolve to
+      // fontSize/600*h (accepted ~13% shrink on typical rects, matches
+      // web).
+      fontSize: resolveFontSize(s, h),
     };
   }
 
@@ -815,6 +856,19 @@ export function toCanonicalForSave(s: StoredStroke): CanonicalStroke {
         typeof s.fontSize === "number"
           ? Math.min(96, Math.max(8, s.fontSize))
           : s.fontSize,
+      // Round-trip fontSizeNorm (this path never has a fresh rect
+      // measurement, so it PRESERVES rather than recomputes — web's
+      // nextFontSizeNorm guard). Omit the key when absent; a legacy
+      // stroke must not grow it, and an undefined-valued key must never
+      // be written. Wire safety: the server schema is
+      // z.number().positive().max(4) and a violating value 400s the
+      // ENTIRE row — clamp >4 down to 4, drop non-finite/<=0 (the
+      // stroke degrades to legacy fontSize resolution, never lost).
+      ...(typeof s.fontSizeNorm === "number" &&
+      Number.isFinite(s.fontSizeNorm) &&
+      s.fontSizeNorm > 0
+        ? { fontSizeNorm: Math.min(4, s.fontSizeNorm) }
+        : {}),
     };
   }
   if (s.type !== undefined && !isKnownStrokeType(s.type)) {

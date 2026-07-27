@@ -155,8 +155,9 @@ export function renderShape(shape: RenderShape, key: string | number) {
       // alignmentBaseline (their support differs across Safari,
       // react-native-svg on Android, and the server-side PDF-flatten
       // renderer; arithmetic behaves identically everywhere).
-      // shape.fontSize is raw stored px (authoring basis); only the
-      // thumbnail overlay pre-resolves before reaching this switch.
+      // shape.fontSize arrives RESOLVED from strokeToRenderShape
+      // (fontSizeNorm scheme — identity at the authoring basis for
+      // norm-bearing strokes).
       const y = shape.y + shape.fontSize * 0.8;
       // Contrast halo: react-native-svg does not honor paintOrder
       // reliably, so render twice at identical coordinates — stroke-only

@@ -135,6 +135,15 @@ export interface TextStroke extends StrokeBase {
   y?: number;
   content?: string;
   fontSize?: number;
+  /**
+   * Height-normalized font size: typedPx / fittedRectHeight at authoring
+   * time. Server schema (mirrored from web):
+   *   fontSizeNorm: z.number().positive().max(4).optional()
+   * Cap is 4, not 1 — typedPx / fittedHeight legitimately exceeds 1 on
+   * small rects. `fontSize` stays required and unchanged in meaning
+   * (legacy raw px). Omit the key when absent; never write undefined.
+   */
+  fontSizeNorm?: number;
 }
 
 /**
@@ -154,6 +163,7 @@ export interface UnknownStroke extends StrokeBase {
   y?: number;
   content?: string;
   fontSize?: number;
+  fontSizeNorm?: number;
 }
 
 export type KnownCanonicalStroke =
