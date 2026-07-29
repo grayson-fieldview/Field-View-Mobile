@@ -1,5 +1,8 @@
 import { Feather } from "@expo/vector-icons";
 import { Image } from "expo-image";
+
+import { ThumbImage } from "@/components/ThumbImage";
+import { thumbKeyForUri } from "@/services/thumbnails";
 import * as Location from "expo-location";
 import { useFocusEffect, useRouter } from "expo-router";
 import React, {
@@ -508,11 +511,13 @@ function ProjectCard({
     >
       <View style={[styles.cover, { backgroundColor: colors.muted }]}>
         {cover ? (
-          <Image
-            source={{ uri: cover }}
-            style={StyleSheet.absoluteFill}
-            contentFit="cover"
-            transition={120}
+          // Bounded decode (memory fix part C): covers are ORIGINAL S3
+          // urls (recentPhotos[0].url) — thumbnail them like grid tiles
+          // so memory pressure doesn't start on the project list.
+          <ThumbImage
+            cacheKey={`cover-${thumbKeyForUri(cover)}`}
+            uri={cover}
+            style={StyleSheet.absoluteFill as never}
           />
         ) : (
           <View

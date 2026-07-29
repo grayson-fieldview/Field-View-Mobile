@@ -1,4 +1,5 @@
 import { Feather } from "@expo/vector-icons";
+import { FlashList } from "@shopify/flash-list";
 import { Image } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import { Calendar, type DateData } from "react-native-calendars";
@@ -35,6 +36,7 @@ import { EmptyState } from "@/components/EmptyState";
 import KebabIcon from "@/components/KebabIcon";
 import { Input } from "@/components/Input";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
+import { ThumbImage } from "@/components/ThumbImage";
 import { ApplyReportTemplateModal } from "@/components/ApplyReportTemplateModal";
 import { ReportListItem } from "@/components/ReportListItem";
 import { TemplatePickerModal } from "@/components/TemplatePickerModal";
@@ -376,6 +378,34 @@ export default function ProjectDetailScreen() {
     }
     return list.sort((a, b) => (b.sortKey - a.sortKey) * dir);
   }, [filteredPhotos, filters.sort]);
+
+  // Flattened, virtualization-friendly item list for the photos grid
+  // (memory fix part A). Date-section headers span the full width, so
+  // instead of FlashList numColumns (which cannot mix full-width rows
+  // with 2-up tiles) each item is either a header or an explicit PAIR
+  // of photos — same visual 2-up layout, one list item per row.
+  type GridRowItem =
+    | { kind: "header"; key: string; label: string; ids: string[] }
+    | { kind: "row"; key: string; photos: typeof projectPhotos };
+  const gridItems = useMemo<GridRowItem[]>(() => {
+    const items: GridRowItem[] = [];
+    for (const g of photoGroups) {
+      items.push({
+        kind: "header",
+        key: `h-${g.label}`,
+        label: g.label,
+        ids: g.ids,
+      });
+      for (let i = 0; i < g.photos.length; i += 2) {
+        items.push({
+          kind: "row",
+          key: `r-${g.photos[i].id}`,
+          photos: g.photos.slice(i, i + 2),
+        });
+      }
+    }
+    return items;
+  }, [photoGroups]);
 
   const exitSelectMode = () => {
     setSelected(new Set());
@@ -792,18 +822,12 @@ export default function ProjectDetailScreen() {
       })
     : null;
 
-  return (
-    <View style={[styles.wrap, { backgroundColor: colors.background }]}>
-      <Stack.Screen options={{ headerShown: false }} />
-
-      <ScrollView
-        contentContainerStyle={{
-          // Extra bottom padding while the floating selection bar is up so
-          // the last photo row isn't hidden behind it (bar ≈ 56px + margin).
-          paddingBottom:
-            insets.bottom + 24 + (selectMode && tab === "photos" ? 72 : 0),
-        }}
-      >
+  // Shared above-the-grid content: hero, summary card, tab pills. Used
+  // as the FlashList header on the photos tab (which must own the
+  // scroll container to virtualize) and inline in the ScrollView for
+  // every other tab.
+  const sharedHeader = (
+    <>
         <View style={styles.heroWrap}>
           {heroPhoto ? (
             <Image
@@ -1034,8 +1058,14 @@ export default function ProjectDetailScreen() {
             );
           })}
         </ScrollView>
+    </>
+  );
 
-        {tab === "photos" ? (
+  // Photos-tab list header: shared header + toolbar + empty states.
+  // The grid rows themselves are FlashList items (virtualized).
+  const photosListHeader = (
+    <>
+      {sharedHeader}
           <View style={styles.body}>
             <PhotosToolbar
               selectMode={selectMode}
@@ -1072,83 +1102,109 @@ export default function ProjectDetailScreen() {
                   description="Adjust or clear the filters to see this project's photos."
                 />
               </View>
-            ) : (
-              <View style={{ marginTop: 14, gap: 18 }}>
-                {photoGroups.map((g) => {
-                  const allSelected = g.ids.every((i) => selected.has(i));
-                  return (
-                    <View key={g.label} style={{ gap: 10 }}>
-                      <View style={styles.dateHeader}>
-                        <Pressable
-                          onPress={() => toggleGroupSelected(g.ids)}
-                          hitSlop={6}
-                          accessibilityRole="checkbox"
-                          accessibilityLabel={`Select all photos from ${g.label}`}
-                          accessibilityState={{ checked: allSelected }}
-                          style={[
-                            styles.dateCheckbox,
-                            {
-                              borderColor: allSelected
-                                ? colors.primary
-                                : colors.border,
-                              backgroundColor: allSelected
-                                ? colors.primary
-                                : "transparent",
-                            },
-                          ]}
-                        >
-                          {allSelected ? (
-                            <Feather
-                              name="check"
-                              size={12}
-                              color={colors.primaryForeground}
-                            />
-                          ) : null}
-                        </Pressable>
-                        <Text
-                          style={[
-                            styles.dateLabel,
-                            { color: colors.foreground },
-                          ]}
-                        >
-                          {g.label}
-                        </Text>
-                      </View>
-                      <View style={[styles.photoGrid, { rowGap: 10 }]}>
-                        {g.photos.map((ph) => (
-                          <PhotoTile
-                            key={ph.id}
-                            photo={ph}
-                            borderColor={colors.border}
-                            widthPercent="48.5%"
-                            selectMode={selectMode}
-                            selected={selected.has(ph.id)}
-                            primary={colors.primary}
-                            primaryForeground={colors.primaryForeground}
-                            onOpen={() => router.push(`/photo/${ph.id}`)}
-                            onToggleSelected={() => togglePhotoSelected(ph.id)}
-                            onDelete={() => void confirmAndDeletePhoto(ph)}
-                            onRemoveLocal={() => void deletePhoto(ph.id)}
-                          />
-                        ))}
-                      </View>
-                    </View>
-                  );
-                })}
-              </View>
-            )}
-
-            <FilterSheet
-              visible={filterSheetOpen}
-              filters={filters}
-              allTags={allTags}
-              allUsers={allUsers}
-              onApply={applyFilters}
-              onClose={() => setFilterSheetOpen(false)}
-              colors={colors}
-            />
+            ) : null}
           </View>
+    </>
+  );
+
+  const renderGridItem = ({ item }: { item: (typeof gridItems)[number] }) => {
+    if (item.kind === "header") {
+      const allSelected = item.ids.every((i) => selected.has(i));
+      return (
+        <View style={styles.gridHeaderRow}>
+          <View style={styles.dateHeader}>
+            <Pressable
+              onPress={() => toggleGroupSelected(item.ids)}
+              hitSlop={6}
+              accessibilityRole="checkbox"
+              accessibilityLabel={`Select all photos from ${item.label}`}
+              accessibilityState={{ checked: allSelected }}
+              style={[
+                styles.dateCheckbox,
+                {
+                  borderColor: allSelected ? colors.primary : colors.border,
+                  backgroundColor: allSelected
+                    ? colors.primary
+                    : "transparent",
+                },
+              ]}
+            >
+              {allSelected ? (
+                <Feather
+                  name="check"
+                  size={12}
+                  color={colors.primaryForeground}
+                />
+              ) : null}
+            </Pressable>
+            <Text style={[styles.dateLabel, { color: colors.foreground }]}>
+              {item.label}
+            </Text>
+          </View>
+        </View>
+      );
+    }
+    return (
+      <View style={styles.gridPairRow}>
+        {item.photos.map((ph) => (
+          <PhotoTile
+            key={ph.id}
+            photo={ph}
+            borderColor={colors.border}
+            widthPercent="48.5%"
+            selectMode={selectMode}
+            selected={selected.has(ph.id)}
+            primary={colors.primary}
+            primaryForeground={colors.primaryForeground}
+            onOpen={() => router.push(`/photo/${ph.id}`)}
+            onToggleSelected={() => togglePhotoSelected(ph.id)}
+            onDelete={() => void confirmAndDeletePhoto(ph)}
+            onRemoveLocal={() => void deletePhoto(ph.id)}
+          />
+        ))}
+        {item.photos.length === 1 ? (
+          <View style={{ width: "48.5%" }} />
         ) : null}
+      </View>
+    );
+  };
+
+  return (
+    <View style={[styles.wrap, { backgroundColor: colors.background }]}>
+      <Stack.Screen options={{ headerShown: false }} />
+
+      {tab === "photos" ? (
+        <>
+          <FlashList
+            data={gridItems}
+            keyExtractor={(it) => it.key}
+            renderItem={renderGridItem}
+            // Selection state lives outside the items — every selection
+            // mutation replaces the Set immutably, so this object's
+            // identity changes exactly when rows must re-render.
+            extraData={{ selectMode, selected }}
+            ListHeaderComponent={photosListHeader}
+            contentContainerStyle={{
+              // Extra bottom padding while the floating selection bar is
+              // up so the last row isn't hidden behind it (≈56px + margin).
+              paddingBottom: insets.bottom + 24 + (selectMode ? 72 : 0),
+            }}
+          />
+          <FilterSheet
+            visible={filterSheetOpen}
+            filters={filters}
+            allTags={allTags}
+            allUsers={allUsers}
+            onApply={applyFilters}
+            onClose={() => setFilterSheetOpen(false)}
+            colors={colors}
+          />
+        </>
+      ) : (
+      <ScrollView
+        contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
+      >
+        {sharedHeader}
 
         {tab === "tasks" ? (
           <View style={styles.body}>
@@ -1648,6 +1704,7 @@ export default function ProjectDetailScreen() {
           </View>
         ) : null}
       </ScrollView>
+      )}
 
       {/* Task photos sheet — attach/detach existing project photos */}
 
@@ -2130,12 +2187,18 @@ function PhotoTile({
           </View>
         </View>
       ) : (
-        <Image
-          source={{ uri: photo.uri }}
-          style={styles.photo}
-          contentFit="cover"
-          transition={120}
-        />
+        // Bounded decode (memory fix): the grid NEVER hands expo-image
+        // the original — ThumbImage renders a ~400px cached thumbnail
+        // (grey placeholder until ready, original only if generation
+        // fails). recyclingKey inside lets FlashList recycle without
+        // re-decoding.
+        <View style={[styles.photo, styles.tilePlaceholder]}>
+          <ThumbImage
+            cacheKey={photo.id}
+            uri={photo.uri}
+            style={StyleSheet.absoluteFill as never}
+          />
+        </View>
       )}
       {photo.annotations && photo.annotations.length > 0 ? (
         <AnnotationOverlay strokes={photo.annotations} />
@@ -3120,6 +3183,15 @@ const styles = StyleSheet.create({
   },
   tabLabel: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
   body: { padding: 20 },
+  // Virtualized grid rows carry the horizontal padding styles.body used
+  // to provide (the grid is no longer nested inside a body View).
+  gridHeaderRow: { paddingHorizontal: 20, paddingTop: 18 },
+  gridPairRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    marginTop: 10,
+  },
   photoGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -3272,6 +3344,7 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   photo: { width: "100%", height: "100%" },
+  tilePlaceholder: { backgroundColor: "#e2e5e9" },
   videoTile: {
     backgroundColor: "#1f2937",
     alignItems: "center",
