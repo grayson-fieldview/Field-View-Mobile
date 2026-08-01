@@ -20,7 +20,6 @@ import {
 import {
   toCanonicalForSave,
   hasCanvasMeta,
-  strokeToRenderShape,
 } from "@/services/annotations";
 import { Sentry } from "@/services/sentry";
 import { storage } from "@/services/storage";
@@ -290,11 +289,6 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
    * Instead it re-GETs, merges by stroke id, and only then writes.
    */
   const annotationLoadFailedRef = useRef<Record<string, true>>({});
-  /** Media already reported by the "annot-diag GET ok" Sentry event this
-   *  session — sampled to once per media so photo browsing doesn't spam
-   *  Sentry (review finding). Breadcrumbs still fire on every GET. */
-  const annotationDiagSentRef = useRef<Set<string>>(new Set());
-
   // Throttle + dedupe refreshes triggered from many places (auth ready, app
   // foreground, screen focus, manual pull-to-refresh).
   const syncingRef = useRef(false);
@@ -844,30 +838,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       let rows;
       try {
         rows = await api.listMediaAnnotations(photo.mediaId);
-        // TEMP DIAG (Bug 2, build 39): raw response shape + stroke counts.
-        console.log(
-          `[annot-diag] GET annotations media=${photo.mediaId}: rows=${Array.isArray(rows) ? rows.length : typeof rows}`,
-          Array.isArray(rows)
-            ? rows.map((r) => ({
-                id: r.id,
-                userId: r.userId,
-                strokes: Array.isArray(r.strokes) ? r.strokes.length : "n/a",
-                types: Array.isArray(r.strokes)
-                  ? r.strokes.map((s: { type?: unknown }) => s?.type)
-                  : [],
-              }))
-            : rows,
-        );
       } catch (err) {
-        // TEMP DIAG (Bug 2, build 39): this catch previously swallowed the
-        // error with zero logging — a session drop (Bug 1) lands here and
-        // looks identical to "no annotations".
-        console.warn(
-          `[annot-diag] GET annotations media=${photo.mediaId} FAILED:`,
-          err instanceof ApiError ? `ApiError status=${err.status}` : err,
-          `→ falling back to legacyOwn=${legacyOwn.length}, others=0`,
-        );
-        Sentry.captureMessage("annot-diag GET failed", {
+        // A failed GET must not be silent: a session drop lands here and
+        // would otherwise look identical to "no annotations". The capture
+        // accompanies the clobber guard set just below.
+        Sentry.captureMessage("annotations: fetch failed", {
           level: "warning",
           extra: {
             mediaId: photo.mediaId,
@@ -885,37 +860,6 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         return { ownStrokes: legacyOwn, othersStrokes: [] };
       }
       delete annotationLoadFailedRef.current[mediaKey];
-      // TEMP DIAG (build 41): ship the row shape to Sentry — TestFlight
-      // has no console. Counts + ids only, never stroke contents.
-      // Sampled: one event per media per app session (breadcrumb trail
-      // still records every GET via the api-response breadcrumbs).
-      if (!annotationDiagSentRef.current.has(mediaKey)) {
-        annotationDiagSentRef.current.add(mediaKey);
-        Sentry.captureMessage("annot-diag GET ok", {
-          level: "info",
-          extra: {
-            mediaId: photo.mediaId,
-            rows: Array.isArray(rows) ? rows.length : -1,
-            rowMeta: Array.isArray(rows)
-              ? rows.map((r) => ({
-                  id: r.id,
-                  userId: r.userId,
-                  strokes: Array.isArray(r.strokes) ? r.strokes.length : -1,
-                  resolvedShapes: Array.isArray(r.strokes)
-                    ? r.strokes.filter(
-                        (s: { type?: unknown }) =>
-                          strokeToRenderShape(
-                            s as StoredStroke,
-                            1000,
-                            1000,
-                          ) != null,
-                      ).length
-                    : -1,
-                }))
-              : String(rows),
-          },
-        });
-      }
 
       const uid = userRef.current?.id;
       const others: StoredStroke[] = [];
@@ -1043,10 +987,10 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
           }
           delete annotationLoadFailedRef.current[mediaKey];
         } catch {
-          console.warn(
-            `[annot-diag] save blocked for media=${mediaId}: row state unknown (GET failed twice)`,
-          );
-          Sentry.captureMessage("annot save blocked — row state unknown", {
+          // Clobber guard fired: the recovery GET failed twice, so the
+          // server row state is unknown and a blind write could destroy
+          // strokes authored elsewhere. The save is deferred, not lost.
+          Sentry.captureMessage("annotations: save blocked, row state unknown", {
             level: "warning",
             extra: { mediaId },
           });
@@ -1082,7 +1026,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         if (putStatus !== undefined) {
           // Write eventually landed, but only via the PUT→POST fallback —
           // worth knowing (stale row id? PUT 401 but POST ok?).
-          Sentry.captureMessage("annot-diag PUT fell back to POST", {
+          Sentry.captureMessage("annotations: PUT fell back to POST", {
             level: "warning",
             extra: { mediaId, putStatus, hadRowId: true },
           });
@@ -1104,15 +1048,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         }
         return true;
       } catch (e) {
-        // TEMP DIAG (build 41): the final write failure — previously
-        // swallowed with zero telemetry (the "mobile strokes never reached
-        // the server, silently" bug). Ship the status; the breadcrumb
-        // trail carries the surrounding request sequence.
+        // Final write failure — must never be silent (guards the historic
+        // "mobile strokes never reached the server, silently" bug). The
+        // breadcrumb trail carries the surrounding request sequence.
         const status = e instanceof ApiError ? e.status : "network";
-        console.warn(
-          `[annot-diag] SAVE failed media=${mediaId}: status=${status}, putStatus=${putStatus ?? "n/a"}, strokes=${payload.length}`,
-        );
-        Sentry.captureMessage("annot-diag SAVE failed", {
+        Sentry.captureMessage("annotations: save failed", {
           level: "warning",
           extra: {
             mediaId,

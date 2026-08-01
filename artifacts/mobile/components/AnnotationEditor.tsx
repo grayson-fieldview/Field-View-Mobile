@@ -221,13 +221,6 @@ export const AnnotationLayer = React.memo(function AnnotationLayer({
         ),
     [strokes, width, height],
   );
-  // TEMP DIAG (Bug 2, build 39): canvas box + resolve rate. Logs only when
-  // inputs change (useMemo-adjacent), not per render frame.
-  useEffect(() => {
-    console.log(
-      `[annot-diag] AnnotationLayer box=${width}x${height}, strokes=${strokes.length}, resolved=${shapes.length}`,
-    );
-  }, [width, height, strokes.length, shapes.length]);
   if (!width || !height || shapes.length === 0) return null;
   return (
     <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
