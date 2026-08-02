@@ -2533,7 +2533,7 @@ function PhotoTile({
         <View style={[styles.photo, styles.tilePlaceholder]}>
           <ThumbImage
             cacheKey={photo.id}
-            uri={photo.uri}
+            uri={photo.thumbUrl ?? photo.uri}
             style={StyleSheet.absoluteFill as never}
           />
         </View>

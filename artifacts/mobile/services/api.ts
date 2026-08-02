@@ -652,6 +652,9 @@ export interface BackendMedia {
   originalName?: string;
   mimeType?: string;
   url: string;
+  /** CloudFront-delivered ~400px rendition. Null on a handful of legacy
+   *  rows — always render `thumbUrl ?? url` in grids. */
+  thumbUrl?: string | null;
   caption?: string | null;
   latitude?: number | null;
   longitude?: number | null;

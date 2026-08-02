@@ -263,6 +263,9 @@ export interface Photo {
   projectId: string;
   uri: string;
   remoteUrl?: string;
+  /** Server-generated ~400px rendition (CloudFront). Grids prefer this
+   *  over `uri`; the full-screen viewer keeps using the original. */
+  thumbUrl?: string;
   /**
    * True when this media item is a video rather than a still image.
    * Derived from the backend media row's `mimeType` (video/*) in
