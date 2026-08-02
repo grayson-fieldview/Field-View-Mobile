@@ -896,6 +896,39 @@ export interface BackendProjectFile {
   uploadedByName: string;
 }
 
+/** Per-item request for POST /api/uploads/sign when uploading project
+ *  files (folder: "files"). Distinct from the photo sign flow, which
+ *  omits `folder`. */
+export interface SignFileUploadItem {
+  originalName: string;
+  mimeType: string;
+  fileSize: number;
+  folder: "files";
+}
+
+/** Per-item response for the files sign flow. `contentDisposition` is
+ *  BAKED INTO the PUT signature — the S3 PUT must send it verbatim as
+ *  the Content-Disposition header or S3 rejects with a signature
+ *  mismatch. Never reconstruct it. */
+export interface SignFileUploadResponse {
+  key: string;
+  uploadUrl: string;
+  publicUrl: string;
+  contentDisposition: string;
+}
+
+/** Per-item body for POST /api/projects/:id/files. `key` and
+ *  `publicUrl` must be sent EXACTLY as returned by the sign endpoint —
+ *  the server validates publicUrl === getS3Url(key) and 400s on
+ *  mismatch. */
+export interface RegisterProjectFileItem {
+  key: string;
+  publicUrl: string;
+  originalName: string;
+  mimeType: string;
+  fileSize: number;
+}
+
 // ----- Reports (Mobile Reports R1, 2026-05) -----
 //
 // Read + write surface for the report builder. Mobile can list, create
@@ -1382,6 +1415,10 @@ export const api = {
     fileUri: string,
     mimeType: string,
     fileSize: number,
+    // Files sign flow only: bakes Content-Disposition into the PUT
+    // signature; must be sent VERBATIM alongside Content-Type or S3
+    // rejects with SignatureDoesNotMatch. Photos flow passes nothing.
+    contentDisposition?: string,
   ): Promise<void> => {
     let body: Blob;
     try {
@@ -1403,6 +1440,9 @@ export const api = {
         headers: {
           "Content-Type": mimeType,
           "Content-Length": String(fileSize),
+          ...(contentDisposition
+            ? { "Content-Disposition": contentDisposition }
+            : {}),
         },
       });
       console.log("[api] ← (s3)", res.status);
@@ -1781,6 +1821,25 @@ export const api = {
 
   listFilesForProject: (projectId: string | number) =>
     apiFetch<BackendProjectFile[]>(`/api/projects/${projectId}/files`),
+
+  /** Sign flow for project files (folder: "files"). Response order
+   *  matches input order 1:1, same as the photo sign flow. */
+  signFileUploads: (files: SignFileUploadItem[]) =>
+    apiFetch<SignFileUploadResponse[]>("/api/uploads/sign", {
+      method: "POST",
+      json: { files },
+    }),
+
+  /** Register uploaded files against a project (step 3 of the files
+   *  upload flow). */
+  registerProjectFiles: (
+    projectId: string | number,
+    files: RegisterProjectFileItem[],
+  ) =>
+    apiFetch<BackendProjectFile[]>(`/api/projects/${projectId}/files`, {
+      method: "POST",
+      json: { files },
+    }),
 
   /** Full report tree: report + sections + per-section photos with URLs. */
   getReport: (id: string | number) =>

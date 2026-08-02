@@ -70,6 +70,7 @@
     "@sentry/react-native": "~7.2.0",
     "@shopify/flash-list": "2.0.2",
     "expo-device": "^55.0.16",
+    "expo-document-picker": "~14.0.8",
     "expo-file-system": "~19.0.22",
     "expo-image-manipulator": "~14.0.8",
     "expo-notifications": "~0.32.17",

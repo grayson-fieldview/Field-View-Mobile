@@ -40,11 +40,17 @@ import { ThumbImage } from "@/components/ThumbImage";
 import { ApplyReportTemplateModal } from "@/components/ApplyReportTemplateModal";
 import { ReportListItem } from "@/components/ReportListItem";
 import { TemplatePickerModal } from "@/components/TemplatePickerModal";
+import * as DocumentPicker from "expo-document-picker";
+
 import { useProjectFiles } from "@/hooks/useProjectFiles";
 import {
   downloadAndShareProjectFile,
   fileDisplayName,
   formatFileSize,
+  uploadProjectFiles,
+  validateUploadFile,
+  type PickedUploadFile,
+  type UploadItemStatus,
 } from "@/services/projectFiles";
 import { useAuth } from "@/contexts/AuthContext";
 import { useData } from "@/contexts/DataContext";
@@ -203,6 +209,12 @@ export default function ProjectDetailScreen() {
   const [downloadingFileId, setDownloadingFileId] = useState<string | null>(
     null,
   );
+  // Active upload batch: name → status. RN fetch has no upload-progress
+  // API, so each row shows a spinner + state, never a fake percentage.
+  const [uploadStatuses, setUploadStatuses] = useState<
+    { id: string; name: string; status: UploadItemStatus }[]
+  >([]);
+  const [uploadingFiles, setUploadingFiles] = useState(false);
   // Real per-project team list (replaces the local-only ShareLink cache).
   // Loaded on demand when the Team tab is opened — no point pinging the
   // server for assignments the user may never view. Refreshed after a
@@ -868,6 +880,86 @@ export default function ProjectDetailScreen() {
       showToast(e instanceof Error ? e.message : "Couldn't open that file.");
     } finally {
       setDownloadingFileId(null);
+    }
+  };
+
+  const onAddFiles = async () => {
+    if (uploadingFiles) return;
+    let result: DocumentPicker.DocumentPickerResult;
+    try {
+      result = await DocumentPicker.getDocumentAsync({
+        multiple: true,
+        copyToCacheDirectory: true,
+      });
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Couldn't open the picker.");
+      return;
+    }
+    if (result.canceled || result.assets.length === 0) return;
+
+    // Client-side pre-flight (ext + size) BEFORE any network round trip:
+    // invalid files are reported immediately and never signed.
+    const valid: PickedUploadFile[] = [];
+    const rejected: { name: string; reason: string }[] = [];
+    for (let i = 0; i < result.assets.length; i++) {
+      const asset = result.assets[i];
+      const picked: PickedUploadFile = {
+        // Names can duplicate within a batch — the index-based id keys
+        // all status tracking; the name is display-only.
+        id: `${i}-${asset.uri}`,
+        uri: asset.uri,
+        name: asset.name,
+        size: asset.size ?? undefined,
+      };
+      const reason = validateUploadFile(picked);
+      if (reason) rejected.push({ name: picked.name, reason });
+      else valid.push(picked);
+    }
+    if (rejected.length > 0) {
+      Alert.alert(
+        "Some files can't be uploaded",
+        rejected.map((r) => `${r.name}: ${r.reason}`).join("\n"),
+      );
+    }
+    if (valid.length === 0) return;
+
+    setUploadingFiles(true);
+    setUploadStatuses(
+      valid.map((f) => ({ id: f.id, name: f.name, status: "pending" })),
+    );
+    const setStatus = (id: string, status: UploadItemStatus) =>
+      setUploadStatuses((curr) =>
+        curr.map((s) => (s.id === id ? { ...s, status } : s)),
+      );
+    try {
+      const { succeeded, failed } = await uploadProjectFiles(
+        project.id,
+        valid,
+        setStatus,
+      );
+      if (failed.length > 0) {
+        // Partial failure: successes are kept; name each failed file.
+        Alert.alert(
+          succeeded.length > 0 ? "Some uploads failed" : "Upload failed",
+          failed.map((f) => `${f.name}: ${f.reason}`).join("\n"),
+        );
+      } else if (succeeded.length > 0) {
+        showToast(
+          succeeded.length === 1
+            ? "1 file uploaded"
+            : `${succeeded.length} files uploaded`,
+        );
+      }
+      if (succeeded.length > 0) await refreshFiles();
+    } catch (e) {
+      // Sign call (or another pre-PUT step) failed — nothing uploaded.
+      Alert.alert(
+        "Upload failed",
+        e instanceof Error ? e.message : "Couldn't upload files.",
+      );
+    } finally {
+      setUploadingFiles(false);
+      setUploadStatuses([]);
     }
   };
 
@@ -1629,14 +1721,84 @@ export default function ProjectDetailScreen() {
                   onPress={() => void refreshFiles()}
                 />
               </View>
-            ) : projectFiles.length === 0 ? (
+            ) : projectFiles.length === 0 && uploadStatuses.length === 0 ? (
               <EmptyState
                 icon="file"
                 title="No files yet"
-                description="Files uploaded to this project on the web will appear here."
+                description="Add plans, specs, or documents to keep them with this project."
+                action={
+                  <Button
+                    title="Add Files"
+                    onPress={() => void onAddFiles()}
+                    disabled={uploadingFiles}
+                  />
+                }
               />
             ) : (
               <View style={{ gap: 12 }}>
+                <Button
+                  title={uploadingFiles ? "Uploading…" : "Add Files"}
+                  onPress={() => void onAddFiles()}
+                  disabled={uploadingFiles}
+                />
+                {uploadStatuses.map((u) => (
+                  <View
+                    key={u.id}
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 12,
+                      borderWidth: 1,
+                      borderColor: colors.border,
+                      borderStyle: "dashed",
+                      borderRadius: 12,
+                      padding: 12,
+                    }}
+                  >
+                    {u.status === "uploading" || u.status === "pending" ? (
+                      <ActivityIndicator
+                        size="small"
+                        color={colors.mutedForeground}
+                      />
+                    ) : (
+                      <Feather
+                        name={u.status === "done" ? "check-circle" : "x-circle"}
+                        size={18}
+                        color={
+                          u.status === "done"
+                            ? colors.success
+                            : colors.destructive
+                        }
+                      />
+                    )}
+                    <Text
+                      numberOfLines={1}
+                      style={{
+                        flex: 1,
+                        color: colors.foreground,
+                        fontFamily: "Inter_500Medium",
+                        fontSize: 13,
+                      }}
+                    >
+                      {u.name}
+                    </Text>
+                    <Text
+                      style={{
+                        color: colors.mutedForeground,
+                        fontFamily: "Inter_400Regular",
+                        fontSize: 12,
+                      }}
+                    >
+                      {u.status === "pending"
+                        ? "Waiting"
+                        : u.status === "uploading"
+                          ? "Uploading"
+                          : u.status === "done"
+                            ? "Done"
+                            : "Failed"}
+                    </Text>
+                  </View>
+                ))}
                 {sortedFiles.map((f) => {
                   const downloading = downloadingFileId === String(f.id);
                   const sizeLabel = formatFileSize(f.sizeBytes);
