@@ -874,6 +874,28 @@ export interface BackendProjectDetail {
   reports?: BackendReport[];
 }
 
+// ----- Project files (read-only, 2026-08) -----
+//
+// GET /api/projects/:id/files. `displayName` is nullable and the server
+// never collapses it into `originalName` — render `displayName ??
+// originalName` everywhere a name is shown. `url` is a public unsigned
+// CloudFront URL (same as photo URLs): fetchable with no auth headers;
+// only the list call needs the authenticated client.
+
+export interface BackendProjectFile {
+  id: number | string;
+  projectId: number | string;
+  uploadedById: number | string;
+  filename: string;
+  originalName: string;
+  displayName: string | null;
+  mimeType: string;
+  url: string;
+  sizeBytes: number | null;
+  createdAt: string;
+  uploadedByName: string;
+}
+
 // ----- Reports (Mobile Reports R1, 2026-05) -----
 //
 // Read + write surface for the report builder. Mobile can list, create
@@ -1756,6 +1778,9 @@ export const api = {
   /** Project-scoped list of report rows (no sections / no photos). */
   listReportsForProject: (projectId: string | number) =>
     apiFetch<BackendReport[]>(`/api/projects/${projectId}/reports`),
+
+  listFilesForProject: (projectId: string | number) =>
+    apiFetch<BackendProjectFile[]>(`/api/projects/${projectId}/files`),
 
   /** Full report tree: report + sections + per-section photos with URLs. */
   getReport: (id: string | number) =>

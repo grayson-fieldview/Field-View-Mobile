@@ -40,6 +40,12 @@ import { ThumbImage } from "@/components/ThumbImage";
 import { ApplyReportTemplateModal } from "@/components/ApplyReportTemplateModal";
 import { ReportListItem } from "@/components/ReportListItem";
 import { TemplatePickerModal } from "@/components/TemplatePickerModal";
+import { useProjectFiles } from "@/hooks/useProjectFiles";
+import {
+  downloadAndShareProjectFile,
+  fileDisplayName,
+  formatFileSize,
+} from "@/services/projectFiles";
 import { useAuth } from "@/contexts/AuthContext";
 import { useData } from "@/contexts/DataContext";
 import { useToast } from "@/contexts/ToastContext";
@@ -61,7 +67,7 @@ import {
   type QueuedUpload,
 } from "@/services/uploadQueue";
 
-type TabKey = "photos" | "tasks" | "checklists" | "reports" | "team";
+type TabKey = "photos" | "tasks" | "checklists" | "reports" | "files" | "team";
 
 // ---------------------------------------------------------------------------
 // Gallery filters (Photos tab). Client-side only — the project detail load
@@ -185,6 +191,18 @@ export default function ProjectDetailScreen() {
     refresh: refreshReports,
     createReport,
   } = useProjectReports(id);
+  // Read-only project files (uploads are web-only for now). Same hook
+  // pattern as reports: fetches on project id change.
+  const {
+    files: projectFiles,
+    loading: filesLoading,
+    error: filesError,
+    refresh: refreshFiles,
+  } = useProjectFiles(id);
+  // Row-level spinner while a tapped file downloads for Quick Look/share.
+  const [downloadingFileId, setDownloadingFileId] = useState<string | null>(
+    null,
+  );
   // Real per-project team list (replaces the local-only ShareLink cache).
   // Loaded on demand when the Team tab is opened — no point pinging the
   // server for assignments the user may never view. Refreshed after a
@@ -814,6 +832,45 @@ export default function ProjectDetailScreen() {
     typeof project.photoCount === "number" && project.photoCount >= projectPhotos.length
       ? project.photoCount
       : projectPhotos.length;
+  // Files tab: newest first (server order is not guaranteed).
+  const sortedFiles = [...projectFiles].sort(
+    (a, b) => Date.parse(b.createdAt ?? "") - Date.parse(a.createdAt ?? ""),
+  );
+
+  const fileIconName = (
+    mimeType: string,
+  ): keyof typeof Feather.glyphMap => {
+    const m = (mimeType || "").toLowerCase();
+    if (m.startsWith("image/")) return "image";
+    if (
+      m === "application/pdf" ||
+      m === "text/plain" ||
+      m === "application/msword" ||
+      m ===
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+      return "file-text";
+    if (
+      m === "text/csv" ||
+      m === "application/vnd.ms-excel" ||
+      m === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+      return "grid";
+    return "file";
+  };
+
+  const openProjectFile = async (file: (typeof projectFiles)[number]) => {
+    if (downloadingFileId) return;
+    setDownloadingFileId(String(file.id));
+    try {
+      await downloadAndShareProjectFile(file);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Couldn't open that file.");
+    } finally {
+      setDownloadingFileId(null);
+    }
+  };
+
   const createdLabel = project.createdAt
     ? new Date(project.createdAt).toLocaleDateString(undefined, {
         month: "short",
@@ -1012,6 +1069,7 @@ export default function ProjectDetailScreen() {
                 label: "Reports",
                 count: projectReports.length,
               },
+              { key: "files", label: "Files", count: projectFiles.length },
               { key: "team", label: "Team", count: assignments.length },
             ] as { key: TabKey; label: string; count: number }[]
           ).map((t) => {
@@ -1543,6 +1601,124 @@ export default function ProjectDetailScreen() {
                   variant="secondary"
                   onPress={() => setShowReportModal(true)}
                 />
+              </View>
+            )}
+          </View>
+        ) : null}
+
+        {tab === "files" ? (
+          <View style={styles.body}>
+            {filesLoading && projectFiles.length === 0 ? (
+              <View style={{ paddingVertical: 32, alignItems: "center" }}>
+                <ActivityIndicator color={colors.mutedForeground} />
+              </View>
+            ) : filesError && projectFiles.length === 0 ? (
+              <View style={{ gap: 10 }}>
+                <Text
+                  style={{
+                    color: colors.destructive,
+                    fontFamily: "Inter_500Medium",
+                    fontSize: 14,
+                  }}
+                >
+                  {filesError}
+                </Text>
+                <Button
+                  title="Retry"
+                  variant="secondary"
+                  onPress={() => void refreshFiles()}
+                />
+              </View>
+            ) : projectFiles.length === 0 ? (
+              <EmptyState
+                icon="file"
+                title="No files yet"
+                description="Files uploaded to this project on the web will appear here."
+              />
+            ) : (
+              <View style={{ gap: 12 }}>
+                {sortedFiles.map((f) => {
+                  const downloading = downloadingFileId === String(f.id);
+                  const sizeLabel = formatFileSize(f.sizeBytes);
+                  const dateLabel = f.createdAt
+                    ? new Date(f.createdAt).toLocaleDateString(undefined, {
+                        month: "short",
+                        day: "numeric",
+                        year: "numeric",
+                      })
+                    : null;
+                  return (
+                    <Pressable
+                      key={String(f.id)}
+                      onPress={() => void openProjectFile(f)}
+                      disabled={downloading}
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 12,
+                        borderWidth: 1,
+                        borderColor: colors.border,
+                        borderRadius: 12,
+                        padding: 12,
+                        backgroundColor: colors.card,
+                        opacity: downloading ? 0.7 : 1,
+                      }}
+                    >
+                      <View
+                        style={{
+                          width: 40,
+                          height: 40,
+                          borderRadius: 10,
+                          alignItems: "center",
+                          justifyContent: "center",
+                          backgroundColor: colors.muted,
+                        }}
+                      >
+                        <Feather
+                          name={fileIconName(f.mimeType)}
+                          size={18}
+                          color={colors.primary}
+                        />
+                      </View>
+                      <View style={{ flex: 1, gap: 2 }}>
+                        <Text
+                          numberOfLines={1}
+                          style={{
+                            color: colors.foreground,
+                            fontFamily: "Inter_600SemiBold",
+                            fontSize: 14,
+                          }}
+                        >
+                          {fileDisplayName(f)}
+                        </Text>
+                        <Text
+                          numberOfLines={1}
+                          style={{
+                            color: colors.mutedForeground,
+                            fontFamily: "Inter_400Regular",
+                            fontSize: 12,
+                          }}
+                        >
+                          {[f.uploadedByName, dateLabel, sizeLabel]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </Text>
+                      </View>
+                      {downloading ? (
+                        <ActivityIndicator
+                          size="small"
+                          color={colors.mutedForeground}
+                        />
+                      ) : (
+                        <Feather
+                          name="chevron-right"
+                          size={18}
+                          color={colors.mutedForeground}
+                        />
+                      )}
+                    </Pressable>
+                  );
+                })}
               </View>
             )}
           </View>
