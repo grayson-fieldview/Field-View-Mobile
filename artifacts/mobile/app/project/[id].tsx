@@ -41,6 +41,7 @@ import { ApplyReportTemplateModal } from "@/components/ApplyReportTemplateModal"
 import { ReportListItem } from "@/components/ReportListItem";
 import { TemplatePickerModal } from "@/components/TemplatePickerModal";
 import * as DocumentPicker from "expo-document-picker";
+import * as WebBrowser from "expo-web-browser";
 
 import { useProjectFiles } from "@/hooks/useProjectFiles";
 import {
@@ -871,13 +872,35 @@ export default function ProjectDetailScreen() {
     return "file";
   };
 
+  // Tap = in-app browser viewer (SFSafariViewController / Chrome Custom
+  // Tabs): a sheet over the app with a Done button, not an app switch
+  // and not a share sheet. The explicit Share action on the row handles
+  // sharing the actual file.
   const openProjectFile = async (file: (typeof projectFiles)[number]) => {
+    try {
+      await WebBrowser.openBrowserAsync(file.url, {
+        dismissButtonStyle: "done",
+        enableDefaultShareMenuItem: true,
+        enableBarCollapsing: true,
+        toolbarColor: "#FFFFFF",
+        // Theme primary (palette.amber) — same hex in light and dark.
+        controlsColor: colors.primary,
+        showTitle: true,
+      });
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Couldn't open that file.");
+    }
+  };
+
+  // Row Share action: download the real file to cache, then hand it to
+  // the native share sheet (mime/UTI derived in the service).
+  const shareProjectFile = async (file: (typeof projectFiles)[number]) => {
     if (downloadingFileId) return;
     setDownloadingFileId(String(file.id));
     try {
       await downloadAndShareProjectFile(file);
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Couldn't open that file.");
+      showToast(e instanceof Error ? e.message : "Couldn't share that file.");
     } finally {
       setDownloadingFileId(null);
     }
@@ -1813,7 +1836,6 @@ export default function ProjectDetailScreen() {
                     <Pressable
                       key={String(f.id)}
                       onPress={() => void openProjectFile(f)}
-                      disabled={downloading}
                       style={{
                         flexDirection: "row",
                         alignItems: "center",
@@ -1872,11 +1894,25 @@ export default function ProjectDetailScreen() {
                           color={colors.mutedForeground}
                         />
                       ) : (
-                        <Feather
-                          name="chevron-right"
-                          size={18}
-                          color={colors.mutedForeground}
-                        />
+                        <Pressable
+                          onPress={(e) => {
+                            // RN Web propagates presses to the parent
+                            // row Pressable — without this, tapping
+                            // Share would ALSO open the viewer.
+                            e.stopPropagation();
+                            void shareProjectFile(f);
+                          }}
+                          disabled={downloadingFileId != null}
+                          hitSlop={10}
+                          style={{ padding: 6 }}
+                          accessibilityLabel={`Share ${fileDisplayName(f)}`}
+                        >
+                          <Feather
+                            name="share"
+                            size={18}
+                            color={colors.mutedForeground}
+                          />
+                        </Pressable>
                       )}
                     </Pressable>
                   );

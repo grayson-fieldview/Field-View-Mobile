@@ -279,9 +279,16 @@ export async function downloadAndShareProjectFile(
       "Sharing isn't available on this device. The file was saved to the app's cache.",
     );
   }
+  // Prefer the server-declared mimeType; derive from the extension when
+  // it's missing; last resort is octet-stream so the share sheet still
+  // gets a concrete type.
+  const mime =
+    file.mimeType ||
+    FILE_UPLOAD_MIME_BY_EXT[fileExtension(fileDisplayName(file)) ?? ""] ||
+    "application/octet-stream";
   await Sharing.shareAsync(result.uri, {
-    mimeType: file.mimeType || undefined,
-    UTI: utiForMime(file.mimeType ?? ""),
+    mimeType: mime,
+    UTI: utiForMime(mime),
     dialogTitle: fileDisplayName(file),
   });
 }
