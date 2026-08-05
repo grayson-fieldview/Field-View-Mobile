@@ -23,6 +23,7 @@ import {
   type UserRole,
 } from "@/services/api";
 import { secureStorage } from "@/services/secureStorage";
+import { signOutOfGoogle } from "@/services/socialAuth";
 import {
   DEFAULT_PHOTO_ASPECT_RATIO,
   isPhotoAspectRatio,
@@ -699,6 +700,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // DELETE request still authenticates. Failure is logged inside
     // the helper and never thrown — sign-out must always proceed.
     await unregisterPushTokenWithServer();
+    // Clear Google's cached account selection so the next Google
+    // sign-in shows the account picker instead of silently reusing
+    // the previous account. Internally swallows all errors.
+    await signOutOfGoogle();
     await api.logout().catch(() => null);
     await clearSession();
     await clearUserSnapshot();

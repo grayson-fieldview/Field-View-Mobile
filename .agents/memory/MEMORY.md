@@ -6,4 +6,5 @@
 - [Session cookie handling](session-cookie-guard.md) — build 41: status-only (2xx) gating restored by user decision; Keychain jar writes MUST use the serialized chain; login button stays disabled post-success
 - [Upload-queue attach persistence](upload-queue-attach-persistence.md) — checklist/task attach is a persisted queue state; awaited flush before terminal alert = at-most-once across relaunches
 - [Grid memory / bounded decode](grid-memory-bounded-decode.md) — grids/covers render ~400px cached thumbs via ThumbImage, never originals; FlashList owns photos-tab scroll; memo keyed (id, uri)
+- [Mobile OAuth contract](mobile-oauth-contract.md) — set state from POST body only (session-id rotation race); Android Google aud = dedicated web client, no androidClientId key in v16
 - [Android v1 location model](android-v1-location.md) — Android is manual/foreground clock-in only; no background location, no FGS, no geofencing. iOS keeps full background/geofencing.
