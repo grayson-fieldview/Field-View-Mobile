@@ -66,7 +66,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     const inAuthGroup = segments[0] === "(auth)";
 
     if (!user) {
-      if (!inAuthGroup) router.replace("/(auth)/login");
+      if (!inAuthGroup) router.replace("/(auth)/welcome");
       setRouted(true);
       return;
     }
