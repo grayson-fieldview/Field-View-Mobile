@@ -1,7 +1,6 @@
 import { Feather } from "@expo/vector-icons";
 import * as AppleAuthentication from "expo-apple-authentication";
 import { Image } from "expo-image";
-import * as Linking from "expo-linking";
 import { useRouter } from "expo-router";
 import React, { useEffect, useState } from "react";
 import {
@@ -27,12 +26,13 @@ import {
   SocialAuthError,
 } from "@/services/socialAuth";
 
+const BRAND_ORANGE = "#f09004";
+
 type OAuthProvider = "apple" | "google";
 
 /**
- * Map an OAuth sign-in failure to inline error copy. Branches on the
- * server's machine-readable error code (ApiError.body.error) first,
- * then on HTTP status, then falls back to the generic copy.
+ * Map an OAuth sign-in failure to inline error copy. Replicated from
+ * login.tsx (that screen's logic is sealed; do not import from it).
  */
 function oauthErrorMessage(e: unknown): string {
   if (e instanceof SocialAuthError) return e.message;
@@ -57,22 +57,28 @@ function oauthErrorMessage(e: unknown): string {
   return "Sign in failed.";
 }
 
-export default function LoginScreen() {
+/** Live password rules shown under the password field. */
+const PASSWORD_RULES: { label: string; test: (pw: string) => boolean }[] = [
+  { label: "At least 10 characters", test: (pw) => pw.length >= 10 },
+  { label: "1 uppercase letter", test: (pw) => /[A-Z]/.test(pw) },
+  { label: "1 lowercase letter", test: (pw) => /[a-z]/.test(pw) },
+];
+
+export default function SignupScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { signIn, signInWithApple, signInWithGoogle } = useAuth();
+  const { signInWithApple, signInWithGoogle } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [appleAvailable, setAppleAvailable] = useState(false);
   // Which OAuth button is currently in flight (spinner on that one).
   const [oauthLoading, setOauthLoading] = useState<OAuthProvider | null>(null);
   // Once ANY sign-in succeeds, ALL buttons stay disabled — same
-  // deliberate guard as the primary button's non-re-enable below
-  // (the passport session-regenerate double-login bug).
+  // deliberate guard as login.tsx (the passport session-regenerate
+  // double-login bug).
   const [signedIn, setSignedIn] = useState(false);
 
   useEffect(() => {
@@ -85,9 +91,13 @@ export default function LoginScreen() {
     };
   }, []);
 
-  // All three buttons share this: disabled while any sign-in is in
-  // flight or after any success.
-  const anyInFlight = loading || oauthLoading !== null || signedIn;
+  // All buttons share this: disabled while any sign-in is in flight
+  // or after any success.
+  const anyInFlight = oauthLoading !== null || signedIn;
+
+  const passwordChecks = PASSWORD_RULES.map((r) => r.test(password));
+  const canSubmitEmail =
+    email.trim().length > 0 && passwordChecks.every(Boolean);
 
   const handleOAuth = async (provider: OAuthProvider) => {
     if (anyInFlight) return;
@@ -123,22 +133,16 @@ export default function LoginScreen() {
     }
   };
 
-  const handleLogin = async () => {
-    setError(null);
-    setLoading(true);
-    try {
-      await signIn(email, password);
-      router.replace("/(tabs)");
-      // Deliberately NOT re-enabling here: the login screen stays
-      // mounted while navigation commits, and a re-armed button in that
-      // window lets a second tap POST /api/login carrying the fresh sid
-      // — passport regenerate() then destroys it (the double-login bug).
-      // The screen unmounts moments later; if navigation somehow fails,
-      // the auth gate re-renders this screen fresh with loading=false.
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Sign in failed.");
-      setLoading(false);
-    }
+  const handleEmailSignup = () => {
+    // INTEGRATION POINT: mobile email/password signup backend does not
+    // exist yet (POST /api/register requires reCAPTCHA, which a native
+    // app cannot supply). When a mobile signup endpoint ships, replace
+    // the setError line below with the real API call + success
+    // navigation; the form state (email, password) and validation are
+    // already in place.
+    setError(
+      "Email signup is coming soon. Please use Google or Apple to get started.",
+    );
   };
 
   return (
@@ -173,10 +177,10 @@ export default function LoginScreen() {
         <BrandHeader />
 
         <Text style={[styles.title, { color: colors.foreground }]}>
-          Welcome Back
+          Welcome to Field View
         </Text>
         <Text style={[styles.subtitle, { color: colors.mutedForeground }]}>
-          Log in to your account
+          Try free with your team for 14 days.
         </Text>
 
         {appleAvailable ? (
@@ -190,7 +194,7 @@ export default function LoginScreen() {
           ) : (
             <AppleAuthentication.AppleAuthenticationButton
               buttonType={
-                AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN
+                AppleAuthentication.AppleAuthenticationButtonType.SIGN_UP
               }
               buttonStyle={
                 AppleAuthentication.AppleAuthenticationButtonStyle.BLACK
@@ -208,7 +212,7 @@ export default function LoginScreen() {
           onPress={() => void handleOAuth("google")}
           disabled={anyInFlight}
           accessibilityRole="button"
-          accessibilityLabel="Sign in with Google"
+          accessibilityLabel="Sign up with Google"
           style={({ pressed }) => [
             styles.oauthButton,
             styles.googleButton,
@@ -226,21 +230,27 @@ export default function LoginScreen() {
             <>
               <GoogleGMark />
               <Text style={[styles.googleText, { color: colors.foreground }]}>
-                Sign in with Google
+                Sign up with Google
               </Text>
             </>
           )}
         </Pressable>
 
         <View style={styles.dividerRow}>
-          <View style={[styles.dividerLine, { backgroundColor: colors.border }]} />
-          <Text style={[styles.dividerText, { color: colors.mutedForeground }]}>
+          <View
+            style={[styles.dividerLine, { backgroundColor: colors.border }]}
+          />
+          <Text
+            style={[styles.dividerText, { color: colors.mutedForeground }]}
+          >
             OR
           </Text>
-          <View style={[styles.dividerLine, { backgroundColor: colors.border }]} />
+          <View
+            style={[styles.dividerLine, { backgroundColor: colors.border }]}
+          />
         </View>
 
-        <FieldLabel>Email</FieldLabel>
+        <FieldLabel>Work Email</FieldLabel>
         <View
           style={[
             styles.input,
@@ -275,19 +285,18 @@ export default function LoginScreen() {
           <TextInput
             value={password}
             onChangeText={setPassword}
-            placeholder="Enter your password"
+            placeholder="Create a password"
             placeholderTextColor={colors.mutedForeground}
             secureTextEntry={!showPassword}
-            autoComplete="password"
-            style={[
-              styles.inputText,
-              { color: colors.foreground, flex: 1 },
-            ]}
+            autoComplete="password-new"
+            style={[styles.inputText, { color: colors.foreground, flex: 1 }]}
           />
           <Pressable
             onPress={() => setShowPassword((v) => !v)}
             hitSlop={10}
-            accessibilityLabel={showPassword ? "Hide password" : "Show password"}
+            accessibilityLabel={
+              showPassword ? "Hide password" : "Show password"
+            }
           >
             <Feather
               name={showPassword ? "eye-off" : "eye"}
@@ -297,21 +306,28 @@ export default function LoginScreen() {
           </Pressable>
         </View>
 
-        {/*
-          TODO(post-launch): Re-enable Forgot password once mobile password reset is wired up.
-          Hidden for App Store submission to avoid the "isn't wired up yet" error path being visible to reviewers.
-        */}
-        {false && (
-          <Pressable
-            onPress={() => router.push("/(auth)/forgot")}
-            hitSlop={8}
-            style={{ alignSelf: "flex-end", marginTop: 10 }}
-          >
-            <Text style={[styles.link, { color: colors.primary }]}>
-              Forgot password?
-            </Text>
-          </Pressable>
-        )}
+        <View style={styles.rulesBlock}>
+          {PASSWORD_RULES.map((rule, i) => {
+            const ok = passwordChecks[i];
+            return (
+              <View key={rule.label} style={styles.ruleRow}>
+                <Feather
+                  name={ok ? "check-circle" : "circle"}
+                  size={14}
+                  color={ok ? "#22a06b" : colors.mutedForeground}
+                />
+                <Text
+                  style={[
+                    styles.ruleText,
+                    { color: ok ? colors.foreground : colors.mutedForeground },
+                  ]}
+                >
+                  {rule.label}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
 
         {error ? (
           <Text
@@ -326,36 +342,20 @@ export default function LoginScreen() {
         ) : null}
 
         <Button
-          title="Log In"
-          onPress={handleLogin}
-          loading={loading}
-          disabled={oauthLoading !== null || signedIn}
+          title="Get Started"
+          onPress={handleEmailSignup}
+          disabled={!canSubmitEmail || anyInFlight}
           size="lg"
-          style={{ marginTop: 16, backgroundColor: "#f09004" }}
+          style={{ marginTop: 16, backgroundColor: BRAND_ORANGE }}
         />
-
-        <Text
-          style={[styles.signupFooter, { color: colors.mutedForeground }]}
-        >
-          Need an account without Google or Apple?{" "}
-          <Text
-            style={{ color: colors.mutedForeground, textDecorationLine: "underline" }}
-            onPress={() => {
-              void Linking.openURL("https://field-view.com");
-            }}
-          >
-            Sign up at field-view.com
-          </Text>
-        </Text>
       </View>
     </KeyboardAwareScrollViewCompat>
   );
 }
 
 /**
- * Official multicolor Google "G" mark, drawn with the same four brand
- * hex values the web login component uses (#4285F4 #34A853 #FBBC05
- * #EA4335), per Google's sign-in branding guidelines.
+ * Official multicolor Google "G" mark — replicated from login.tsx
+ * (sealed file), same four brand hex values per Google's guidelines.
  */
 function GoogleGMark() {
   return (
@@ -471,9 +471,15 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   inputText: { fontSize: 15, fontFamily: "Inter_500Medium" },
-  link: {
-    fontFamily: "Inter_600SemiBold",
+  rulesBlock: { marginTop: 10, gap: 6 },
+  ruleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  ruleText: {
     fontSize: 13,
+    fontFamily: "Inter_500Medium",
   },
   dividerRow: {
     flexDirection: "row",
@@ -507,11 +513,5 @@ const styles = StyleSheet.create({
   googleText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
-  },
-  signupFooter: {
-    fontSize: 13,
-    fontFamily: "Inter_400Regular",
-    textAlign: "center",
-    marginTop: 16,
   },
 });

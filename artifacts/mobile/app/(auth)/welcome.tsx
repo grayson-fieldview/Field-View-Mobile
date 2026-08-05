@@ -34,9 +34,8 @@ const GRID_TILES: { source: number | { uri: string } | null }[] = [
 /**
  * Acquisition-facing landing screen shown to unauthenticated users on
  * cold launch (AuthGate routes here when no session is present).
- * "Get Started for Free" currently points at login — the OAuth
- * buttons there are the signup path until a dedicated signup screen
- * exists.
+ * "Get Started for Free" goes to the signup screen; "Sign In" goes
+ * to login.
  */
 export default function WelcomeScreen() {
   const colors = useColors();
@@ -102,7 +101,7 @@ export default function WelcomeScreen() {
       <Button
         title="Get Started for Free"
         size="lg"
-        onPress={() => router.push("/(auth)/login")}
+        onPress={() => router.push("/(auth)/signup")}
         style={{ backgroundColor: BRAND_ORANGE, alignSelf: "stretch" }}
       />
       <Button
