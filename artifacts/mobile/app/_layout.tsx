@@ -11,7 +11,7 @@ import {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -66,7 +66,21 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     const inAuthGroup = segments[0] === "(auth)";
 
     if (!user) {
-      if (!inAuthGroup) router.replace("/(auth)/welcome");
+      // `routed` (and therefore the splash hide) waits for the
+      // redirect to COMMIT, not merely be issued. Setting it on the
+      // same pass that calls router.replace lifts the splash while
+      // the visible route is still (tabs) — the navigation action is
+      // dispatched but not yet committed/painted, so the user sees a
+      // ~0.2s Projects flash before welcome's first frame (the
+      // T3→T4 splash-lift-before-paint race). Instead: issue the
+      // replace and bail; when the navigation commits, `segments`
+      // changes, this effect re-runs, inAuthGroup is true, and
+      // routed flips with welcome actually on screen. Do NOT
+      // "simplify" this back to setting routed alongside the replace.
+      if (!inAuthGroup) {
+        router.replace("/(auth)/welcome");
+        return;
+      }
       setRouted(true);
       return;
     }
@@ -281,11 +295,39 @@ export default function RootLayout() {
   // to (typically (tabs)/index = Projects) for the brief window
   // before AuthGate's `router.replace` lands — a visible "Projects
   // flash" on cold launch into login/onboarding.
+  //
+  // `splashHiddenRef` guards against double-hide: the normal path
+  // and the fallback timer below can both reach hideAsync, and
+  // calling it twice can warn/throw on some platforms.
+  const splashHiddenRef = useRef(false);
+  const hideSplashOnce = useCallback(() => {
+    if (splashHiddenRef.current) return;
+    splashHiddenRef.current = true;
+    SplashScreen.hideAsync();
+  }, []);
   useEffect(() => {
     if ((fontsLoaded || fontError) && routed) {
-      SplashScreen.hideAsync();
+      hideSplashOnce();
     }
-  }, [fontsLoaded, fontError, routed]);
+  }, [fontsLoaded, fontError, routed, hideSplashOnce]);
+
+  // Fallback: `routed` now waits for AuthGate's redirect to COMMIT
+  // (see AuthGate), so a dropped or never-committing navigation
+  // would otherwise leave the native splash up forever. One-shot
+  // safety timer: 5s after fonts settle, force-hide if the normal
+  // path hasn't. Cleared on unmount and inert once the splash is
+  // already hidden.
+  useEffect(() => {
+    if (!fontsLoaded && !fontError) return;
+    const timer = setTimeout(() => {
+      if (splashHiddenRef.current) return;
+      console.warn(
+        "[splash-fallback] SPLASH_HIDE_FALLBACK_FIRED: routing did not settle within 5s of font load — force-hiding splash",
+      );
+      hideSplashOnce();
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [fontsLoaded, fontError, hideSplashOnce]);
 
   // Start the background upload queue processor once at app launch. The
   // function is idempotent so re-runs during fast-refresh are safe.
