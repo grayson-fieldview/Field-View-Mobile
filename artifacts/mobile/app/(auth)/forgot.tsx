@@ -34,7 +34,7 @@ export default function ForgotScreen() {
 
   return (
     <KeyboardAwareScrollViewCompat
-      style={{ flex: 1, backgroundColor: colors.background }}
+      style={{ flex: 1, backgroundColor: colors.muted }}
       contentContainerStyle={[
         styles.container,
         { paddingTop: insets.top + 40, paddingBottom: insets.bottom + 24 },

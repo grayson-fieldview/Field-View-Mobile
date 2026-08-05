@@ -168,12 +168,10 @@ export default function SignupScreen() {
         <Feather name="chevron-left" size={28} color={colors.foreground} />
       </Pressable>
 
-      <View
-        style={[
-          styles.card,
-          { backgroundColor: colors.card, borderColor: colors.border },
-        ]}
-      >
+      {/* No card container — content sits directly on colors.muted,
+          matching welcome.tsx (white is reserved for inputs and the
+          photo-grid card). */}
+      <View>
         <BrandHeader />
 
         <Text style={[styles.title, { color: colors.foreground }]}>
@@ -254,7 +252,7 @@ export default function SignupScreen() {
         <View
           style={[
             styles.input,
-            { backgroundColor: colors.muted, borderColor: colors.border },
+            { backgroundColor: colors.card, borderColor: colors.border },
           ]}
         >
           <TextInput
@@ -275,7 +273,7 @@ export default function SignupScreen() {
           style={[
             styles.input,
             {
-              backgroundColor: colors.muted,
+              backgroundColor: colors.card,
               borderColor: colors.border,
               flexDirection: "row",
               alignItems: "center",
@@ -348,6 +346,21 @@ export default function SignupScreen() {
           size="lg"
           style={{ marginTop: 16, backgroundColor: BRAND_ORANGE }}
         />
+
+        <Text
+          style={[styles.crossLink, { color: colors.mutedForeground }]}
+        >
+          Already have an account?{" "}
+          <Text
+            style={{
+              color: colors.mutedForeground,
+              textDecorationLine: "underline",
+            }}
+            onPress={() => router.replace("/(auth)/login")}
+          >
+            Log in
+          </Text>
+        </Text>
       </View>
     </KeyboardAwareScrollViewCompat>
   );
@@ -423,16 +436,6 @@ const styles = StyleSheet.create({
     zIndex: 1,
     top: 0, // paddingTop of the scroll content puts this below the inset
   },
-  card: {
-    borderRadius: 18,
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: 24,
-    shadowColor: "#000",
-    shadowOpacity: 0.06,
-    shadowOffset: { width: 0, height: 6 },
-    shadowRadius: 18,
-    elevation: 3,
-  },
   brandRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -466,7 +469,7 @@ const styles = StyleSheet.create({
   },
   input: {
     borderWidth: 1,
-    borderRadius: 10,
+    borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 12,
   },
@@ -513,5 +516,12 @@ const styles = StyleSheet.create({
   googleText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
+  },
+  // Matches login.tsx's signupFooter footer-text style.
+  crossLink: {
+    fontSize: 13,
+    fontFamily: "Inter_400Regular",
+    textAlign: "center",
+    marginTop: 16,
   },
 });
