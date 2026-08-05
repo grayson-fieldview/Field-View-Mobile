@@ -61,13 +61,12 @@ export default function LoginScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { signIn } = useAuth();
+  const { signIn, signInWithApple, signInWithGoogle } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { signInWithApple, signInWithGoogle } = useAuth();
   const [appleAvailable, setAppleAvailable] = useState(false);
   // Which OAuth button is currently in flight (spinner on that one).
   const [oauthLoading, setOauthLoading] = useState<OAuthProvider | null>(null);
