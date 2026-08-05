@@ -159,7 +159,7 @@ export default function LoginScreen() {
         hitSlop={10}
         accessibilityRole="button"
         accessibilityLabel="Back"
-        style={styles.backChevron}
+        style={[styles.backChevron, { top: insets.top + 8 }]}
       >
         <Feather name="chevron-left" size={28} color={colors.foreground} />
       </Pressable>
@@ -430,11 +430,19 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     justifyContent: "center",
   },
+  // `top` is supplied inline as insets.top + 8: absolute children
+  // position against the parent's border box, NOT its padding box,
+  // so the scroll content's paddingTop never applied here and top: 0
+  // sat the chevron under the notch. 44x44 meets Apple's HIG minimum
+  // tap target.
   backChevron: {
     position: "absolute",
-    left: 12,
+    left: 8,
     zIndex: 1,
-    top: 0, // paddingTop of the scroll content puts this below the inset
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
   },
   brandRow: {
     flexDirection: "row",
