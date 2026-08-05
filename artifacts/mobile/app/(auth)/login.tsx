@@ -167,7 +167,7 @@ export default function LoginScreen() {
       {/* No card container — content sits directly on colors.muted,
           matching welcome.tsx (white is reserved for inputs and the
           photo-grid card). */}
-      <View>
+      <View style={styles.content}>
         <BrandHeader />
 
         <Text style={[styles.title, { color: colors.foreground }]}>
@@ -347,17 +347,22 @@ export default function LoginScreen() {
           </Text>
         </Text>
 
-        <Text
-          style={[styles.privacyLink, { color: colors.mutedForeground }]}
-          onPress={() => {
-            void Linking.openURL(
-              "https://www.field-view.com/legal/privacy-policy",
-            );
-          }}
-        >
-          Privacy Policy
-        </Text>
       </View>
+
+      {/* Pinned legal footer: sibling of the centered content block, at
+          the end of the flexGrow'd scroll content — so it hugs the
+          bottom of the viewport on tall screens and simply follows the
+          content (scrollable, never overlapping) on short ones. */}
+      <Text
+        style={[styles.privacyLink, { color: colors.mutedForeground }]}
+        onPress={() => {
+          void Linking.openURL(
+            "https://www.field-view.com/legal/privacy-policy",
+          );
+        }}
+      >
+        Privacy Policy
+      </Text>
     </KeyboardAwareScrollViewCompat>
   );
 }
@@ -424,6 +429,11 @@ function FieldLabel({
 const styles = StyleSheet.create({
   page: {
     paddingHorizontal: 16,
+    flexGrow: 1,
+  },
+  // Fills the space above the pinned privacy footer and centers the
+  // form within it (the centering `page` used to do directly).
+  content: {
     flexGrow: 1,
     justifyContent: "center",
   },
