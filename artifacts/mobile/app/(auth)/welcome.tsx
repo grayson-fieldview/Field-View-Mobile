@@ -2,6 +2,7 @@ import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import {
+  Dimensions,
   Modal,
   Pressable,
   ScrollView,
@@ -15,6 +16,7 @@ import { Button } from "@/components/Button";
 import { useColors } from "@/hooks/useColors";
 
 const BRAND_ORANGE = "#f09004";
+const GRID_GAP = 8;
 
 /**
  * Placeholder sources for the 3x2 photo grid. Replace the entries in
@@ -42,6 +44,25 @@ export default function WelcomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const [sheetVisible, setSheetVisible] = useState(false);
+
+  // Measured grid width. Tiles get explicit pixel width AND height so
+  // layout needs zero flex resolution, zero percent resolution, and
+  // zero aspect-ratio cross-propagation — the three Fabric-sensitive
+  // mechanisms that collapsed the tiles to zero height on device
+  // (build 50, newArchEnabled). Tiles render only once measured.
+  const [gridWidth, setGridWidth] = useState(0);
+  const tileSize =
+    gridWidth > 0 ? Math.floor((gridWidth - 2 * GRID_GAP) / 3) : 0;
+
+  // First-frame placeholder: reserve the grid's final height before
+  // onLayout lands so the card doesn't pop from ~24px to full size on
+  // the first screen a new user sees. Same width formula as the
+  // measurement: window − 32 (page paddingHorizontal) − 24 (card
+  // padding). Once measured, real tiles fill it and minHeight is moot.
+  const estimatedTile = Math.floor(
+    (Dimensions.get("window").width - 32 - 24 - 2 * GRID_GAP) / 3,
+  );
+  const gridMinHeight = 2 * estimatedTile + GRID_GAP;
 
   return (
     <ScrollView
@@ -80,21 +101,35 @@ export default function WelcomeScreen() {
           { backgroundColor: colors.card, borderColor: colors.border },
         ]}
       >
-        <View style={styles.grid}>
-          {GRID_TILES.map((tile, i) => (
-            <View
-              key={i}
-              style={[styles.tile, { backgroundColor: colors.muted }]}
-            >
-              {tile.source ? (
-                <Image
-                  source={tile.source}
-                  style={StyleSheet.absoluteFill}
-                  contentFit="cover"
-                />
-              ) : null}
-            </View>
-          ))}
+        <View
+          style={[styles.grid, { minHeight: gridMinHeight }]}
+          onLayout={(e) => setGridWidth(e.nativeEvent.layout.width)}
+        >
+          {gridWidth > 0 &&
+            GRID_TILES.map((tile, i) => (
+              <View
+                key={i}
+                style={[
+                  styles.tile,
+                  {
+                    width: tileSize,
+                    height: tileSize,
+                    backgroundColor: colors.muted,
+                  },
+                ]}
+              >
+                {tile.source ? (
+                  <Image
+                    source={tile.source}
+                    style={StyleSheet.absoluteFill}
+                    contentFit="cover"
+                    onError={(e) =>
+                      console.warn(`[welcome-grid] tile ${i} failed`, e)
+                    }
+                  />
+                ) : null}
+              </View>
+            ))}
         </View>
       </View>
 
@@ -238,13 +273,11 @@ const styles = StyleSheet.create({
   grid: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
+    gap: GRID_GAP,
   },
+  // Width/height supplied inline as measured pixels — no percentage,
+  // no flexGrow, no aspectRatio (see gridWidth comment in component).
   tile: {
-    // Three per row: (100% - 2 gaps of 8) / 3.
-    width: "31.5%",
-    flexGrow: 1,
-    aspectRatio: 1,
     borderRadius: 10,
     overflow: "hidden",
   },
