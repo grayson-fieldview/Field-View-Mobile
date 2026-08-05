@@ -23,12 +23,12 @@ const BRAND_ORANGE = "#f09004";
  * A `null` source renders a solid muted tile.
  */
 const GRID_TILES: { source: number | { uri: string } | null }[] = [
-  { source: null },
-  { source: null },
-  { source: null },
-  { source: null },
-  { source: null },
-  { source: null },
+  { source: require("@/assets/images/welcome-1.jpg") },
+  { source: require("@/assets/images/welcome-2.jpg") },
+  { source: require("@/assets/images/welcome-3.jpg") },
+  { source: require("@/assets/images/welcome-4.jpg") },
+  { source: require("@/assets/images/welcome-5.jpg") },
+  { source: require("@/assets/images/welcome-6.jpg") },
 ];
 
 /**
