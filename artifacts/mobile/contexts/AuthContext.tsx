@@ -75,6 +75,26 @@ interface AuthState {
   authState: "verified" | "unverified";
   ready: boolean;
   signIn: (email: string, password: string) => Promise<void>;
+  /**
+   * Native OAuth sign-in. Takes the already-obtained identity token
+   * (the native SDK calls live in the login screen layer, not here).
+   * Auth state is set DIRECTLY from the POST response body — no
+   * follow-up me() — because passport's req.login() rotates the
+   * session id and a follow-up request can race the new Set-Cookie
+   * landing in the cookie jar, producing a spurious 401.
+   * On failure the ApiError (with `body.error` code) propagates
+   * unchanged and existing signed-in state is left untouched.
+   */
+  signInWithApple: (args: {
+    idToken: string;
+    inviteToken?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+  }) => Promise<void>;
+  signInWithGoogle: (args: {
+    idToken: string;
+    inviteToken?: string | null;
+  }) => Promise<void>;
   signOut: () => Promise<void>;
   requestPasswordReset: (email: string) => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -620,6 +640,54 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [fetchAccountSettings],
   );
 
+  /**
+   * Shared completion for the OAuth paths. Identical to signIn's
+   * success handling EXCEPT there is deliberately no me() fallback:
+   * the server contract guarantees the full user object in the POST
+   * response precisely so no follow-up authenticated request is
+   * needed (req.login() rotates the session id; a follow-up can race
+   * the new Set-Cookie landing in the jar → spurious 401). If the
+   * body somehow doesn't normalize, we fail the sign-in rather than
+   * fetch. State is only touched on success — a failed OAuth attempt
+   * never clears an existing valid session.
+   */
+  const completeOAuthSignIn = useCallback(
+    (loginRes: unknown) => {
+      const me = normalizeUser(loginRes);
+      if (!me)
+        throw new Error("Sign-in succeeded but we couldn't load your account.");
+      const next = toAuthUser(me);
+      setUser(next);
+      setAuthState("verified");
+      // Persist the snapshot so a future cold start that can't reach
+      // the server can restore this user instead of showing login.
+      if (next) void persistUserSnapshot(next);
+      // Same post-success settings pull as signIn (fires only after
+      // apiFetch has already ingested the rotated session cookie).
+      void fetchAccountSettings();
+    },
+    [fetchAccountSettings],
+  );
+
+  const signInWithApple = useCallback(
+    async (args: {
+      idToken: string;
+      inviteToken?: string | null;
+      firstName?: string | null;
+      lastName?: string | null;
+    }) => {
+      completeOAuthSignIn(await api.loginWithApple(args));
+    },
+    [completeOAuthSignIn],
+  );
+
+  const signInWithGoogle = useCallback(
+    async (args: { idToken: string; inviteToken?: string | null }) => {
+      completeOAuthSignIn(await api.loginWithGoogle(args));
+    },
+    [completeOAuthSignIn],
+  );
+
   const signOut = useCallback(async () => {
     // Invalidate any in-flight reverify immediately so a slow me()
     // response can't repopulate the user after this sign-out.
@@ -671,6 +739,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       authState,
       ready,
       signIn,
+      signInWithApple,
+      signInWithGoogle,
       signOut,
       requestPasswordReset,
       refreshUser,
@@ -682,6 +752,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       authState,
       ready,
       signIn,
+      signInWithApple,
+      signInWithGoogle,
       signOut,
       requestPasswordReset,
       refreshUser,

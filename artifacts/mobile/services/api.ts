@@ -1137,6 +1137,51 @@ export const api = {
       json: { email, password },
     }),
 
+  /**
+   * Native Sign in with Apple. POSTs the Apple identity token; the
+   * server verifies it, creates the account if needed (implicit
+   * signup), calls req.login(), and returns the FULL user object
+   * shaped exactly like GET /api/auth/user — so no follow-up me()
+   * is required (or safe: passport rotates the session id, and a
+   * follow-up can race the new Set-Cookie landing in the jar).
+   *
+   * Optional fields are OMITTED when null/undefined/empty rather
+   * than sent as explicit nulls — the server treats absence and
+   * null identically for all three, and empty-string names must
+   * never be sent (Apple only provides fullName on the first
+   * authorization; absence means "not available this time").
+   *
+   * Non-2xx throws ApiError with `body` = the server's parsed
+   * { error?, message } JSON, so callers can branch on the
+   * machine-readable `error` code (email_unverified_or_missing,
+   * invite_email_mismatch, account_deleted, invite_invalid).
+   */
+  loginWithApple: (args: {
+    idToken: string;
+    inviteToken?: string | null;
+    firstName?: string | null;
+    lastName?: string | null;
+  }) => {
+    const json: Record<string, string> = { idToken: args.idToken };
+    if (args.inviteToken) json.inviteToken = args.inviteToken;
+    if (args.firstName) json.firstName = args.firstName;
+    if (args.lastName) json.lastName = args.lastName;
+    return apiFetch<BackendUser | { user: BackendUser } | null>(
+      "/api/auth/apple/mobile",
+      { method: "POST", json },
+    );
+  },
+
+  /** Native Google Sign-In. Same contract as loginWithApple. */
+  loginWithGoogle: (args: { idToken: string; inviteToken?: string | null }) => {
+    const json: Record<string, string> = { idToken: args.idToken };
+    if (args.inviteToken) json.inviteToken = args.inviteToken;
+    return apiFetch<BackendUser | { user: BackendUser } | null>(
+      "/api/auth/google/mobile",
+      { method: "POST", json },
+    );
+  },
+
   logout: () =>
     apiFetch<unknown>("/api/logout", {
       method: "POST",
