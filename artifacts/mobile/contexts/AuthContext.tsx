@@ -700,10 +700,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // DELETE request still authenticates. Failure is logged inside
     // the helper and never thrown — sign-out must always proceed.
     await unregisterPushTokenWithServer();
-    // Clear Google's cached account selection so the next Google
-    // sign-in shows the account picker instead of silently reusing
-    // the previous account. Internally swallows all errors.
-    await signOutOfGoogle();
     await api.logout().catch(() => null);
     await clearSession();
     await clearUserSnapshot();
@@ -714,6 +710,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // doesn't bleed into user-B's signed-out splash. Next sign-in
     // refetches.
     setAccountSettings(null);
+    // LAST and fire-and-forget: clear Google's cached account
+    // selection so the next Google sign-in shows the account picker.
+    // Deliberately not awaited — a hang in Google's native sign-out
+    // (offline, Play Services issues) must never stall the logout
+    // chain, and nothing here depends on it completing. The helper
+    // swallows its own errors; the .catch is belt-and-braces.
+    signOutOfGoogle().catch(() => {});
   }, []);
 
   // Push token rotation listener. Mounted for the lifetime of the
