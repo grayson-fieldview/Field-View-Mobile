@@ -579,6 +579,13 @@ export interface BackendUser {
   /** Avatar URL from /api/users (account-wide user list). Optional/null. */
   profileImageUrl?: string | null;
   /**
+   * ISO-8601 timestamp stamped by the server on the first successful
+   * PATCH /api/auth/me. Present on GET /api/auth/user and both mobile
+   * OAuth responses. null (or absent) on a fresh SERVER response means
+   * the user has not completed onboarding.
+   */
+  profileCompletedAt?: string | null;
+  /**
    * Soft-delete marker from /api/users. Non-null means the user has been
    * deactivated and should be filtered out of any "pick a teammate" UI.
    */
@@ -1423,6 +1430,39 @@ export const api = {
    * updated settings object so the caller can replace its local copy
    * in one shot.
    */
+  /**
+   * Onboarding / profile update. Server stamps profile_completed_at on
+   * any successful call (the null→now transition fires the trial
+   * lifecycle events server-side). industry and companySize are
+   * admin-only and silently ignored for non-admins; jobRole is not
+   * gated. Optional fields must be OMITTED when unselected — never
+   * sent as null or "". Does NOT rotate the session id (only
+   * req.login does), so follow-up authenticated requests are safe.
+   */
+  updateMe: (input: {
+    firstName: string;
+    lastName: string;
+    phone: string;
+    tcpaAccepted: boolean;
+    jobRole?: string;
+    industry?: string;
+    companySize?: string;
+  }) =>
+    apiFetch<BackendUser | { user: BackendUser } | null>("/api/auth/me", {
+      method: "PATCH",
+      json: input,
+    }),
+
+  /**
+   * Rename the account (admin-only; server 403s otherwise). Server
+   * normalizes with name.trim().slice(0, 200) — same as web register.
+   */
+  updateAccountName: (input: { name: string }) =>
+    apiFetch<{ id: number | string; name: string }>("/api/account/name", {
+      method: "PATCH",
+      json: input,
+    }),
+
   updateAccountSettings: (input: { defaultPhotoAspectRatio?: string }) =>
     apiFetch<{ defaultPhotoAspectRatio: string }>("/api/account/settings", {
       method: "PATCH",

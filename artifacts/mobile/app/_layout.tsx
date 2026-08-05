@@ -85,9 +85,30 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // User is authenticated. Time-tracking onboarding has been
-    // removed, so there is no location/notification onboarding gate
-    // to wait on — route straight into the app.
+    // User is authenticated. Profile onboarding gate: a user whose
+    // profileCompletedAt is null (fresh server response said the
+    // profile is incomplete — legacy cached snapshots default to a
+    // non-null sentinel, see AuthContext) lands on onboarding, not
+    // (tabs). This branch remains the ONLY navigation source for the
+    // gate; the onboarding screens themselves never redirect on state,
+    // and the navigator is never gated/unmounted. Same commit-then-
+    // flip pattern as the unauthenticated branch: issue the replace,
+    // bail, and let the segments change re-run the effect so `routed`
+    // (and the splash hide) waits for the redirect to COMMIT.
+    const needsOnboarding = user.profileCompletedAt == null;
+    const onOnboarding =
+      segments[1] === "onboarding-profile" ||
+      segments[1] === "onboarding-details";
+
+    if (needsOnboarding) {
+      if (!onOnboarding) {
+        router.replace("/(auth)/onboarding-profile");
+        return;
+      }
+      setRouted(true);
+      return;
+    }
+
     if (inAuthGroup) {
       router.replace("/(tabs)");
     }

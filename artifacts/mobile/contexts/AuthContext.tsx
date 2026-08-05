@@ -61,6 +61,13 @@ export interface AuthUser {
    * UI must treat `null` as non-admin.
    */
   role: UserRole | null;
+  /**
+   * ISO-8601 timestamp of onboarding completion, or null when the
+   * server says onboarding is still needed. AuthGate routes
+   * null → onboarding. See toAuthUser / loadUserSnapshot for the two
+   * DELIBERATELY DIFFERENT defaults when the field is missing.
+   */
+  profileCompletedAt: string | null;
 }
 
 interface AuthState {
@@ -138,6 +145,17 @@ function toAuthUser(raw: BackendUser | null): AuthUser | null {
     name: raw.name ? String(raw.name) : combined || String(raw.email),
     isOwner: raw.isOwner === true,
     role,
+    // SERVER default: null OR missing ⇒ needs onboarding — mirrors
+    // web's falsy check on the same field (client/src/App.tsx). This
+    // deliberately differs from the cached-snapshot default in
+    // loadUserSnapshot below — do NOT "unify" them: a fresh server
+    // response omitting the field means the profile is incomplete,
+    // while an old Keychain snapshot omitting it merely predates this
+    // release.
+    profileCompletedAt:
+      typeof raw.profileCompletedAt === "string"
+        ? raw.profileCompletedAt
+        : null,
   };
 }
 
@@ -148,6 +166,14 @@ function toAuthUser(raw: BackendUser | null): AuthUser | null {
 // on the login screen. Cleared on explicit sign-out and confirmed 401.
 
 const CACHED_USER_KEY = "fv_cached_user_v1";
+
+/**
+ * Sentinel written into AuthUser.profileCompletedAt when an old
+ * Keychain snapshot (pre-onboarding release) has no key at all. Any
+ * non-null value means "do not route to onboarding"; the next
+ * successful me() replaces it with the server's real value.
+ */
+const LEGACY_SNAPSHOT_PROFILE_COMPLETED = "legacy-snapshot-assumed-complete";
 
 async function persistUserSnapshot(u: AuthUser): Promise<void> {
   try {
@@ -174,6 +200,18 @@ async function loadUserSnapshot(): Promise<AuthUser | null> {
       name: typeof parsed.name === "string" ? parsed.name : parsed.email,
       isOwner: parsed.isOwner === true,
       role: parsed.role ?? null,
+      // SNAPSHOT default: field ABSENT ⇒ treat as COMPLETED. Older
+      // snapshots (written before this release) have no
+      // profileCompletedAt key; existing users booting offline from
+      // cache must never get trapped in onboarding. Only an explicit
+      // null (written by a post-release snapshot from a server that
+      // said "incomplete") routes to onboarding. This deliberately
+      // differs from the server default in toAuthUser above — do NOT
+      // "unify" them.
+      profileCompletedAt:
+        parsed.profileCompletedAt === undefined
+          ? LEGACY_SNAPSHOT_PROFILE_COMPLETED
+          : parsed.profileCompletedAt,
     };
   } catch {
     return null;
@@ -495,6 +533,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // failure preserves the current user. Root cause of the TestFlight
     // Build 6 instant-logout bug — the prior `.catch(() => null)`
     // collapsed every failure mode into null and called setUser(null).
+    //
+    // Deterministic for explicit callers (onboarding submit depends on
+    // this actually hitting the server AFTER its PATCH): reverify()
+    // silently no-ops when another attempt holds the in-flight lock,
+    // which would leave profileCompletedAt stale and bounce the user
+    // back to onboarding. Wait for any in-flight attempt to drain
+    // first. If a competing reverify then grabs the lock between the
+    // wait and our call, it started after this point too, so its
+    // me() response is equally fresh — either way the state reflects
+    // a post-wait server read. Bounded wait so a wedged flag can't
+    // hang callers.
+    const deadline = Date.now() + 10_000;
+    while (reverifyInFlightRef.current && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
     await reverify("refresh");
   }, [reverify]);
 
