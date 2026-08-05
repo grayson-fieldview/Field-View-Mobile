@@ -16,6 +16,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.fieldview.app",
+      "usesAppleSignIn": true,
       "icon": "./assets/images/icon.png",
       "infoPlist": {
         "NSCameraUsageDescription": "Field View uses the camera to capture project photos in burst mode and to record short site videos for documentation.",
@@ -105,7 +106,13 @@
           "color": "#F09001"
         }
       ],
-      "expo-video"
+      "expo-video",
+      [
+        "@react-native-google-signin/google-signin",
+        {
+          "iosUrlScheme": "com.googleusercontent.apps.457117433845-cfv2vp7d2v5ime9889hn9tgabj542bqm"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
