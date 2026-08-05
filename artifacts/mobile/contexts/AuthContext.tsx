@@ -107,6 +107,12 @@ interface AuthState {
   requestPasswordReset: (email: string) => Promise<void>;
   refreshUser: () => Promise<void>;
   /**
+   * Apply the user object from a PATCH response directly to auth
+   * state (no network). Used by onboarding to make completion
+   * deterministic — see the implementation comment.
+   */
+  applyUpdatedUser: (raw: unknown) => void;
+  /**
    * Account-level settings (admin-managed). `null` until first
    * successful fetch; capture.tsx falls back to
    * DEFAULT_PHOTO_ASPECT_RATIO ("4:3") in that window so a slow or
@@ -533,23 +539,46 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // failure preserves the current user. Root cause of the TestFlight
     // Build 6 instant-logout bug — the prior `.catch(() => null)`
     // collapsed every failure mode into null and called setUser(null).
-    //
-    // Deterministic for explicit callers (onboarding submit depends on
-    // this actually hitting the server AFTER its PATCH): reverify()
-    // silently no-ops when another attempt holds the in-flight lock,
-    // which would leave profileCompletedAt stale and bounce the user
-    // back to onboarding. Wait for any in-flight attempt to drain
-    // first. If a competing reverify then grabs the lock between the
-    // wait and our call, it started after this point too, so its
-    // me() response is equally fresh — either way the state reflects
-    // a post-wait server read. Bounded wait so a wedged flag can't
-    // hang callers.
-    const deadline = Date.now() + 10_000;
-    while (reverifyInFlightRef.current && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 100));
-    }
     await reverify("refresh");
   }, [reverify]);
+
+  /**
+   * Apply an updated user object returned by a PATCH response (e.g.
+   * PATCH /api/auth/me from onboarding) directly to auth state.
+   * PATCH /api/auth/me does not rotate the session id (only req.login
+   * does), and it returns the full updated user — so the response is
+   * authoritative and a follow-up me() is both unnecessary and racy
+   * against the reverify in-flight lock. Fires ZERO network requests:
+   * normalize via toAuthUser, setUser, mark verified, persist the
+   * Keychain snapshot — same state transition as applyVerifiedUser
+   * minus its fetchAccountSettings() network call.
+   *
+   * Sign-out protection: signOut/applyConfirmed401 bump the session
+   * epoch and null the user while the PATCH is in flight; since this
+   * method runs synchronously in the response continuation, a null
+   * userRef at that point is exactly the epoch-changed case — refuse
+   * to resurrect the user.
+   */
+  const applyUpdatedUser = useCallback(
+    (raw: unknown): void => {
+      if (userRef.current === null) {
+        console.log("[auth] applyUpdatedUser skipped: signed out");
+        return;
+      }
+      const next = toAuthUser(normalizeUser(raw as BackendUser | null));
+      if (!next) {
+        console.warn("[auth] applyUpdatedUser: response body not a user");
+        return;
+      }
+      setUser(next);
+      if (authStateRef.current !== "verified") {
+        setAuthState("verified");
+      }
+      breadcrumbAuthState("verified", "patch-response");
+      void persistUserSnapshot(next);
+    },
+    [],
+  );
 
   // Re-attempt auth on every foreground transition. No user-null guard
   // anymore: when the boot check was ambiguous (user restored from
@@ -808,6 +837,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signOut,
       requestPasswordReset,
       refreshUser,
+      applyUpdatedUser,
       accountSettings,
       updateAccountSettings,
     }),
@@ -821,6 +851,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signOut,
       requestPasswordReset,
       refreshUser,
+      applyUpdatedUser,
       accountSettings,
       updateAccountSettings,
     ],

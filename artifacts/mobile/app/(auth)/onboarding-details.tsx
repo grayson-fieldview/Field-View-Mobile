@@ -67,16 +67,15 @@ const INDUSTRY_OPTIONS = [
  *      chance).
  *   2. PATCH /api/auth/me with required fields + selected optionals
  *      (unselected optionals OMITTED — never null/"").
- *   3. refreshUser() so profileCompletedAt populates, THEN
- *      router.replace("/(tabs)"). PATCH /api/auth/me does NOT rotate
- *      the session id (only req.login does), so the follow-up
- *      authenticated me() is safe here — unlike the OAuth login path.
+ *   3. Apply the PATCH response via applyUpdatedUser (it returns the
+ *      full updated user with profileCompletedAt stamped — no
+ *      follow-up me() needed or wanted), THEN router.replace("/(tabs)").
  */
 export default function OnboardingDetailsScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { user, refreshUser } = useAuth();
+  const { user, applyUpdatedUser } = useAuth();
   const isAdmin = user?.role === "admin";
 
   const rawParams = useLocalSearchParams<{
@@ -140,13 +139,16 @@ export default function OnboardingDetailsScreen() {
       if (jobRole) body.jobRole = jobRole;
       if (isAdmin && industry) body.industry = industry;
       if (isAdmin && companySize) body.companySize = companySize;
-      await api.updateMe(body);
+      const updated = await api.updateMe(body);
 
-      // 3. Refresh the user so profileCompletedAt populates, THEN
-      // navigate. AuthGate's effect sees the completed profile and
-      // does nothing — this replace is the flow's own forward step,
-      // not a second gate.
-      await refreshUser();
+      // 3. Apply the PATCH response directly — it IS the updated user
+      // (profileCompletedAt now stamped), PATCH /api/auth/me does not
+      // rotate the session id, and a follow-up me() would race the
+      // reverify in-flight lock. Zero network; then navigate.
+      // AuthGate's effect sees the completed profile and does nothing
+      // — this replace is the flow's own forward step, not a second
+      // gate.
+      applyUpdatedUser(updated);
       // Deliberately NOT re-enabling on success (same rationale as
       // login's non-re-enable): the screen stays mounted while the
       // replace commits, and a re-armed button in that window allows
