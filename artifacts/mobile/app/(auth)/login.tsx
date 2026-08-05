@@ -159,7 +159,7 @@ export default function LoginScreen() {
         hitSlop={10}
         accessibilityRole="button"
         accessibilityLabel="Back"
-        style={[styles.backChevron, { top: insets.top + 8 }]}
+        style={[styles.backChevron, { top: insets.top + 20 }]}
       >
         <Feather name="chevron-left" size={28} color={colors.foreground} />
       </Pressable>
@@ -348,17 +348,14 @@ export default function LoginScreen() {
         </Text>
 
         <Text
-          style={[styles.signupFooter, { color: colors.mutedForeground }]}
+          style={[styles.privacyLink, { color: colors.mutedForeground }]}
+          onPress={() => {
+            void Linking.openURL(
+              "https://www.field-view.com/legal/privacy-policy",
+            );
+          }}
         >
-          Need an account without Google or Apple?{" "}
-          <Text
-            style={{ color: colors.mutedForeground, textDecorationLine: "underline" }}
-            onPress={() => {
-              void Linking.openURL("https://field-view.com");
-            }}
-          >
-            Sign up at field-view.com
-          </Text>
+          Privacy Policy
         </Text>
       </View>
     </KeyboardAwareScrollViewCompat>
@@ -437,7 +434,7 @@ const styles = StyleSheet.create({
   // tap target.
   backChevron: {
     position: "absolute",
-    left: 8,
+    left: 16,
     zIndex: 1,
     width: 44,
     height: 44,
@@ -518,6 +515,16 @@ const styles = StyleSheet.create({
   googleText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
+  },
+  // Legal footer: smaller/more muted than the cross-link above so it
+  // reads as legal boilerplate, not navigation.
+  privacyLink: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    textAlign: "center",
+    textDecorationLine: "underline",
+    opacity: 0.8,
+    marginTop: 28,
   },
   signupFooter: {
     fontSize: 13,

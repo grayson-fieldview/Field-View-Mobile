@@ -1,6 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import * as AppleAuthentication from "expo-apple-authentication";
 import { Image } from "expo-image";
+import * as Linking from "expo-linking";
 import { useRouter } from "expo-router";
 import React, { useEffect, useState } from "react";
 import {
@@ -163,7 +164,7 @@ export default function SignupScreen() {
         hitSlop={10}
         accessibilityRole="button"
         accessibilityLabel="Back"
-        style={[styles.backChevron, { top: insets.top + 8 }]}
+        style={[styles.backChevron, { top: insets.top + 20 }]}
       >
         <Feather name="chevron-left" size={28} color={colors.foreground} />
       </Pressable>
@@ -361,6 +362,17 @@ export default function SignupScreen() {
             Log in
           </Text>
         </Text>
+
+        <Text
+          style={[styles.privacyLink, { color: colors.mutedForeground }]}
+          onPress={() => {
+            void Linking.openURL(
+              "https://www.field-view.com/legal/privacy-policy",
+            );
+          }}
+        >
+          Privacy Policy
+        </Text>
       </View>
     </KeyboardAwareScrollViewCompat>
   );
@@ -437,7 +449,7 @@ const styles = StyleSheet.create({
   // tap target.
   backChevron: {
     position: "absolute",
-    left: 8,
+    left: 16,
     zIndex: 1,
     width: 44,
     height: 44,
@@ -524,6 +536,16 @@ const styles = StyleSheet.create({
   googleText: {
     fontSize: 15,
     fontFamily: "Inter_600SemiBold",
+  },
+  // Legal footer: smaller/more muted than the cross-link above so it
+  // reads as legal boilerplate, not navigation.
+  privacyLink: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    textAlign: "center",
+    textDecorationLine: "underline",
+    opacity: 0.8,
+    marginTop: 28,
   },
   // Matches login.tsx's signupFooter footer-text style.
   crossLink: {
