@@ -662,11 +662,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Persist the snapshot so a future cold start that can't reach
       // the server can restore this user instead of showing login.
       if (next) void persistUserSnapshot(next);
-      // Same post-success settings pull as signIn (fires only after
-      // apiFetch has already ingested the rotated session cookie).
-      void fetchAccountSettings();
+      // Deliberately NO fetchAccountSettings() here (unlike signIn):
+      // an unawaited authenticated request immediately after
+      // req.login() rotates the session id would depend on ordering
+      // against the serialized jarWriteChain, which we're not willing
+      // to rely on for this path. Settings populate on the next
+      // natural fetch.
     },
-    [fetchAccountSettings],
+    [],
   );
 
   const signInWithApple = useCallback(
