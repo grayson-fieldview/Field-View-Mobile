@@ -55,8 +55,8 @@ const INDUSTRY_OPTIONS = [
   { value: "other", label: "Other" },
 ];
 
-// NOT admin-gated server-side (unlike industry/companySize) — every
-// role's selection is honored, so the UI shows it to all roles.
+// Admin-gated server-side (like industry/companySize) — only admin
+// selections are written, so the UI only shows it to admins.
 const HEARD_ABOUT_US_OPTIONS = [
   { value: "google_search", label: "Google Search" },
   { value: "social_media", label: "Social Media" },
@@ -156,8 +156,8 @@ export default function OnboardingDetailsScreen() {
       if (jobRole) body.jobRole = jobRole;
       if (isAdmin && industry) body.industry = industry;
       if (isAdmin && companySize) body.companySize = companySize;
-      // Not admin-gated — server honors it for every role.
-      if (heardAboutUs) body.heardAboutUs = heardAboutUs;
+      // Admin-gated server-side — non-admin selections are silently dropped.
+      if (isAdmin && heardAboutUs) body.heardAboutUs = heardAboutUs;
       const updated = await api.updateMe(body);
 
       // 3. Apply the PATCH response directly — it IS the updated user
@@ -255,40 +255,40 @@ export default function OnboardingDetailsScreen() {
                 color={colors.mutedForeground}
               />
             </Pressable>
+
+            <FieldLabel style={{ marginTop: 18 }}>
+              How did you hear about us?
+            </FieldLabel>
+            <Pressable
+              onPress={() => setHeardSheetOpen(true)}
+              accessibilityRole="button"
+              accessibilityLabel="How did you hear about us?"
+              style={[
+                shared.input,
+                styles.selectRow,
+                { backgroundColor: colors.card, borderColor: colors.border },
+              ]}
+            >
+              <Text
+                style={[
+                  shared.inputText,
+                  {
+                    color: heardAboutUsLabel
+                      ? colors.foreground
+                      : colors.mutedForeground,
+                  },
+                ]}
+              >
+                {heardAboutUsLabel ?? "Select an option"}
+              </Text>
+              <Feather
+                name="chevron-down"
+                size={18}
+                color={colors.mutedForeground}
+              />
+            </Pressable>
           </>
         ) : null}
-
-        <FieldLabel style={{ marginTop: 18 }}>
-          How did you hear about us?
-        </FieldLabel>
-        <Pressable
-          onPress={() => setHeardSheetOpen(true)}
-          accessibilityRole="button"
-          accessibilityLabel="How did you hear about us?"
-          style={[
-            shared.input,
-            styles.selectRow,
-            { backgroundColor: colors.card, borderColor: colors.border },
-          ]}
-        >
-          <Text
-            style={[
-              shared.inputText,
-              {
-                color: heardAboutUsLabel
-                  ? colors.foreground
-                  : colors.mutedForeground,
-              },
-            ]}
-          >
-            {heardAboutUsLabel ?? "Select an option"}
-          </Text>
-          <Feather
-            name="chevron-down"
-            size={18}
-            color={colors.mutedForeground}
-          />
-        </Pressable>
 
         {error ? (
           <Text
