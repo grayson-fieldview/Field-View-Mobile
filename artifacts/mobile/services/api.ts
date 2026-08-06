@@ -593,6 +593,13 @@ export interface BackendUser {
    */
   emailVerified?: boolean;
   /**
+   * Account billing access level, overlaid on every auth response by
+   * the server (overlayAccountBillingOnUser). Optional like
+   * emailVerified — pre-rollout responses/snapshots may omit it, and
+   * absent must never be treated as restricted.
+   */
+  accessLevel?: "full" | "read_only" | "locked";
+  /**
    * Soft-delete marker from /api/users. Non-null means the user has been
    * deactivated and should be filtered out of any "pick a teammate" UI.
    */

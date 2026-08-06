@@ -248,6 +248,9 @@ importers:
       expo-file-system:
         specifier: ~19.0.22
         version: 19.0.22(expo@54.0.33)(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))
+      expo-iap:
+        specifier: ^5.0.1
+        version: 5.0.1(expo@54.0.33)(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
       expo-image-manipulator:
         specifier: ~14.0.8
         version: 14.0.8(expo@54.0.33)
@@ -4075,6 +4078,20 @@ packages:
     resolution: {integrity: sha512-lftutojy8Qs8zaDzzjwM3gKHFZ8bOOEZDCkmh2Ddpe95Ra6kt2izeOfOfKuP/QEh0MZ1j9TfqippyHdRd1ZM9g==}
     peerDependencies:
       expo: '*'
+
+  expo-iap@5.0.1:
+    resolution: {integrity: sha512-gun5VbmsxFXFEi77gSEyyHYWgs7LkxuxRFpybVaLpe96dAEsAjVH497em2Unh2b0Z43LmFgmPmcqUCOVF5VeTQ==}
+    peerDependencies:
+      '@amazon-devices/keplerscript-appstore-iap-lib': ~2.12.13
+      '@amazon-devices/package-manager-lib': ~1.0.1767254401
+      expo: '*'
+      react: '*'
+      react-native: '*'
+    peerDependenciesMeta:
+      '@amazon-devices/keplerscript-appstore-iap-lib':
+        optional: true
+      '@amazon-devices/package-manager-lib':
+        optional: true
 
   expo-image-loader@6.0.0:
     resolution: {integrity: sha512-nKs/xnOGw6ACb4g26xceBD57FKLFkSwEUTDXEDF3Gtcu3MqF3ZIYd3YM+sSb1/z9AKV1dYT7rMSGVNgsveXLIQ==}
@@ -11509,6 +11526,12 @@ snapshots:
   expo-haptics@15.0.8(expo@54.0.33):
     dependencies:
       expo: 54.0.33(@babel/core@7.29.0)(@expo/metro-runtime@6.1.2)(expo-router@6.0.23)(graphql@16.8.1)(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3)
+
+  expo-iap@5.0.1(expo@54.0.33)(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0):
+    dependencies:
+      expo: 54.0.33(@babel/core@7.29.0)(@expo/metro-runtime@6.1.2)(expo-router@6.0.23)(graphql@16.8.1)(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(typescript@5.9.3)
+      react: 19.1.0
+      react-native: 0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0)
 
   expo-image-loader@6.0.0(expo@54.0.33):
     dependencies:

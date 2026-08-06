@@ -77,6 +77,15 @@ export interface AuthUser {
    * to this file's SESSION re-verification vocabulary (authState).
    */
   emailVerified?: boolean;
+  /**
+   * Account billing access level from the server's
+   * overlayAccountBillingOnUser (sent on every auth response).
+   * Optional: undefined means the response or cached snapshot
+   * predates the rollout and MUST NOT gate or restrict anything —
+   * same rule as emailVerified. Only an explicit "read_only" or
+   * "locked" may ever restrict.
+   */
+  accessLevel?: "full" | "read_only" | "locked";
 }
 
 interface AuthState {
@@ -189,6 +198,15 @@ function toAuthUser(raw: BackendUser | null): AuthUser | null {
     // to undefined, so pre-rollout data can never gate.
     emailVerified:
       typeof raw.emailVerified === "boolean" ? raw.emailVerified : undefined,
+    // Same pass-through rule as emailVerified: only the three known
+    // strings survive; anything else (absent, null, unknown future
+    // value) → undefined, which must never restrict.
+    accessLevel:
+      raw.accessLevel === "full" ||
+      raw.accessLevel === "read_only" ||
+      raw.accessLevel === "locked"
+        ? raw.accessLevel
+        : undefined,
   };
 }
 
@@ -252,6 +270,15 @@ async function loadUserSnapshot(): Promise<AuthUser | null> {
       emailVerified:
         typeof parsed.emailVerified === "boolean"
           ? parsed.emailVerified
+          : undefined,
+      // Same pass-through as toAuthUser — absent-in-snapshot is
+      // undefined, never restrictive, so old snapshots can't lock an
+      // offline user out of writes.
+      accessLevel:
+        parsed.accessLevel === "full" ||
+        parsed.accessLevel === "read_only" ||
+        parsed.accessLevel === "locked"
+          ? parsed.accessLevel
           : undefined,
     };
   } catch {
