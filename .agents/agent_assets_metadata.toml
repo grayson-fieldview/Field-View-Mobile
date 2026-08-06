@@ -1,8 +1,0 @@
-uploads = []
-outputs = []
-
-[[generated]]
-id = "T0zd5IFp9dJOIa3Edjxrk"
-uri = "file://artifacts/mobile/assets/images/icon.png"
-type = "image"
-title = "field view app icon"
