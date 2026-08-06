@@ -116,6 +116,11 @@ export function describeApplePurchaseError(e: unknown): string {
         return "This account's billing is managed elsewhere and can't accept an App Store purchase. Contact support if this seems wrong.";
       case "unknown_product":
         return "Apple reported a product this version of the app doesn't recognize. Please update Field View and try again.";
+      case "verification_failed":
+        // Terminal (coded 401): the transaction is finished, no retry
+        // is coming — the old "retried on next launch" copy is wrong
+        // for this case.
+        return "This purchase couldn't be verified with Apple. If you were charged, contact support.";
       case "no_account":
         return "We couldn't find an account to attach this purchase to. Sign in and try again.";
       default:
