@@ -1473,6 +1473,7 @@ export const api = {
     jobRole?: string;
     industry?: string;
     companySize?: string;
+    heardAboutUs?: string;
   }) =>
     apiFetch<BackendUser | { user: BackendUser } | null>("/api/auth/me", {
       method: "PATCH",

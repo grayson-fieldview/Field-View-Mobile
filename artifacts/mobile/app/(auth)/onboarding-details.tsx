@@ -55,6 +55,19 @@ const INDUSTRY_OPTIONS = [
   { value: "other", label: "Other" },
 ];
 
+// NOT admin-gated server-side (unlike industry/companySize) — every
+// role's selection is honored, so the UI shows it to all roles.
+const HEARD_ABOUT_US_OPTIONS = [
+  { value: "google_search", label: "Google Search" },
+  { value: "social_media", label: "Social Media" },
+  { value: "paid_social_ad", label: "Facebook / Instagram Ad" },
+  { value: "referral", label: "Referral from a friend" },
+  { value: "trade_show", label: "Trade Show / Event" },
+  { value: "podcast", label: "Podcast" },
+  { value: "youtube", label: "YouTube" },
+  { value: "other", label: "Other" },
+];
+
 /**
  * Onboarding screen 2 of 2 — optional profiling fields + submit.
  * All fields optional; Continue is ALWAYS enabled (no Skip button —
@@ -101,11 +114,15 @@ export default function OnboardingDetailsScreen() {
   const [companySize, setCompanySize] = useState<string | null>(null);
   const [industry, setIndustry] = useState<string | null>(null);
   const [industrySheetOpen, setIndustrySheetOpen] = useState(false);
+  const [heardAboutUs, setHeardAboutUs] = useState<string | null>(null);
+  const [heardSheetOpen, setHeardSheetOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const industryLabel =
     INDUSTRY_OPTIONS.find((o) => o.value === industry)?.label ?? null;
+  const heardAboutUsLabel =
+    HEARD_ABOUT_US_OPTIONS.find((o) => o.value === heardAboutUs)?.label ?? null;
 
   const handleContinue = async () => {
     if (submitting) return;
@@ -139,6 +156,8 @@ export default function OnboardingDetailsScreen() {
       if (jobRole) body.jobRole = jobRole;
       if (isAdmin && industry) body.industry = industry;
       if (isAdmin && companySize) body.companySize = companySize;
+      // Not admin-gated — server honors it for every role.
+      if (heardAboutUs) body.heardAboutUs = heardAboutUs;
       const updated = await api.updateMe(body);
 
       // 3. Apply the PATCH response directly — it IS the updated user
@@ -239,6 +258,38 @@ export default function OnboardingDetailsScreen() {
           </>
         ) : null}
 
+        <FieldLabel style={{ marginTop: 18 }}>
+          How did you hear about us?
+        </FieldLabel>
+        <Pressable
+          onPress={() => setHeardSheetOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel="How did you hear about us?"
+          style={[
+            shared.input,
+            styles.selectRow,
+            { backgroundColor: colors.card, borderColor: colors.border },
+          ]}
+        >
+          <Text
+            style={[
+              shared.inputText,
+              {
+                color: heardAboutUsLabel
+                  ? colors.foreground
+                  : colors.mutedForeground,
+              },
+            ]}
+          >
+            {heardAboutUsLabel ?? "Select an option"}
+          </Text>
+          <Feather
+            name="chevron-down"
+            size={18}
+            color={colors.mutedForeground}
+          />
+        </Pressable>
+
         {error ? (
           <Text
             style={{
@@ -268,6 +319,15 @@ export default function OnboardingDetailsScreen() {
         selected={industry}
         onClose={() => setIndustrySheetOpen(false)}
         onSelect={setIndustry}
+      />
+
+      <OptionSheet
+        visible={heardSheetOpen}
+        title="How did you hear about us?"
+        options={HEARD_ABOUT_US_OPTIONS}
+        selected={heardAboutUs}
+        onClose={() => setHeardSheetOpen(false)}
+        onSelect={setHeardAboutUs}
       />
     </KeyboardAwareScrollViewCompat>
   );
