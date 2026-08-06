@@ -111,28 +111,6 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // Email verification gate — FIRST check in the authenticated
-    // region, before onboarding: an unverified user must not be
-    // running onboarding PATCHes, and gating after onboarding would
-    // route them there first. Gate ONLY on an explicit false —
-    // undefined means the response/snapshot predates the rollout
-    // (AuthUser.emailVerified is optional) and must not gate. OAuth-
-    // created users are stamped true server-side at row creation, so
-    // they never land here. Same commit-then-flip pattern as the
-    // other branches: issue the replace, bail, let the segments
-    // change re-run the effect so `routed` (and the splash hide)
-    // waits for the redirect to COMMIT.
-    const needsEmailVerification = user.emailVerified === false;
-
-    if (needsEmailVerification) {
-      if (!onVerifyEmail) {
-        router.replace("/(auth)/verify-email");
-        return;
-      }
-      setRouted(true);
-      return;
-    }
-
     // User is authenticated. Profile onboarding gate: a user whose
     // profileCompletedAt is null (fresh server response said the
     // profile is incomplete — legacy cached snapshots default to a
@@ -148,6 +126,31 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     if (needsOnboarding) {
       if (!onOnboarding) {
         router.replace("/(auth)/onboarding-profile");
+        return;
+      }
+      setRouted(true);
+      return;
+    }
+
+    // Email verification gate — deliberately AFTER onboarding: the
+    // server only sends the verification email on the
+    // profileCompletedAt null→set transition in PATCH /api/auth/me
+    // (mirroring web's /welcome funnel); registration itself sends
+    // nothing for self-serve signups. Gating before onboarding
+    // deadlocks — the user is stranded on verify-email waiting for
+    // an email that only the onboarding PATCH triggers. Gate ONLY on
+    // an explicit false — undefined means the response/snapshot
+    // predates the rollout (AuthUser.emailVerified is optional) and
+    // must not gate. OAuth-created users are stamped true server-side
+    // at row creation, so they never land here. Same commit-then-flip
+    // pattern as the other branches: issue the replace, bail, let the
+    // segments change re-run the effect so `routed` (and the splash
+    // hide) waits for the redirect to COMMIT.
+    const needsEmailVerification = user.emailVerified === false;
+
+    if (needsEmailVerification) {
+      if (!onVerifyEmail) {
+        router.replace("/(auth)/verify-email");
         return;
       }
       setRouted(true);
