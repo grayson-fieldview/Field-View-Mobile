@@ -1,7 +1,8 @@
 import { Feather } from "@expo/vector-icons";
 import * as AppleAuthentication from "expo-apple-authentication";
+import * as Linking from "expo-linking";
 import { useRouter } from "expo-router";
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import {
   Pressable,
   StyleSheet,
@@ -20,9 +21,11 @@ import {
   authScreenStyles as shared,
   BRAND_ORANGE,
 } from "@/components/auth/authScreenStyles";
+import { signupErrorMessage } from "@/components/auth/signupErrorMessage";
 import { useOAuthSignIn } from "@/components/auth/useOAuthSignIn";
 import { Button } from "@/components/Button";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
+import { useAuth } from "@/contexts/AuthContext";
 import { useColors } from "@/hooks/useColors";
 
 /** Live password rules shown under the password field. */
@@ -40,31 +43,66 @@ export default function SignupScreen() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { signUpWithEmail } = useAuth();
+  // Email-path in-flight / post-success lockout, mirroring the OAuth
+  // hook's oauthLoading/signedIn pair: spinner while the request is in
+  // flight; once signup succeeds, ALL buttons stay disabled permanently
+  // (same non-re-enable guard as OAuth — the passport
+  // session-regenerate double-login bug).
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [emailSignedIn, setEmailSignedIn] = useState(false);
+  // Synchronous submit lock: state-based guards (anyInFlight) don't
+  // commit until the next render, so a second tap in the same frame
+  // would see stale `false` and start a second session-creating
+  // request. The ref flips immediately at press time. Acquired by the
+  // email path; checked by BOTH paths via isBlocked (evaluated at
+  // press time). Released only on email failure — success keeps it
+  // held, same permanent lockout as the state guards.
+  const submitLockRef = useRef(false);
 
   const { oauthLoading, signedIn, handleOAuth } = useOAuthSignIn({
     setError,
     // Evaluated at press time; anyInFlight is screen-computed below.
-    isBlocked: () => anyInFlight,
+    isBlocked: () => anyInFlight || submitLockRef.current,
   });
 
   // All buttons share this: disabled while any sign-in is in flight
   // or after any success.
-  const anyInFlight = oauthLoading !== null || signedIn;
+  const anyInFlight =
+    oauthLoading !== null || signedIn || emailLoading || emailSignedIn;
 
   const passwordChecks = PASSWORD_RULES.map((r) => r.test(password));
   const canSubmitEmail =
     email.trim().length > 0 && passwordChecks.every(Boolean);
 
-  const handleEmailSignup = () => {
-    // INTEGRATION POINT: mobile email/password signup backend does not
-    // exist yet (POST /api/register requires reCAPTCHA, which a native
-    // app cannot supply). When a mobile signup endpoint ships, replace
-    // the setError line below with the real API call + success
-    // navigation; the form state (email, password) and validation are
-    // already in place.
-    setError(
-      "Email signup is coming soon. Please use Google or Apple to get started.",
-    );
+  const handleEmailSignup = async () => {
+    if (anyInFlight || submitLockRef.current) return;
+    submitLockRef.current = true; // sync — closes the pre-commit window
+    setError(null);
+    setEmailLoading(true);
+    try {
+      // termsAccepted: true — the caption below the button is the
+      // consent mechanism, same legal basis the web OAuth buttons use
+      // for stamping termsAcceptedAt. No inviteToken: the app has no
+      // deep link handling yet.
+      await signUpWithEmail({
+        email: email.trim(),
+        password,
+        termsAccepted: true,
+      });
+      setEmailSignedIn(true); // keep everything disabled — see guard note
+      // AuthGate routes to onboarding from here (profileCompletedAt is
+      // null); this replace is identical to handleOAuth's — the gate
+      // owns the onboarding redirect, never this screen.
+      router.replace("/(tabs)");
+      setEmailLoading(false);
+      // Deliberately NOT releasing submitLockRef — success is a
+      // permanent lockout, matching signedIn/emailSignedIn.
+    } catch (e) {
+      setError(signupErrorMessage(e));
+      setEmailLoading(false);
+      submitLockRef.current = false; // failure re-arms the form
+    }
   };
 
   return (
@@ -212,11 +250,39 @@ export default function SignupScreen() {
 
         <Button
           title="Get Started"
-          onPress={handleEmailSignup}
+          onPress={() => void handleEmailSignup()}
           disabled={!canSubmitEmail || anyInFlight}
+          loading={emailLoading}
           size="lg"
           style={{ marginTop: 16, backgroundColor: BRAND_ORANGE }}
         />
+
+        {/* Consent caption for BOTH the email path and the OAuth
+            buttons above — the client always sends termsAccepted:
+            true on email signup, mirroring the web OAuth buttons. */}
+        <Text style={[styles.termsCaption, { color: colors.mutedForeground }]}>
+          By continuing, you agree to the{" "}
+          <Text
+            style={styles.termsLink}
+            onPress={() => {
+              void Linking.openURL("https://www.field-view.com/legal/terms");
+            }}
+          >
+            Terms of Service
+          </Text>{" "}
+          and{" "}
+          <Text
+            style={styles.termsLink}
+            onPress={() => {
+              void Linking.openURL(
+                "https://www.field-view.com/legal/privacy-policy",
+              );
+            }}
+          >
+            Privacy Policy
+          </Text>
+          .
+        </Text>
 
         <Text
           style={[shared.footerText, { color: colors.mutedForeground }]}
@@ -241,6 +307,17 @@ export default function SignupScreen() {
 }
 
 const styles = StyleSheet.create({
+  // Legal caption: smaller/more muted than the cross-link below so it
+  // reads as boilerplate (matches PrivacyPolicyLink's treatment);
+  // underline only on the two link phrases.
+  termsCaption: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
+    textAlign: "center",
+    opacity: 0.8,
+    marginTop: 12,
+  },
+  termsLink: { textDecorationLine: "underline" },
   rulesBlock: { marginTop: 10, gap: 6 },
   ruleRow: {
     flexDirection: "row",

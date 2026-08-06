@@ -103,6 +103,18 @@ interface AuthState {
     idToken: string;
     inviteToken?: string | null;
   }) => Promise<void>;
+  /**
+   * Email/password registration via POST /api/auth/register/mobile.
+   * Same contract as the OAuth methods: sets state directly from the
+   * response (no follow-up request); on failure the ApiError
+   * propagates unchanged and existing auth state is untouched.
+   */
+  signUpWithEmail: (args: {
+    email: string;
+    password: string;
+    termsAccepted: boolean;
+    inviteToken?: string | null;
+  }) => Promise<void>;
   signOut: () => Promise<void>;
   requestPasswordReset: (email: string) => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -774,6 +786,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [completeOAuthSignIn],
   );
 
+  // Email/password registration. Same session-id rotation constraint
+  // as the OAuth paths: the endpoint calls req.login() (rotates the
+  // sid) and returns the full user precisely so NO follow-up request
+  // is needed — state is set directly from the 201 body via the same
+  // shared completion path. No checkMe()/me()/refreshUser(), no
+  // parallel authenticated request. On failure the ApiError propagates
+  // unchanged and existing auth state is untouched (completeOAuthSignIn
+  // only mutates state on success).
+  const signUpWithEmail = useCallback(
+    async (args: {
+      email: string;
+      password: string;
+      termsAccepted: boolean;
+      inviteToken?: string | null;
+    }) => {
+      completeOAuthSignIn(await api.registerMobile(args));
+    },
+    [completeOAuthSignIn],
+  );
+
   const signOut = useCallback(async () => {
     // Invalidate any in-flight reverify immediately so a slow me()
     // response can't repopulate the user after this sign-out.
@@ -834,6 +866,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signIn,
       signInWithApple,
       signInWithGoogle,
+      signUpWithEmail,
       signOut,
       requestPasswordReset,
       refreshUser,
@@ -848,6 +881,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       signIn,
       signInWithApple,
       signInWithGoogle,
+      signUpWithEmail,
       signOut,
       requestPasswordReset,
       refreshUser,

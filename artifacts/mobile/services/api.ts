@@ -1189,6 +1189,32 @@ export const api = {
     );
   },
 
+  /**
+   * Mobile email/password registration. Same contract as the mobile
+   * OAuth endpoints: 201 returns the FULL user (session cookie set by
+   * req.login()), errors are { error, message } with machine-readable
+   * codes (terms_not_accepted, missing_credentials, password_too_short,
+   * email_exists, invite_invalid, invite_email_mismatch,
+   * registration_failed, too_many_requests).
+   */
+  registerMobile: (args: {
+    email: string;
+    password: string;
+    termsAccepted: boolean;
+    inviteToken?: string | null;
+  }) => {
+    const json: Record<string, string | boolean> = {
+      email: args.email,
+      password: args.password,
+      termsAccepted: args.termsAccepted,
+    };
+    if (args.inviteToken) json.inviteToken = args.inviteToken;
+    return apiFetch<BackendUser | { user: BackendUser } | null>(
+      "/api/auth/register/mobile",
+      { method: "POST", json },
+    );
+  },
+
   logout: () =>
     apiFetch<unknown>("/api/logout", {
       method: "POST",
