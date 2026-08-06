@@ -305,6 +305,41 @@ function breadcrumbSetCookieShape(raw: string, path: string): void {
   }
 }
 
+// ---- 402 Payment Required notification --------------------------------
+// The server 402s write endpoints when the account's accessLevel is
+// read_only/locked. apiFetch notifies these listeners BEFORE throwing —
+// the throw itself is unchanged, so every existing catch site
+// (rollbacks, upload-queue retry classification, mutate-server-first
+// pruning) behaves identically. One subscriber lives in AuthContext
+// and shows a single debounced user-facing message.
+
+type PaymentRequiredListener = (info: { path: string; message: string }) => void;
+
+const paymentRequiredListeners = new Set<PaymentRequiredListener>();
+
+/** Subscribe to 402 responses. Returns an unsubscribe function. */
+export function onPaymentRequired(
+  listener: PaymentRequiredListener,
+): () => void {
+  paymentRequiredListeners.add(listener);
+  return () => paymentRequiredListeners.delete(listener);
+}
+
+function notifyPaymentRequired(path: string, message: string): void {
+  for (const l of paymentRequiredListeners) {
+    try {
+      l({ path, message });
+    } catch {
+      // A listener must never break the request error path.
+    }
+  }
+}
+
+/** Narrowing helper: true when `e` is an ApiError with status 402. */
+export function isPaymentRequired(e: unknown): e is ApiError {
+  return e instanceof ApiError && e.status === 402;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -532,6 +567,16 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
       }
     } catch {
       /* ignore */
+    }
+    if (res.status === 402) {
+      // Readable fallback when the server body carried no message —
+      // never the bare "Request failed (402)".
+      if (message === `Request failed (${res.status})`) {
+        message =
+          "Your account is read-only. An admin needs to update billing to make changes.";
+      }
+      // Notify BEFORE throwing; throw semantics below are unchanged.
+      notifyPaymentRequired(path, message);
     }
     breadcrumbApiError(opts.method ?? "GET", path, res.status);
     throw new ApiError(res.status, message, parsed);

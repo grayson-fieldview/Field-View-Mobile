@@ -9,7 +9,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { AppState } from "react-native";
+import { Alert, AppState } from "react-native";
 
 import {
   ApiError,
@@ -19,6 +19,7 @@ import {
   hasSession,
   loadSession,
   normalizeUser,
+  onPaymentRequired,
   type BackendUser,
   type UserRole,
 } from "@/services/api";
@@ -388,6 +389,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     accountSettingsRef.current = accountSettings;
   }, [accountSettings]);
+
+  // ---- 402 Payment Required subscriber (the ONE app-wide handler) ----
+  // A read-only/locked account 402s on every write; a burst of failed
+  // writes (e.g. upload queue flush) must produce ONE message, not N.
+  // Debounce: show at most one alert per 30s window. No navigation —
+  // the paywall route lands in a later gate.
+  const lastPaymentAlertAtRef = useRef(0);
+  useEffect(() => {
+    return onPaymentRequired(({ message }) => {
+      const now = Date.now();
+      if (now - lastPaymentAlertAtRef.current < 30_000) return;
+      lastPaymentAlertAtRef.current = now;
+      Alert.alert("Account is read-only", message);
+    });
+  }, []);
 
   /**
    * Fetch + narrow account settings. On any error (including 401:
