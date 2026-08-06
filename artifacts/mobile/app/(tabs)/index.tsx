@@ -669,6 +669,13 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_500Medium",
     fontSize: 14,
     padding: 0,
+    // Explicit 0, not omitted: with a custom font and no explicit
+    // value, iOS TextInput has been observed rendering placeholder +
+    // text with stray tracking (attributed-string kerning quirk).
+    // No shared style leaks letterSpacing here — verify-email's
+    // codeInput (8) is locally scoped; this pins the intended value
+    // at the rendering layer.
+    letterSpacing: 0,
   },
   card: {
     borderWidth: 1,
