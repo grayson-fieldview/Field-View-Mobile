@@ -1321,6 +1321,29 @@ export const api = {
       json: { email },
     }),
 
+  /**
+   * Submit an Apple IAP purchase (StoreKit 2 JWS) for server-side
+   * verification and account binding. Returns the FULL serialized
+   * user on 200 — apply via applyUpdatedUser, no follow-up me().
+   *
+   * Error contract (ApiError; token in body.error):
+   *   401 verification failed (JWS didn't verify against Apple's chain)
+   *   400 unknown_product | no_account
+   *   409 stripe_subscription_active
+   *       | account_bound_to_other_subscription
+   *       | transaction_bound_to_other_account
+   *       | provider_conflict
+   *
+   * Callers must finishTransaction ONLY after this resolves — an
+   * unfinished transaction replays on next launch, which is the
+   * at-least-once retry mechanism for server/network failures.
+   */
+  submitApplePurchase: (jws: string) =>
+    apiFetch<BackendUser | { user: BackendUser } | null>(
+      "/api/billing/apple/purchase",
+      { method: "POST", json: { jws } },
+    ),
+
   logout: () =>
     apiFetch<unknown>("/api/logout", {
       method: "POST",

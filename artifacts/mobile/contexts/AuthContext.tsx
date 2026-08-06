@@ -9,7 +9,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Alert, AppState } from "react-native";
+import { Alert, AppState, Platform } from "react-native";
 
 import {
   ApiError,
@@ -657,6 +657,76 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     },
     [],
   );
+
+  // ---- Apple IAP purchase listener (app-wide, iOS only) --------------
+  // Mounted here — NOT in a screen — so interrupted purchases,
+  // Ask-to-Buy approvals, and unfinished transactions replay on next
+  // launch and still reach the server. Flow per purchase event:
+  // submit JWS → server 200 → finishTransaction → applyUpdatedUser.
+  // On any failure the transaction stays unfinished (replays later)
+  // and the user sees case-specific copy, never a generic failure.
+  useEffect(() => {
+    if (Platform.OS !== "ios") return;
+    let updateSub: { remove: () => void } | null = null;
+    let errorSub: { remove: () => void } | null = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        // Dynamic import: keeps a dev client that predates the
+        // expo-iap native module from crashing at bundle evaluation.
+        const iap = await import("expo-iap");
+        const { processApplePurchase, describeApplePurchaseError } =
+          await import("@/services/appleIap");
+        await iap.initConnection();
+        if (cancelled) return;
+        updateSub = iap.purchaseUpdatedListener((purchase) => {
+          void (async () => {
+            try {
+              // Dedupe lives INSIDE processApplePurchase (shared with
+              // the Restore flow) — null means another caller owns
+              // this transaction right now.
+              const me = await processApplePurchase(purchase);
+              if (me) applyUpdatedUser(me);
+            } catch (e) {
+              Sentry.captureException(e, {
+                extra: { phase: "iap-purchase-submit" },
+              });
+              Alert.alert(
+                "Purchase not confirmed",
+                describeApplePurchaseError(e),
+              );
+            }
+          })();
+        });
+        // Asynchronous StoreKit failures (post-sheet) arrive here, NOT
+        // via requestPurchase's promise. User cancellation is a normal
+        // outcome — stay silent; everything else gets surfaced.
+        errorSub = iap.purchaseErrorListener((err) => {
+          if (err.code === "user-cancelled") return;
+          Sentry.captureMessage("iap purchase error", {
+            level: "warning",
+            extra: { code: err.code, productId: err.productId },
+          });
+          Alert.alert(
+            "Purchase failed",
+            err.message || "The App Store couldn't complete the purchase.",
+          );
+        });
+      } catch (e) {
+        // Native module missing (stale dev client) or store connection
+        // failed — IAP is simply unavailable this run. Never fatal.
+        console.warn("[iap] init failed:", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      updateSub?.remove();
+      errorSub?.remove();
+      void import("expo-iap")
+        .then((iap) => iap.endConnection())
+        .catch(() => {});
+    };
+  }, [applyUpdatedUser]);
 
   // Re-attempt auth on every foreground transition. No user-null guard
   // anymore: when the boot check was ambiguous (user restored from
