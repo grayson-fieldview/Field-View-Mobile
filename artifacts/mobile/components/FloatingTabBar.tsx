@@ -37,6 +37,16 @@ export function FloatingTabBar({
   const isDark = colorScheme === "dark";
   const insets = useSafeAreaInsets();
 
+  // Hidden (href: null) detail routes in the tab group — Settings and
+  // Edit Profile — are full-screen pushes, not tabs. When one of them
+  // is focused, render no bar at all: the row below only ever draws
+  // routes 0–3, so the bar would float over the detail screen with no
+  // selected tab and invite mid-flow navigation.
+  const focusedName = state.routes[state.index]?.name;
+  if (focusedName === "settings" || focusedName === "edit-profile") {
+    return null;
+  }
+
   const renderTab = (routeIndex: number) => {
     const route = state.routes[routeIndex];
     if (!route) return null;

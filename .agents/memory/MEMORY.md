@@ -9,4 +9,5 @@
 - [Mobile OAuth contract](mobile-oauth-contract.md) — set state from POST body only (session-id rotation race); Android Google aud = dedicated web client, no androidClientId key in v16
 - [Splash hold on redirect commit](splash-routed-commit.md) — `routed` flips only when segments reflect (auth), never on replace-issue; never gate the navigator; 5s fallback hide
 - [Onboarding gate](onboarding-gate.md) — profileCompletedAt: server null/missing=needs onboarding, snapshot ABSENT=completed (never unify); refreshUser drains in-flight reverify
+- [Tabs hidden routes](tabs-hidden-routes.md) — non-tab screens in (tabs) need href:null after the 4 real tabs AND a FloatingTabBar hide-list entry (bar draws fixed indexes 0–3)
 - [Android v1 location model](android-v1-location.md) — Android is manual/foreground clock-in only; no background location, no FGS, no geofencing. iOS keeps full background/geofencing.

@@ -67,6 +67,12 @@ export default function TabLayout() {
               ),
           }}
         />
+        {/* Hidden (non-tab) routes in this group. Declared explicitly
+            with href: null so they never appear in the tab bar AND so
+            the four real tabs keep deterministic route indexes 0–3 —
+            FloatingTabBar renders state.routes by fixed index. */}
+        <Tabs.Screen name="settings" options={{ href: null }} />
+        <Tabs.Screen name="edit-profile" options={{ href: null }} />
       </Tabs>
     </View>
   );
