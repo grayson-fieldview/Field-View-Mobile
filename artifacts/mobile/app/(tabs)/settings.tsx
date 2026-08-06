@@ -151,9 +151,9 @@ export default function SettingsScreen() {
     Constants.expoConfig?.version ??
     "unknown";
   const buildNumber = Application.nativeBuildVersion;
-  const versionString = buildNumber
-    ? `Version ${appVersion} (build ${buildNumber})`
-    : `Version ${appVersion}`;
+  // Displayed (and copied) string is version-only by design; the build
+  // number still goes into the bug-report body below, where it matters.
+  const versionString = `Version ${appVersion}`;
 
   const copyVersion = async () => {
     try {
