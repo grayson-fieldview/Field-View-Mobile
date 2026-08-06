@@ -265,7 +265,7 @@ export default function SignupScreen() {
           <Text
             style={styles.termsLink}
             onPress={() => {
-              void Linking.openURL("https://www.field-view.com/legal/terms");
+              void Linking.openURL("https://www.field-view.com/legal/terms-and-conditions");
             }}
           >
             Terms of Service

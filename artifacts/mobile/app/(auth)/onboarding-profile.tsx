@@ -178,7 +178,7 @@ export default function OnboardingProfileScreen() {
               }}
               onPress={() => {
                 void Linking.openURL(
-                  "https://www.field-view.com/legal/terms",
+                  "https://www.field-view.com/legal/terms-and-conditions",
                 );
               }}
             >
