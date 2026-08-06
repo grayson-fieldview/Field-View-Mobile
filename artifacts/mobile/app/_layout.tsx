@@ -33,6 +33,17 @@ import {
 } from "@/services/pushNotifications";
 import { startProcessor as startUploadQueueProcessor } from "@/services/uploadQueue";
 
+// Fade is OFF by default in SDK 54 (iOS-only option), so hideAsync()
+// removes the splash as a HARD CUT, revealing whatever is on screen at
+// that instant. Under Fabric + react-native-screens, React's JS commit
+// precedes the native screen swap by 1-2 frames, so on cold launch the
+// cut can briefly expose (tabs) content before welcome's native frame
+// lands — the residual Projects flash (build 51). A 250ms crossfade
+// masks that window. This is deliberate cosmetic masking, NOT more
+// launch-sequencing machinery — a destination-paint signal (Option B)
+// was considered and rejected: its worst case is a 5s splash via the
+// fallback timer, far worse than a sub-perceptual blend.
+SplashScreen.setOptions({ fade: true, duration: 250 });
 SplashScreen.preventAutoHideAsync();
 
 const queryClient = new QueryClient();
