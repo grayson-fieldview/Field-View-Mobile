@@ -16,7 +16,7 @@ import {
   describeApplePurchaseError,
   markPlanSkippedThisSession,
   MIN_SEATS,
-  processApplePurchase,
+  restoreApplePurchases,
   seatProductId,
 } from "@/services/appleIap";
 
@@ -148,43 +148,9 @@ export default function ChoosePlanScreen() {
     if (restoring) return;
     setRestoring(true);
     try {
-      const iap = await import("expo-iap");
-      const purchases = await iap.getAvailablePurchases();
-      const ours = (purchases ?? []).filter((p) =>
-        ALL_SEAT_PRODUCT_IDS.includes(p.productId),
-      );
-      if (ours.length === 0) {
-        Alert.alert(
-          "Nothing to restore",
-          "No Field View subscription was found on this Apple ID.",
-        );
-        return;
-      }
-      let restored = 0;
-      let lastError: unknown = null;
-      for (const p of ours) {
-        try {
-          const me = await processApplePurchase(p);
-          // null = the app-wide listener is already processing this
-          // exact transaction (replay racing the restore) — count it
-          // as handled rather than failed.
-          if (me) applyUpdatedUser(me);
-          restored += 1;
-        } catch (e) {
-          lastError = e;
-        }
-      }
-      if (restored > 0) {
-        Alert.alert(
-          "Purchases restored",
-          "Your subscription is active on this account.",
-        );
-      } else if (lastError) {
-        // Same case-specific copy as the purchase path — never generic.
-        Alert.alert("Restore failed", describeApplePurchaseError(lastError));
-      }
-    } catch (e) {
-      Alert.alert("Restore failed", describeApplePurchaseError(e));
+      // Shared with Settings → About → Restore Purchases; the helper
+      // owns all three feedback alerts (restored / nothing / error).
+      await restoreApplePurchases(applyUpdatedUser);
     } finally {
       setRestoring(false);
     }

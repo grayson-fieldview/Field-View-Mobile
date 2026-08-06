@@ -20,6 +20,8 @@
 // (transitively) imported by app/_layout.tsx for the skip flag, and a
 // static runtime import here would crash a dev client that predates
 // the expo-iap native module at bundle evaluation.
+import { Alert } from "react-native";
+
 import type { Purchase } from "expo-iap";
 
 import { ApiError, api, normalizeUser, type BackendUser } from "./api";
@@ -149,4 +151,59 @@ async function submitAndFinish(
   const { finishTransaction } = await import("expo-iap");
   await finishTransaction({ purchase, isConsumable: false });
   return me;
+}
+
+/**
+ * Shared Restore Purchases flow — used by the choose-plan paywall AND
+ * the Settings screen (Apple expects restore reachable from a stable
+ * location; a reinstalling subscriber never sees the paywall).
+ *
+ * getAvailablePurchases → filter to our seat SKUs →
+ * processApplePurchase for each. Owns ALL user-facing feedback
+ * (restored / nothing to restore / error alerts) so every entry point
+ * behaves identically; callers only manage their own busy state.
+ *
+ * `applyUpdatedUser` matches AuthContext's signature; a `null` from
+ * processApplePurchase means the app-wide listener already owns that
+ * transaction (replay racing the restore) — counted as handled.
+ */
+export async function restoreApplePurchases(
+  applyUpdatedUser: (raw: unknown) => void,
+): Promise<void> {
+  try {
+    const iap = await import("expo-iap");
+    const purchases = await iap.getAvailablePurchases();
+    const ours = (purchases ?? []).filter((p) =>
+      ALL_SEAT_PRODUCT_IDS.includes(p.productId),
+    );
+    if (ours.length === 0) {
+      Alert.alert(
+        "Nothing to restore",
+        "No Field View subscription was found on this Apple ID.",
+      );
+      return;
+    }
+    let restored = 0;
+    let lastError: unknown = null;
+    for (const p of ours) {
+      try {
+        const me = await processApplePurchase(p);
+        if (me) applyUpdatedUser(me);
+        restored += 1;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    if (restored > 0) {
+      Alert.alert(
+        "Purchases restored",
+        "Your subscription is active on this account.",
+      );
+    } else if (lastError) {
+      // Same case-specific copy as the purchase path — never generic.
+      Alert.alert("Restore failed", describeApplePurchaseError(lastError));
+    }
+  } catch (e) {
+    Alert.alert("Restore failed", describeApplePurchaseError(e));
+  }
 }

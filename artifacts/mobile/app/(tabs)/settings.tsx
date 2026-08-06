@@ -28,6 +28,7 @@ import { useData } from "@/contexts/DataContext";
 import { useToast } from "@/contexts/ToastContext";
 import { useColors } from "@/hooks/useColors";
 import { ApiError, api } from "@/services/api";
+import { restoreApplePurchases } from "@/services/appleIap";
 import {
   DEFAULT_PHOTO_ASPECT_RATIO,
   PHOTO_ASPECT_RATIOS,
@@ -57,6 +58,7 @@ export default function SettingsScreen() {
     signOut,
     accountSettings,
     updateAccountSettings,
+    applyUpdatedUser,
   } = useAuth();
   const { clearAll } = useData();
   const { showToast } = useToast();
@@ -75,6 +77,7 @@ export default function SettingsScreen() {
     useState<PhotoAspectRatio | null>(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
+  const [restoring, setRestoring] = useState(false);
 
   // Notification permission status, refreshed on mount AND on every
   // foreground transition. The user can flip the toggle in iOS
@@ -233,6 +236,18 @@ export default function SettingsScreen() {
     );
   };
 
+  const handleRestore = async () => {
+    if (restoring) return;
+    setRestoring(true);
+    try {
+      // Shared with choose-plan; the helper owns all three feedback
+      // alerts (restored / nothing to restore / error).
+      await restoreApplePurchases(applyUpdatedUser);
+    } finally {
+      setRestoring(false);
+    }
+  };
+
   const handleDeleteAccountStart = () => {
     Alert.alert(
       "Delete account?",
@@ -361,6 +376,16 @@ export default function SettingsScreen() {
             label="Billing"
             onPress={() => router.push("/(tabs)/billing")}
           />
+          {/* iOS only (same pattern as Rate Field View): Apple expects
+              Restore Purchases reachable from a stable location — a
+              subscribed user who reinstalls never sees the paywall. */}
+          {Platform.OS === "ios" ? (
+            <Row
+              icon="refresh-ccw"
+              label={restoring ? "Restoring…" : "Restore Purchases"}
+              onPress={restoring ? undefined : () => void handleRestore()}
+            />
+          ) : null}
         </View>
       ) : null}
 
