@@ -1497,12 +1497,16 @@ export const api = {
    * gated. Optional fields must be OMITTED when unselected — never
    * sent as null or "". Does NOT rotate the session id (only
    * req.login does), so follow-up authenticated requests are safe.
+   *
+   * tcpaAccepted is a consent record — send it ONLY when the user has
+   * just affirmatively accepted (onboarding). Plain profile edits must
+   * OMIT it so the server's original consent record is never touched.
    */
   updateMe: (input: {
     firstName: string;
     lastName: string;
     phone: string;
-    tcpaAccepted: boolean;
+    tcpaAccepted?: boolean;
     jobRole?: string;
     industry?: string;
     companySize?: string;

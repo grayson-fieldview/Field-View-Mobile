@@ -25,9 +25,9 @@ import { api } from "@/services/api";
  * signature. Until that fetch resolves the field starts empty; a
  * fetch failure just means no prefill — the user can still type.
  *
- * tcpaAccepted is required by the updateMe wrapper; we send `true`
- * because the user necessarily accepted during signup/onboarding —
- * this screen never un-accepts.
+ * tcpaAccepted is OMITTED here on purpose: it's a consent record set
+ * once during signup/onboarding. Re-sending it on unrelated profile
+ * edits could overwrite the original consent timestamp server-side.
  */
 export default function EditProfileScreen() {
   const colors = useColors();
@@ -76,7 +76,6 @@ export default function EditProfileScreen() {
         firstName: firstName.trim(),
         lastName: lastName.trim(),
         phone: phone.trim(),
-        tcpaAccepted: true,
       });
       applyUpdatedUser(updated);
       router.back();
