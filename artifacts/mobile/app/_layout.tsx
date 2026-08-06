@@ -85,6 +85,11 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     const onOnboarding =
       segments[1] === "onboarding-profile" ||
       segments[1] === "onboarding-details";
+    // verify-email lives under (auth) but, like onboarding, assumes
+    // an authenticated user (reads user.email, POSTs a session-
+    // cookied endpoint) — so it shares onboarding's signed-out
+    // carve-out below.
+    const onVerifyEmail = segments[1] === "verify-email";
 
     if (!user) {
       // `routed` (and therefore the splash hide) waits for the
@@ -98,8 +103,30 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       // changes, this effect re-runs, inAuthGroup is true, and
       // routed flips with welcome actually on screen. Do NOT
       // "simplify" this back to setting routed alongside the replace.
-      if (!inAuthGroup || onOnboarding) {
+      if (!inAuthGroup || onOnboarding || onVerifyEmail) {
         router.replace("/(auth)/welcome");
+        return;
+      }
+      setRouted(true);
+      return;
+    }
+
+    // Email verification gate — FIRST check in the authenticated
+    // region, before onboarding: an unverified user must not be
+    // running onboarding PATCHes, and gating after onboarding would
+    // route them there first. Gate ONLY on an explicit false —
+    // undefined means the response/snapshot predates the rollout
+    // (AuthUser.emailVerified is optional) and must not gate. OAuth-
+    // created users are stamped true server-side at row creation, so
+    // they never land here. Same commit-then-flip pattern as the
+    // other branches: issue the replace, bail, let the segments
+    // change re-run the effect so `routed` (and the splash hide)
+    // waits for the redirect to COMMIT.
+    const needsEmailVerification = user.emailVerified === false;
+
+    if (needsEmailVerification) {
+      if (!onVerifyEmail) {
+        router.replace("/(auth)/verify-email");
         return;
       }
       setRouted(true);

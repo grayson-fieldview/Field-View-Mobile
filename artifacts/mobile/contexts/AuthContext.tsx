@@ -68,6 +68,15 @@ export interface AuthUser {
    * DELIBERATELY DIFFERENT defaults when the field is missing.
    */
   profileCompletedAt: string | null;
+  /**
+   * Email verification flag. Optional: undefined means the server
+   * response or cached snapshot predates the rollout and MUST NOT be
+   * treated as unverified — AuthGate gates only on an explicit false.
+   * (OAuth-created users are stamped true at row creation server-side.)
+   * Named emailVerified deliberately — "verified"/"unverified" belong
+   * to this file's SESSION re-verification vocabulary (authState).
+   */
+  emailVerified?: boolean;
 }
 
 interface AuthState {
@@ -174,6 +183,12 @@ function toAuthUser(raw: BackendUser | null): AuthUser | null {
       typeof raw.profileCompletedAt === "string"
         ? raw.profileCompletedAt
         : null,
+    // Pass-through: explicit boolean preserved, anything else
+    // undefined (= not gated). Unlike profileCompletedAt there is NO
+    // dual-default scheme here — server and snapshot both map absent
+    // to undefined, so pre-rollout data can never gate.
+    emailVerified:
+      typeof raw.emailVerified === "boolean" ? raw.emailVerified : undefined,
   };
 }
 
@@ -230,6 +245,14 @@ async function loadUserSnapshot(): Promise<AuthUser | null> {
         parsed.profileCompletedAt === undefined
           ? LEGACY_SNAPSHOT_PROFILE_COMPLETED
           : parsed.profileCompletedAt,
+      // Same pass-through as toAuthUser — explicit true/false
+      // preserved, anything else undefined. Absent-in-snapshot is NOT
+      // gated, so old snapshots can't strand an offline user on
+      // verify-email.
+      emailVerified:
+        typeof parsed.emailVerified === "boolean"
+          ? parsed.emailVerified
+          : undefined,
     };
   } catch {
     return null;
