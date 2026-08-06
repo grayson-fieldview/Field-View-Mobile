@@ -31,7 +31,9 @@ export const authScreenStyles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: 12,
     paddingHorizontal: 14,
-    paddingVertical: 12,
+    // 14 matches components/Input.tsx so auth inputs and the shared
+    // Input render at the same height.
+    paddingVertical: 14,
   },
   inputText: { fontSize: 15, fontFamily: "Inter_500Medium" },
   dividerRow: {
