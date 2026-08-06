@@ -11,7 +11,7 @@ import { Input } from "@/components/Input";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { useAuth } from "@/contexts/AuthContext";
 import { useColors } from "@/hooks/useColors";
-import { api, ApiError } from "@/services/api";
+import { api, ApiError, normalizeUser } from "@/services/api";
 
 const RESEND_COOLDOWN_SECONDS = 60;
 
@@ -74,10 +74,25 @@ export default function VerifyEmailScreen() {
     setSubmitting(true);
     try {
       const updated = await api.verifyEmailCode(email, code.trim());
+      // Unwrap the BackendUser | { user } | null union the same way
+      // the OAuth completion path does (completeOAuthSignIn →
+      // normalizeUser). applyUpdatedUser would normalize internally
+      // too, but it fails SILENTLY (console.warn) on a bad body —
+      // here a 200 that doesn't contain a user must surface as an
+      // error, not leave the user staring at a screen that did
+      // nothing.
+      const me = normalizeUser(updated);
+      if (!me) {
+        setError(
+          "Verification succeeded but we couldn't load your account. Please try again.",
+        );
+        setSubmitting(false);
+        return;
+      }
       // Full user (emailVerified stamped) — same path as
       // onboarding-details: apply the response, no follow-up me(),
       // NO manual navigation (AuthGate owns routing in gate 2).
-      applyUpdatedUser(updated);
+      applyUpdatedUser(me);
     } catch (e) {
       const body =
         e instanceof ApiError && e.body && typeof e.body === "object"
