@@ -50,3 +50,4 @@ Thumbs.db
 
 # Review artifacts (paste files, screenshots dropped into chat)
 attached_assets/
+.agents/
