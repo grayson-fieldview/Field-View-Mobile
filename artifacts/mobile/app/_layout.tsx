@@ -75,6 +75,16 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!ready) return;
     const inAuthGroup = segments[0] === "(auth)";
+    // Hoisted so BOTH branches share one definition. The onboarding
+    // screens live under (auth) but assume an authenticated user —
+    // they read `user`, gate fields on isAdmin, and PATCH
+    // /api/auth/me. So while welcome/login/signup/forgot correctly
+    // stay put when signed out, onboarding must not: a signed-out
+    // user stranded there sees the admin-only fields silently vanish
+    // (isAdmin false when user is null) and submits into a 401.
+    const onOnboarding =
+      segments[1] === "onboarding-profile" ||
+      segments[1] === "onboarding-details";
 
     if (!user) {
       // `routed` (and therefore the splash hide) waits for the
@@ -88,7 +98,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       // changes, this effect re-runs, inAuthGroup is true, and
       // routed flips with welcome actually on screen. Do NOT
       // "simplify" this back to setting routed alongside the replace.
-      if (!inAuthGroup) {
+      if (!inAuthGroup || onOnboarding) {
         router.replace("/(auth)/welcome");
         return;
       }
@@ -107,9 +117,6 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     // bail, and let the segments change re-run the effect so `routed`
     // (and the splash hide) waits for the redirect to COMMIT.
     const needsOnboarding = user.profileCompletedAt == null;
-    const onOnboarding =
-      segments[1] === "onboarding-profile" ||
-      segments[1] === "onboarding-details";
 
     if (needsOnboarding) {
       if (!onOnboarding) {
