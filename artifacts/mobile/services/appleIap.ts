@@ -10,10 +10,13 @@
  * verifies against its pinned Apple root, binds the account keyed on
  * originalTransactionId, and returns the full serialized user.
  *
- * finishTransaction is called ONLY after a server 200. On any error
- * the transaction is left unfinished so StoreKit replays it on next
- * launch — that replay is the retry mechanism; do not "helpfully"
- * finish failed transactions.
+ * finishTransaction is called after a server 200, OR after a TERMINAL
+ * server rejection (see TERMINAL_PURCHASE_ERROR_CODES) — retrying a
+ * terminal rejection can never succeed, and leaving it unfinished made
+ * StoreKit replay it on every launch forever. Retryable failures
+ * (network, 5xx, unrecognized) are left unfinished so StoreKit replays
+ * — that replay is the retry mechanism; do not "helpfully" finish
+ * retryable failures.
  */
 // Type-only import — erased at compile time. The runtime expo-iap
 // module is imported DYNAMICALLY inside submitAndFinish: this file is
@@ -54,6 +57,40 @@ export function markPlanSkippedThisSession(): void {
 
 export function hasSkippedPlanThisSession(): boolean {
   return skippedPlanThisSession;
+}
+
+/**
+ * Server errors that can NEVER succeed on retry, no matter how many
+ * times StoreKit replays the transaction. For these the transaction
+ * must be finished anyway — otherwise it replays on every launch
+ * forever (confirmed in prod: 409 transaction_bound_to_other_account
+ * replaying across launches). Everything else — network/transport,
+ * 5xx, unrecognized codes — stays unfinished so the replay retries.
+ */
+const TERMINAL_PURCHASE_ERROR_CODES = new Set<string>([
+  "transaction_bound_to_other_account",
+  "account_bound_to_other_subscription",
+  "stripe_subscription_active",
+  "provider_conflict",
+  "unknown_product",
+]);
+
+export function isTerminalApplePurchaseError(e: unknown): boolean {
+  if (!(e instanceof ApiError)) return false; // transport → retryable
+  if (e.status >= 500) return false; // server fault → retryable
+  const body =
+    e.body && typeof e.body === "object"
+      ? (e.body as Record<string, unknown>)
+      : {};
+  const code = typeof body.error === "string" ? body.error : null;
+  // 401 with a structured error code = the billing handler rejected
+  // the JWS itself; re-sending the same receipt can't verify
+  // differently. A BARE 401 (no error code) is NOT terminal: the
+  // session/CSRF middleware also answers 401 (confirmed prod incident
+  // where ALL mobile requests 401'd), and finishing on that would
+  // permanently discard a valid transaction over an auth blip.
+  if (e.status === 401) return code != null;
+  return code != null && TERMINAL_PURCHASE_ERROR_CODES.has(code);
 }
 
 /**
@@ -108,11 +145,13 @@ function purchaseKey(purchase: Purchase): string {
 }
 
 /**
- * Submit one purchase to the server; finish the transaction ONLY on
- * 200. Returns the normalized BackendUser from the response (caller
- * applies it via applyUpdatedUser), or null when this exact
- * transaction is already mid-flight elsewhere. Throws on any failure
- * — with the transaction deliberately left unfinished so it replays.
+ * Submit one purchase to the server; finish the transaction on 200 or
+ * on a TERMINAL rejection (which is also finished, then rethrown, to
+ * stop the forever-replay loop). Returns the normalized BackendUser
+ * from the response (caller applies it via applyUpdatedUser), or null
+ * when this exact transaction is already mid-flight elsewhere. Throws
+ * on any failure — RETRYABLE failures leave the transaction unfinished
+ * so StoreKit replays it.
  */
 export async function processApplePurchase(
   purchase: Purchase,
@@ -127,6 +166,20 @@ export async function processApplePurchase(
   inFlightPurchases.add(key);
   try {
     return await submitAndFinish(purchase, jws);
+  } catch (e) {
+    if (isTerminalApplePurchaseError(e)) {
+      // Terminal server rejection: retrying the same transaction can
+      // never succeed, so finish it to stop the forever-replay loop.
+      // Best-effort — if finishTransaction itself hiccups, the next
+      // replay hits the same terminal branch and finishes then.
+      try {
+        const { finishTransaction } = await import("expo-iap");
+        await finishTransaction({ purchase, isConsumable: false });
+      } catch {
+        // swallow: replay is the retry mechanism for the finish itself
+      }
+    }
+    throw e;
   } finally {
     inFlightPurchases.delete(key);
   }

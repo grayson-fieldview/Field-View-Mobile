@@ -687,8 +687,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Ask-to-Buy approvals, and unfinished transactions replay on next
   // launch and still reach the server. Flow per purchase event:
   // submit JWS → server 200 → finishTransaction → applyUpdatedUser.
-  // On any failure the transaction stays unfinished (replays later)
-  // and the user sees case-specific copy, never a generic failure.
+  // On RETRYABLE failure (network/5xx/unrecognized) the transaction
+  // stays unfinished (replays later); TERMINAL server rejections are
+  // finished by processApplePurchase to stop the forever-replay loop
+  // and are logged to Sentry without an alert (the user didn't act).
+  // User-initiated flows still see case-specific copy on failure.
   useEffect(() => {
     if (Platform.OS !== "ios") return;
     let updateSub: { remove: () => void } | null = null;
@@ -699,8 +702,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Dynamic import: keeps a dev client that predates the
         // expo-iap native module from crashing at bundle evaluation.
         const iap = await import("expo-iap");
-        const { processApplePurchase, describeApplePurchaseError } =
-          await import("@/services/appleIap");
+        const {
+          processApplePurchase,
+          describeApplePurchaseError,
+          isTerminalApplePurchaseError,
+        } = await import("@/services/appleIap");
         await iap.initConnection();
         if (cancelled) return;
         updateSub = iap.purchaseUpdatedListener((purchase) => {
@@ -712,9 +718,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               const me = await processApplePurchase(purchase);
               if (me) applyUpdatedUser(me);
             } catch (e) {
+              // Terminal rejections here are replayed transactions,
+              // not something the user just did — processApplePurchase
+              // already finished the transaction to stop the replay
+              // loop, and an alert on every launch would be noise the
+              // user can't act on. Sentry only. (User-initiated
+              // purchase/restore paths still alert with the
+              // case-specific copy.)
+              const terminal = isTerminalApplePurchaseError(e);
               Sentry.captureException(e, {
-                extra: { phase: "iap-purchase-submit" },
+                extra: { phase: "iap-purchase-submit", terminal },
               });
+              if (terminal) return;
               Alert.alert(
                 "Purchase not confirmed",
                 describeApplePurchaseError(e),
