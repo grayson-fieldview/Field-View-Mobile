@@ -73,6 +73,7 @@ export default function TabLayout() {
             FloatingTabBar renders state.routes by fixed index. */}
         <Tabs.Screen name="settings" options={{ href: null }} />
         <Tabs.Screen name="edit-profile" options={{ href: null }} />
+        <Tabs.Screen name="billing" options={{ href: null }} />
       </Tabs>
     </View>
   );

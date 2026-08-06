@@ -346,6 +346,24 @@ export default function SettingsScreen() {
         />
       </View>
 
+      {/* ——— About ——— */}
+      {isAdmin ? (
+        <View style={styles.section}>
+          <Text
+            style={[styles.sectionHeader, { color: colors.mutedForeground }]}
+          >
+            About
+          </Text>
+          {/* Admin-only (same gate as Photo Capture) — the billing
+              endpoint 403s non-admins. Display-only screen. */}
+          <Row
+            icon="credit-card"
+            label="Billing"
+            onPress={() => router.push("/(tabs)/billing")}
+          />
+        </View>
+      ) : null}
+
       {/* ——— Help ——— */}
       <View style={styles.section}>
         <Text style={[styles.sectionHeader, { color: colors.mutedForeground }]}>
@@ -380,12 +398,6 @@ export default function SettingsScreen() {
           />
         )}
       </View>
-
-      {/*
-        Future "About" section goes here (above Legal), with a Billing row
-        (plan / seats / trial status). The mobile billing endpoint is being
-        built in parallel — placeholder only, no row yet.
-      */}
 
       {/* ——— Legal ——— */}
       <View style={styles.section}>

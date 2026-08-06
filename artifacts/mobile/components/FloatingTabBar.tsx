@@ -43,7 +43,11 @@ export function FloatingTabBar({
   // routes 0–3, so the bar would float over the detail screen with no
   // selected tab and invite mid-flow navigation.
   const focusedName = state.routes[state.index]?.name;
-  if (focusedName === "settings" || focusedName === "edit-profile") {
+  if (
+    focusedName === "settings" ||
+    focusedName === "edit-profile" ||
+    focusedName === "billing"
+  ) {
     return null;
   }
 

@@ -601,6 +601,27 @@ export interface BackendUser {
 }
 
 /**
+ * Read-only account billing summary (GET /api/account/billing-summary,
+ * admin-only). Display-only on mobile — no manage/upgrade affordances.
+ *
+ * `status` raw values observed: "trialing" | "active" | "past_due" |
+ * "canceled" — typed as string so an unknown future status renders
+ * (title-cased) instead of failing.
+ * `trialEndsAt` is an ISO-8601 timestamp, null when not trialing.
+ * `billingProvider` is NOT reliable in current prod config — never
+ * branch UI on it.
+ */
+export interface BillingSummary {
+  accountName: string;
+  status: string;
+  trialEndsAt: string | null;
+  billingProvider: string;
+  seats: { used: number; total: number };
+  activeProjects: number;
+  photoCount: number;
+}
+
+/**
  * Pending team invitation. Server creates the row in /api/invitations and
  * sends the invite email; the row stays `status: "pending"` until the
  * recipient accepts (becoming a real user) or the row is cancelled.
@@ -1482,6 +1503,18 @@ export const api = {
    */
   getAccountSettings: () =>
     apiFetch<{ defaultPhotoAspectRatio: string }>("/api/account/settings"),
+
+  /**
+   * Read-only billing summary. Admin-only — server returns 403 for
+   * non-admin callers (mirror the gate client-side; billing UI is
+   * hidden for non-admins). Display-only by design: no manage/upgrade
+   * links on mobile (Apple flags external purchase paths).
+   *
+   * `billingProvider` is present on the wire but NOT reliable in the
+   * current prod config — never branch UI on it.
+   */
+  getBillingSummary: () =>
+    apiFetch<BillingSummary>("/api/account/billing-summary"),
 
   /**
    * Update one or more account-level settings. Admin-only — server
