@@ -586,6 +586,13 @@ export interface BackendUser {
    */
   profileCompletedAt?: string | null;
   /**
+   * Email verification flag (web backend, 2026-08). Optional like
+   * profileCompletedAt — pre-rollout responses/snapshots may omit it.
+   * Named emailVerified deliberately: "verified"/"unverified" are
+   * reserved for AuthContext's SESSION re-verification vocabulary.
+   */
+  emailVerified?: boolean;
+  /**
    * Soft-delete marker from /api/users. Non-null means the user has been
    * deactivated and should be filtered out of any "pick a teammate" UI.
    */
@@ -1214,6 +1221,32 @@ export const api = {
       { method: "POST", json },
     );
   },
+
+  /**
+   * Submit the 6-digit email verification code. 200 returns the FULL
+   * updated user (also 200 if already verified) — apply it via
+   * applyUpdatedUser, no follow-up me(). Non-2xx throws ApiError with
+   * `body` = { error, ... } for branching:
+   *   401 invalid_code       (body.remaining_attempts: number)
+   *   410 no_active_code | code_expired
+   *   429 too_many_attempts  (code invalidated — must resend)
+   */
+  verifyEmailCode: (email: string, code: string) =>
+    apiFetch<BackendUser | { user: BackendUser } | null>(
+      "/api/verify-email-code",
+      { method: "POST", json: { email, code } },
+    ),
+
+  /**
+   * Request a fresh verification code. 60s per-user cooldown server-
+   * side: 429 throws ApiError with body.retry_after_seconds. Response
+   * is generic if already verified (enumeration-safe).
+   */
+  resendVerification: (email: string) =>
+    apiFetch<unknown>("/api/resend-verification", {
+      method: "POST",
+      json: { email },
+    }),
 
   logout: () =>
     apiFetch<unknown>("/api/logout", {
