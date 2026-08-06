@@ -362,7 +362,10 @@ export default function SettingsScreen() {
       </View>
 
       {/* ——— About ——— */}
-      {isAdmin ? (
+      {/* Section renders when it has at least one row: Billing
+          (admin-only) or Restore Purchases (iOS, all roles). On
+          Android for non-admins it would be empty, so it's skipped. */}
+      {isAdmin || Platform.OS === "ios" ? (
         <View style={styles.section}>
           <Text
             style={[styles.sectionHeader, { color: colors.mutedForeground }]}
@@ -371,14 +374,18 @@ export default function SettingsScreen() {
           </Text>
           {/* Admin-only (same gate as Photo Capture) — the billing
               endpoint 403s non-admins. Display-only screen. */}
-          <Row
-            icon="credit-card"
-            label="Billing"
-            onPress={() => router.push("/(tabs)/billing")}
-          />
-          {/* iOS only (same pattern as Rate Field View): Apple expects
-              Restore Purchases reachable from a stable location — a
-              subscribed user who reinstalls never sees the paywall. */}
+          {isAdmin ? (
+            <Row
+              icon="credit-card"
+              label="Billing"
+              onPress={() => router.push("/(tabs)/billing")}
+            />
+          ) : null}
+          {/* iOS only (same pattern as Rate Field View), ALL roles:
+              restore is a per-Apple-ID operation, not an admin one —
+              a non-admin with an out-of-sync entitlement (or an App
+              Store reviewer on a non-admin account) must be able to
+              reach it. Apple expects restore at a stable location. */}
           {Platform.OS === "ios" ? (
             <Row
               icon="refresh-ccw"
