@@ -21,6 +21,7 @@ import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { DataProvider } from "@/contexts/DataContext";
 import { ToastProvider } from "@/contexts/ToastContext";
 import { UploadStatusProvider } from "@/contexts/UploadStatusContext";
+import { hasSkippedPlanThisSession } from "@/services/appleIap";
 import { cleanupLegacyBackgroundTasks } from "@/services/legacyTaskCleanup";
 import {
   configureNotificationHandler,
@@ -90,6 +91,11 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     // cookied endpoint) — so it shares onboarding's signed-out
     // carve-out below.
     const onVerifyEmail = segments[1] === "verify-email";
+    // choose-plan likewise lives under (auth) but assumes an
+    // authenticated user (submits purchases against the session, and
+    // its Sign-out-adjacent "Skip" nudges refreshUser) — same
+    // signed-out carve-out.
+    const onChoosePlan = segments[1] === "choose-plan";
 
     if (!user) {
       // `routed` (and therefore the splash hide) waits for the
@@ -103,7 +109,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       // changes, this effect re-runs, inAuthGroup is true, and
       // routed flips with welcome actually on screen. Do NOT
       // "simplify" this back to setting routed alongside the replace.
-      if (!inAuthGroup || onOnboarding || onVerifyEmail) {
+      if (!inAuthGroup || onOnboarding || onVerifyEmail || onChoosePlan) {
         router.replace("/(auth)/welcome");
         return;
       }
@@ -151,6 +157,33 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     if (needsEmailVerification) {
       if (!onVerifyEmail) {
         router.replace("/(auth)/verify-email");
+        return;
+      }
+      setRouted(true);
+      return;
+    }
+
+    // Paywall gate — after verification, before tabs. Only for the
+    // account OWNER who is an admin (invitees — including invited
+    // admins — never see it, same as web) while the account is still
+    // in trial. subscriptionStatus is optional on AuthUser: undefined
+    // (pre-rollout response/snapshot) must NEVER gate, so the check is
+    // for the two explicit trial values, never "not active".
+    // "Skip this step" sets a per-session module flag (mirrors web's
+    // sessionStorage); the flag isn't reactive state, but the skip
+    // handler calls refreshUser(), whose user-state update re-runs
+    // this effect and falls through to tabs. Same commit-then-flip
+    // pattern as the other branches.
+    const needsChoosePlan =
+      user.isOwner === true &&
+      user.role === "admin" &&
+      (user.subscriptionStatus === "trialing" ||
+        user.subscriptionStatus === "trial") &&
+      !hasSkippedPlanThisSession();
+
+    if (needsChoosePlan) {
+      if (!onChoosePlan) {
+        router.replace("/(auth)/choose-plan");
         return;
       }
       setRouted(true);

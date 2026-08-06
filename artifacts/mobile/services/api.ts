@@ -645,6 +645,15 @@ export interface BackendUser {
    */
   accessLevel?: "full" | "read_only" | "locked";
   /**
+   * Account billing subscription status, overlaid on auth responses
+   * alongside accessLevel. Optional like emailVerified — pre-rollout
+   * responses/snapshots may omit it; absent must never gate. Loose
+   * string on purpose: Stripe/Apple statuses evolve (trialing, trial,
+   * active, past_due, canceled, …) and unknown values must pass
+   * through rather than be dropped.
+   */
+  subscriptionStatus?: string;
+  /**
    * Soft-delete marker from /api/users. Non-null means the user has been
    * deactivated and should be filtered out of any "pick a teammate" UI.
    */

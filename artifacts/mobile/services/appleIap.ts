@@ -15,7 +15,12 @@
  * launch — that replay is the retry mechanism; do not "helpfully"
  * finish failed transactions.
  */
-import { finishTransaction, type Purchase } from "expo-iap";
+// Type-only import — erased at compile time. The runtime expo-iap
+// module is imported DYNAMICALLY inside submitAndFinish: this file is
+// (transitively) imported by app/_layout.tsx for the skip flag, and a
+// static runtime import here would crash a dev client that predates
+// the expo-iap native module at bundle evaluation.
+import type { Purchase } from "expo-iap";
 
 import { ApiError, api, normalizeUser, type BackendUser } from "./api";
 
@@ -141,6 +146,7 @@ async function submitAndFinish(
   // Server owns the entitlement now — safe to finish. If THIS call
   // throws (StoreKit hiccup), the replay re-submits the same JWS; the
   // server's double-charge guard makes that harmless.
+  const { finishTransaction } = await import("expo-iap");
   await finishTransaction({ purchase, isConsumable: false });
   return me;
 }

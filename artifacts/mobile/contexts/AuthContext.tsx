@@ -87,6 +87,15 @@ export interface AuthUser {
    * "locked" may ever restrict.
    */
   accessLevel?: "full" | "read_only" | "locked";
+  /**
+   * Account billing subscription status ("trialing", "trial",
+   * "active", "past_due", …). Optional: undefined means the response
+   * or cached snapshot predates the rollout and MUST NOT gate —
+   * same rule as emailVerified/accessLevel. Kept as a loose string
+   * (matching BillingSummary.status): gates check for specific known
+   * values, never branch on "not one of the known set".
+   */
+  subscriptionStatus?: string;
 }
 
 interface AuthState {
@@ -208,6 +217,13 @@ function toAuthUser(raw: BackendUser | null): AuthUser | null {
       raw.accessLevel === "locked"
         ? raw.accessLevel
         : undefined,
+    // Same pass-through rule: non-empty string survives, anything
+    // else → undefined (never gates).
+    subscriptionStatus:
+      typeof raw.subscriptionStatus === "string" &&
+      raw.subscriptionStatus.length > 0
+        ? raw.subscriptionStatus
+        : undefined,
   };
 }
 
@@ -280,6 +296,14 @@ async function loadUserSnapshot(): Promise<AuthUser | null> {
         parsed.accessLevel === "read_only" ||
         parsed.accessLevel === "locked"
           ? parsed.accessLevel
+          : undefined,
+      // Same pass-through as toAuthUser — absent-in-snapshot is
+      // undefined, so an old snapshot can never gate an offline user
+      // onto the paywall.
+      subscriptionStatus:
+        typeof parsed.subscriptionStatus === "string" &&
+        parsed.subscriptionStatus.length > 0
+          ? parsed.subscriptionStatus
           : undefined,
     };
   } catch {
