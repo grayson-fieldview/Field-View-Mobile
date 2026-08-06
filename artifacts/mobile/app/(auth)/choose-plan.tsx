@@ -65,10 +65,19 @@ export default function ChoosePlanScreen() {
     setPrices(null);
     try {
       const iap = await import("expo-iap");
+      // TEMP DIAGNOSTIC 2026-08-06 — remove once the product load is
+      // confirmed working on device.
+      console.log("[choose-plan] fetchProducts skus:", ALL_SEAT_PRODUCT_IDS);
       const products = await iap.fetchProducts({
         skus: ALL_SEAT_PRODUCT_IDS,
         type: "subs",
       });
+      // TEMP DIAGNOSTIC 2026-08-06 — remove once the product load is
+      // confirmed working on device.
+      console.log(
+        "[choose-plan] fetchProducts result:",
+        JSON.stringify(products, null, 2),
+      );
       const map: Record<string, string> = {};
       for (const p of products ?? []) {
         map[p.id] = p.displayPrice;
@@ -81,6 +90,24 @@ export default function ChoosePlanScreen() {
       }
       setPrices(map);
     } catch (e) {
+      // TEMP DIAGNOSTIC 2026-08-06 — remove once the product load is
+      // confirmed working on device. Full error object: message, code,
+      // and any nested StoreKit error expo-iap attaches.
+      const err = e as {
+        message?: string;
+        code?: unknown;
+        cause?: unknown;
+        underlyingError?: unknown;
+        userInfo?: unknown;
+      };
+      console.log("[choose-plan] fetchProducts FAILED:", {
+        message: err?.message,
+        code: err?.code,
+        cause: err?.cause,
+        underlyingError: err?.underlyingError,
+        userInfo: err?.userInfo,
+        raw: e,
+      });
       setLoadError(
         e instanceof Error && e.message
           ? e.message
@@ -319,35 +346,42 @@ export default function ChoosePlanScreen() {
               size="lg"
               style={{ backgroundColor: BRAND_ORANGE }}
             />
-
-            <Text
-              onPress={stepDisabled ? undefined : handleSkip}
-              accessibilityRole="button"
-              style={{
-                textAlign: "center",
-                fontSize: 14,
-                fontFamily: "Inter_500Medium",
-                color: colors.mutedForeground,
-              }}
-            >
-              Skip this step
-            </Text>
-
-            <Text
-              onPress={stepDisabled ? undefined : () => void handleRestore()}
-              accessibilityRole="button"
-              style={{
-                textAlign: "center",
-                fontSize: 14,
-                fontFamily: "Inter_500Medium",
-                textDecorationLine: "underline",
-                color: colors.mutedForeground,
-              }}
-            >
-              {restoring ? "Restoring…" : "Restore Purchases"}
-            </Text>
           </View>
         )}
+
+        {/* Skip + Restore live OUTSIDE the loading/error/content
+            conditional and render in EVERY state: if product loading
+            fails, the user must still be able to enter the app (App
+            Store Guideline 2.1a — no stranding) and a
+            lapsed-but-entitled user must still be able to restore. */}
+        <View style={{ gap: 20, marginTop: 20 }}>
+          <Text
+            onPress={stepDisabled ? undefined : handleSkip}
+            accessibilityRole="button"
+            style={{
+              textAlign: "center",
+              fontSize: 14,
+              fontFamily: "Inter_500Medium",
+              color: colors.mutedForeground,
+            }}
+          >
+            Skip this step
+          </Text>
+
+          <Text
+            onPress={stepDisabled ? undefined : () => void handleRestore()}
+            accessibilityRole="button"
+            style={{
+              textAlign: "center",
+              fontSize: 14,
+              fontFamily: "Inter_500Medium",
+              textDecorationLine: "underline",
+              color: colors.mutedForeground,
+            }}
+          >
+            {restoring ? "Restoring…" : "Restore Purchases"}
+          </Text>
+        </View>
       </View>
     </KeyboardAwareScrollViewCompat>
   );
