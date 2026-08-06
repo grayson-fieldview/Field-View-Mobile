@@ -1,7 +1,7 @@
 import { useRouter } from "expo-router";
 import * as Linking from "expo-linking";
 import React, { useState } from "react";
-import { Text, TextInput, View } from "react-native";
+import { Alert, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { BrandHeader } from "@/components/auth/BrandHeader";
@@ -26,7 +26,7 @@ export default function OnboardingProfileScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, signOut } = useAuth();
   const isAdmin = user?.role === "admin";
 
   // Prefill first/last from the current user (OAuth-provided when
@@ -45,6 +45,17 @@ export default function OnboardingProfileScreen() {
     lastName.trim().length > 0 &&
     phoneOk &&
     termsAccepted;
+
+  const onSignOut = () => {
+    Alert.alert(
+      "Sign out?",
+      "You’ll need to sign in again to access your projects.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Sign out", style: "destructive", onPress: signOut },
+      ],
+    );
+  };
 
   const handleContinue = () => {
     router.push({
@@ -226,6 +237,26 @@ export default function OnboardingProfileScreen() {
           size="lg"
           style={{ marginTop: 20, backgroundColor: BRAND_ORANGE }}
         />
+
+        {/* Escape hatch: a user who abandons signup mid-onboarding and
+            relaunches is signed in with profileCompletedAt null, so
+            AuthGate routes here with no back chevron (nowhere to go).
+            Sign out clears the session; AuthGate then routes to
+            welcome. Same confirm-Alert pattern as settings. */}
+        <Text
+          onPress={onSignOut}
+          accessibilityRole="button"
+          style={{
+            marginTop: 16,
+            textAlign: "center",
+            fontSize: 14,
+            fontFamily: "Inter_500Medium",
+            textDecorationLine: "underline",
+            color: colors.mutedForeground,
+          }}
+        >
+          Sign out
+        </Text>
       </View>
     </KeyboardAwareScrollViewCompat>
   );
