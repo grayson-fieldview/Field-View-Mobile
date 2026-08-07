@@ -29,7 +29,10 @@ import {
 } from "@/services/appleIap";
 import {
   describeGooglePurchaseError,
+  reportGooglePlayOfferSelectionFailure,
   selectGooglePlayOfferToken,
+  summarizeGooglePlayOffers,
+  type GooglePlayOfferSummary,
 } from "@/services/googlePlay";
 
 /**
@@ -57,6 +60,13 @@ export default function ChoosePlanScreen() {
   // Android only: productId → offerToken selected at load time
   // (Google requires the token with requestPurchase; iOS ignores it).
   const [offerTokens, setOfferTokens] = useState<Record<string, string>>({});
+  // Android only: token-free offer summaries kept purely for the
+  // Sentry report when selection failed for the product the user
+  // actually picked (the selection rule is the one unvalidated
+  // assumption in the Android billing path).
+  const [offerSummaries, setOfferSummaries] = useState<
+    Record<string, GooglePlayOfferSummary[]>
+  >({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const [seats, setSeats] = useState(MIN_SEATS);
   const [purchasing, setPurchasing] = useState(false);
@@ -90,9 +100,11 @@ export default function ChoosePlanScreen() {
       // price surfaced as the product-level displayPrice.
       const map: Record<string, string> = {};
       const tokens: Record<string, string> = {};
+      const summaries: Record<string, GooglePlayOfferSummary[]> = {};
       for (const p of products ?? []) {
         map[p.id] = p.displayPrice;
         if (p.platform === "android") {
+          summaries[p.id] = summarizeGooglePlayOffers(p.subscriptionOffers);
           const token = selectGooglePlayOfferToken(p.subscriptionOffers);
           if (token) tokens[p.id] = token;
         }
@@ -106,6 +118,7 @@ export default function ChoosePlanScreen() {
         return;
       }
       setOfferTokens(tokens);
+      setOfferSummaries(summaries);
       setPrices(map);
     } catch (e) {
       setLoadError(
@@ -135,6 +148,13 @@ export default function ChoosePlanScreen() {
         // time; without one the purchase dialog can't be shown.
         const offerToken = offerTokens[selectedProductId];
         if (!offerToken) {
+          // The selection rule is the one unvalidated assumption in
+          // the Android billing path — ship the (token-free) offer
+          // shape to Sentry so a wrong rule isn't just a silent alert.
+          reportGooglePlayOfferSelectionFailure(
+            selectedProductId,
+            offerSummaries[selectedProductId] ?? [],
+          );
           Alert.alert(
             "Purchase failed",
             "This plan's offer couldn't be loaded from Google Play. Pull to retry loading plans and try again.",

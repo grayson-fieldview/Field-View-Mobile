@@ -24,6 +24,7 @@
 import type { Purchase, SubscriptionOffer } from "expo-iap";
 
 import { ApiError, api, normalizeUser, type BackendUser } from "./api";
+import { Sentry } from "./sentry";
 
 /**
  * Server errors that can NEVER succeed on retry. Identical 409 set to
@@ -121,6 +122,45 @@ export function selectGooglePlayOfferToken(
   const pick =
     monthly.find((o) => o.id === "free-trial") ?? monthly[0] ?? list[0];
   return pick?.offerTokenAndroid ?? null;
+}
+
+/**
+ * Token-free summary of an offer, safe to ship to Sentry. offerTokens
+ * are deliberately EXCLUDED — they're purchase credentials.
+ */
+export type GooglePlayOfferSummary = {
+  id: string;
+  basePlanIdAndroid: string | null;
+};
+
+export function summarizeGooglePlayOffers(
+  offers: SubscriptionOffer[] | null | undefined,
+): GooglePlayOfferSummary[] {
+  return (offers ?? []).map((o) => ({
+    id: o.id ?? "",
+    basePlanIdAndroid: o.basePlanIdAndroid ?? null,
+  }));
+}
+
+/**
+ * The offer-selection rule above is the one UNVALIDATED assumption in
+ * the Android billing path (pending a device log). When it fails for a
+ * product the user actually tried to buy, we need the offer shape in
+ * Sentry — not just a silent alert — so the rule can be corrected.
+ */
+export function reportGooglePlayOfferSelectionFailure(
+  productId: string,
+  offers: GooglePlayOfferSummary[],
+): void {
+  Sentry.captureMessage("google play offer selection returned no token", {
+    level: "error",
+    tags: { source: "google_play_offer_selection" },
+    extra: {
+      productId,
+      offerCount: offers.length,
+      offers,
+    },
+  });
 }
 
 /**
