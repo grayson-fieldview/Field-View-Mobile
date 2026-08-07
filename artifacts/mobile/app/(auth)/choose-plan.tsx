@@ -93,13 +93,6 @@ export default function ChoosePlanScreen() {
       for (const p of products ?? []) {
         map[p.id] = p.displayPrice;
         if (p.platform === "android") {
-          // TEMP DIAGNOSTIC 2026-08-07 — remove once the offer shape
-          // is confirmed on an Android device (offerToken selection
-          // rule is provisional until then).
-          console.log(
-            `[choose-plan] ${p.id} subscriptionOffers:`,
-            JSON.stringify(p.subscriptionOffers, null, 2),
-          );
           const token = selectGooglePlayOfferToken(p.subscriptionOffers);
           if (token) tokens[p.id] = token;
         }
