@@ -24,6 +24,12 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import {
+  runOnJS,
+  useAnimatedReaction,
+  useSharedValue,
+} from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import * as Sentry from "@sentry/react-native";
@@ -116,7 +122,19 @@ export default function CaptureScreen() {
   const [facing, setFacing] = useState<"back" | "front">("back");
   const [flash, setFlash] = useState<"off" | "on" | "auto">("off");
   const [mode, setMode] = useState<"photo" | "video">("photo");
-  const [zoomIdx, setZoomIdx] = useState(1); // default 1x
+  // Continuous zoom value fed to CameraView (0..1). Presets snap it to
+  // their exact value; pinch moves it freely between them. After a pinch
+  // the value usually matches no preset, so no preset renders as active —
+  // that is expected. Default matches the old "1x" preset.
+  const [zoomValue, setZoomValue] = useState(
+    ZOOM_PRESETS[1]?.value ?? 0.05,
+  );
+  // Pinch state lives on the UI thread; React state is only pushed via
+  // the throttled useAnimatedReaction below (setState per frame would
+  // drop frames on the preview).
+  const pinchZoom = useSharedValue(ZOOM_PRESETS[1]?.value ?? 0.05);
+  const pinchBase = useSharedValue(ZOOM_PRESETS[1]?.value ?? 0.05);
+  const pinchLastPushTs = useSharedValue(0);
   const [bursting, setBursting] = useState(false);
   const [recording, setRecording] = useState(false);
   const [captureCount, setCaptureCount] = useState(0);
@@ -246,6 +264,50 @@ export default function CaptureScreen() {
     const t = setTimeout(() => setStatusMsg(null), 2400);
     return () => clearTimeout(t);
   }, [statusMsg]);
+
+  // Pinch-to-zoom on the preview frame. The DETECTOR wraps the existing
+  // `previewFrame` — no new overlay view is layered over CameraView (see
+  // the fly-to-tray hazard note above: overlaying the CameraView's native
+  // hierarchy is exactly what we avoid). 0.25 damps a full pinch so it
+  // can't slam 0→1; tune on device if it feels wrong. Enabled only once
+  // the camera is up (mode is always "photo" | "video" here).
+  //
+  // These two hooks MUST stay above the `!project` / `!permission` early
+  // returns below — `permission` flips from null after mount, so hooks
+  // declared after those returns would change hook order and crash.
+  const pinchGesture = React.useMemo(
+    () =>
+      Gesture.Pinch()
+        .enabled(cameraReady)
+        .onBegin(() => {
+          pinchBase.value = pinchZoom.value;
+        })
+        .onUpdate((e) => {
+          const next = pinchBase.value + (e.scale - 1) * 0.25;
+          pinchZoom.value = Math.min(1, Math.max(0, next));
+        })
+        .onFinalize(() => {
+          // Always land the final value even if the ~60ms throttle
+          // swallowed the last onUpdate.
+          runOnJS(setZoomValue)(pinchZoom.value);
+        }),
+    [cameraReady, pinchBase, pinchZoom],
+  );
+
+  // UI-thread → React state bridge, throttled to ~60ms so the camera
+  // preview isn't re-rendered every gesture frame.
+  useAnimatedReaction(
+    () => pinchZoom.value,
+    (current, previous) => {
+      if (previous === null || current === previous) return;
+      const now = Date.now();
+      if (now - pinchLastPushTs.value >= 60) {
+        pinchLastPushTs.value = now;
+        runOnJS(setZoomValue)(current);
+      }
+    },
+    [],
+  );
 
   if (!project) {
     return (
@@ -631,8 +693,6 @@ export default function CaptureScreen() {
   const toggleFlash = () =>
     setFlash((f) => (f === "off" ? "on" : f === "on" ? "auto" : "off"));
 
-  const zoomValue = ZOOM_PRESETS[zoomIdx]?.value ?? 0.05;
-
   return (
     <View style={styles.wrap}>
       {/* TOP BAR: close + project + flash/flip.
@@ -703,6 +763,7 @@ export default function CaptureScreen() {
        * ratios live INSIDE the clipping frame so they're masked by
        * the rounded corners. */}
       <View style={styles.previewArea}>
+        <GestureDetector gesture={pinchGesture}>
         <View style={styles.previewFrame}>
           <CameraView
             ref={cameraRef}
@@ -728,6 +789,7 @@ export default function CaptureScreen() {
             <LetterboxOverlay ratio={captureAspectRatio} />
           ) : null}
         </View>
+        </GestureDetector>
 
         {/* Top status pills — anchored to the top of the preview
          * area (NOT the screen) so they remain correctly placed
@@ -806,14 +868,20 @@ export default function CaptureScreen() {
             style={styles.zoomGroup}
           >
             <View style={styles.zoomGroupInner}>
-              {ZOOM_PRESETS.map((z, i) => {
-                const active = i === zoomIdx;
+              {ZOOM_PRESETS.map((z) => {
+                // Exact-match highlight: after a pinch the continuous
+                // value rarely equals a preset, so none renders active —
+                // expected.
+                const active = z.value === zoomValue;
                 return (
                   <Pressable
                     key={z.label}
                     onPress={() => {
                       Haptics.selectionAsync().catch(() => {});
-                      setZoomIdx(i);
+                      // Snap React state AND the UI-thread value so the
+                      // preset becomes the next pinch's base.
+                      setZoomValue(z.value);
+                      pinchZoom.value = z.value;
                     }}
                     accessibilityLabel={`Zoom ${z.label}`}
                     accessibilityState={{ selected: active }}
