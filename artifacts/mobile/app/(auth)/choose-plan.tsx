@@ -1,5 +1,12 @@
 import React, { useEffect, useState } from "react";
-import { ActivityIndicator, Alert, Pressable, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  Alert,
+  Platform,
+  Pressable,
+  Text,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { BrandHeader } from "@/components/auth/BrandHeader";
@@ -20,6 +27,10 @@ import {
   restoreApplePurchases,
   seatProductId,
 } from "@/services/appleIap";
+import {
+  describeGooglePurchaseError,
+  selectGooglePlayOfferToken,
+} from "@/services/googlePlay";
 
 /**
  * Paywall — mirrors web /choose-plan. Prices come from StoreKit
@@ -41,8 +52,11 @@ export default function ChoosePlanScreen() {
   const insets = useSafeAreaInsets();
   const { applyUpdatedUser, refreshUser } = useAuth();
 
-  // productId → localized display price, from StoreKit.
+  // productId → localized display price, from StoreKit / Play.
   const [prices, setPrices] = useState<Record<string, string> | null>(null);
+  // Android only: productId → offerToken selected at load time
+  // (Google requires the token with requestPurchase; iOS ignores it).
+  const [offerTokens, setOfferTokens] = useState<Record<string, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const [seats, setSeats] = useState(MIN_SEATS);
   const [purchasing, setPurchasing] = useState(false);
@@ -66,49 +80,41 @@ export default function ChoosePlanScreen() {
     setPrices(null);
     try {
       const iap = await import("expo-iap");
-      // TEMP DIAGNOSTIC 2026-08-06 — remove once the product load is
-      // confirmed working on device.
-      console.log("[choose-plan] fetchProducts skus:", ALL_SEAT_PRODUCT_IDS);
       const products = await iap.fetchProducts({
         skus: ALL_SEAT_PRODUCT_IDS,
         type: "subs",
       });
-      // TEMP DIAGNOSTIC 2026-08-06 — remove once the product load is
-      // confirmed working on device.
-      console.log(
-        "[choose-plan] fetchProducts result:",
-        JSON.stringify(products, null, 2),
-      );
+      // `displayPrice` is flat on BOTH platforms in expo-iap 5 —
+      // Android's raw subscriptionOfferDetails is normalized into
+      // `subscriptionOffers` (see selection below), with the base-plan
+      // price surfaced as the product-level displayPrice.
       const map: Record<string, string> = {};
+      const tokens: Record<string, string> = {};
       for (const p of products ?? []) {
         map[p.id] = p.displayPrice;
+        if (p.platform === "android") {
+          // TEMP DIAGNOSTIC 2026-08-07 — remove once the offer shape
+          // is confirmed on an Android device (offerToken selection
+          // rule is provisional until then).
+          console.log(
+            `[choose-plan] ${p.id} subscriptionOffers:`,
+            JSON.stringify(p.subscriptionOffers, null, 2),
+          );
+          const token = selectGooglePlayOfferToken(p.subscriptionOffers);
+          if (token) tokens[p.id] = token;
+        }
       }
       if (Object.keys(map).length === 0) {
         setLoadError(
-          "Plans aren't available from the App Store right now. Try again in a moment.",
+          Platform.OS === "android"
+            ? "Plans aren't available from Google Play right now. Try again in a moment."
+            : "Plans aren't available from the App Store right now. Try again in a moment.",
         );
         return;
       }
+      setOfferTokens(tokens);
       setPrices(map);
     } catch (e) {
-      // TEMP DIAGNOSTIC 2026-08-06 — remove once the product load is
-      // confirmed working on device. Full error object: message, code,
-      // and any nested StoreKit error expo-iap attaches.
-      const err = e as {
-        message?: string;
-        code?: unknown;
-        cause?: unknown;
-        underlyingError?: unknown;
-        userInfo?: unknown;
-      };
-      console.log("[choose-plan] fetchProducts FAILED:", {
-        message: err?.message,
-        code: err?.code,
-        cause: err?.cause,
-        underlyingError: err?.underlyingError,
-        userInfo: err?.userInfo,
-        raw: e,
-      });
       setLoadError(
         e instanceof Error && e.message
           ? e.message
@@ -131,13 +137,40 @@ export default function ChoosePlanScreen() {
       const iap = await import("expo-iap");
       // Result arrives via AuthContext's purchaseUpdatedListener /
       // purchaseErrorListener — the return value is only the dispatch.
-      await iap.requestPurchase({
-        request: { apple: { sku: selectedProductId } },
-        type: "subs",
-      });
+      if (Platform.OS === "android") {
+        // Google requires the offerToken captured at fetchProducts
+        // time; without one the purchase dialog can't be shown.
+        const offerToken = offerTokens[selectedProductId];
+        if (!offerToken) {
+          Alert.alert(
+            "Purchase failed",
+            "This plan's offer couldn't be loaded from Google Play. Pull to retry loading plans and try again.",
+          );
+          return;
+        }
+        await iap.requestPurchase({
+          request: {
+            google: {
+              skus: [selectedProductId],
+              subscriptionOffers: [{ sku: selectedProductId, offerToken }],
+            },
+          },
+          type: "subs",
+        });
+      } else {
+        await iap.requestPurchase({
+          request: { apple: { sku: selectedProductId } },
+          type: "subs",
+        });
+      }
     } catch (e) {
       // Synchronous store rejection (sheet never showed).
-      Alert.alert("Purchase failed", describeApplePurchaseError(e));
+      Alert.alert(
+        "Purchase failed",
+        Platform.OS === "android"
+          ? describeGooglePurchaseError(e)
+          : describeApplePurchaseError(e),
+      );
     } finally {
       // The App Store sheet has been handed control (or failed); the
       // app-wide listener owns everything after this point.
@@ -353,19 +386,27 @@ export default function ChoosePlanScreen() {
             Skip this step
           </Text>
 
-          <Text
-            onPress={stepDisabled ? undefined : () => void handleRestore()}
-            accessibilityRole="button"
-            style={{
-              textAlign: "center",
-              fontSize: 14,
-              fontFamily: "Inter_500Medium",
-              textDecorationLine: "underline",
-              color: colors.mutedForeground,
-            }}
-          >
-            {restoring ? "Restoring…" : "Restore Purchases"}
-          </Text>
+          {/* iOS only: restoreApplePurchases submits StoreKit JWS to
+              the Apple endpoint — on Android it would post Play tokens
+              there and fail confusingly. Play "restore" arrives via the
+              purchaseUpdatedListener replaying unacknowledged
+              purchases; a user-initiated Google restore flow needs its
+              own helper + gate before this renders on Android. */}
+          {Platform.OS === "ios" ? (
+            <Text
+              onPress={stepDisabled ? undefined : () => void handleRestore()}
+              accessibilityRole="button"
+              style={{
+                textAlign: "center",
+                fontSize: 14,
+                fontFamily: "Inter_500Medium",
+                textDecorationLine: "underline",
+                color: colors.mutedForeground,
+              }}
+            >
+              {restoring ? "Restoring…" : "Restore Purchases"}
+            </Text>
+          ) : null}
         </View>
       </View>
     </KeyboardAwareScrollViewCompat>

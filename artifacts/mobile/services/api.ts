@@ -1373,6 +1373,13 @@ export const api = {
       { method: "POST", json: { jws } },
     ),
 
+  /** Android mirror — same replay/at-least-once contract as Apple. */
+  submitGooglePurchase: (purchaseToken: string, productId: string) =>
+    apiFetch<BackendUser | { user: BackendUser } | null>(
+      "/api/billing/google/purchase",
+      { method: "POST", json: { purchaseToken, productId } },
+    ),
+
   logout: () =>
     apiFetch<unknown>("/api/logout", {
       method: "POST",

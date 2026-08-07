@@ -709,18 +709,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
-  // ---- Apple IAP purchase listener (app-wide, iOS only) --------------
+  // ---- IAP purchase listener (app-wide, iOS + Android) ---------------
   // Mounted here — NOT in a screen — so interrupted purchases,
-  // Ask-to-Buy approvals, and unfinished transactions replay on next
-  // launch and still reach the server. Flow per purchase event:
-  // submit JWS → server 200 → finishTransaction → applyUpdatedUser.
+  // Ask-to-Buy approvals, and unfinished/unacknowledged transactions
+  // replay on next launch and still reach the server. Flow per event:
+  // submit token → server 200 → finishTransaction → applyUpdatedUser
+  // (iOS submits the JWS; Android submits purchaseToken + productId to
+  // the /google/ endpoint via processGooglePlayPurchase).
   // On RETRYABLE failure (network/5xx/unrecognized) the transaction
   // stays unfinished (replays later); TERMINAL server rejections are
-  // finished by processApplePurchase to stop the forever-replay loop
-  // and are logged to Sentry without an alert (the user didn't act).
-  // User-initiated flows still see case-specific copy on failure.
+  // finished by the per-platform processor to stop the forever-replay
+  // loop and are logged to Sentry without an alert (the user didn't
+  // act). User-initiated flows still see case-specific copy on failure.
   useEffect(() => {
-    if (Platform.OS !== "ios") return;
+    if (Platform.OS !== "ios" && Platform.OS !== "android") return;
     let updateSub: { remove: () => void } | null = null;
     let errorSub: { remove: () => void } | null = null;
     let cancelled = false;
@@ -729,42 +731,50 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Dynamic import: keeps a dev client that predates the
         // expo-iap native module from crashing at bundle evaluation.
         const iap = await import("expo-iap");
-        const {
-          processApplePurchase,
-          describeApplePurchaseError,
-          isTerminalApplePurchaseError,
-        } = await import("@/services/appleIap");
+        // Per-platform processor + copy, same shape on both sides.
+        const { processPurchase, describePurchaseError, isTerminalError } =
+          Platform.OS === "ios"
+            ? await import("@/services/appleIap").then((m) => ({
+                processPurchase: m.processApplePurchase,
+                describePurchaseError: m.describeApplePurchaseError,
+                isTerminalError: m.isTerminalApplePurchaseError,
+              }))
+            : await import("@/services/googlePlay").then((m) => ({
+                processPurchase: m.processGooglePlayPurchase,
+                describePurchaseError: m.describeGooglePurchaseError,
+                isTerminalError: m.isTerminalGooglePurchaseError,
+              }));
         await iap.initConnection();
         if (cancelled) return;
         updateSub = iap.purchaseUpdatedListener((purchase) => {
           void (async () => {
             try {
-              // Dedupe lives INSIDE processApplePurchase (shared with
-              // the Restore flow) — null means another caller owns
+              // Dedupe lives INSIDE the processor (shared with the
+              // Restore flow on iOS) — null means another caller owns
               // this transaction right now.
-              const me = await processApplePurchase(purchase);
+              const me = await processPurchase(purchase);
               if (me) applyUpdatedUser(me);
             } catch (e) {
               // Terminal rejections here are replayed transactions,
-              // not something the user just did — processApplePurchase
+              // not something the user just did — the processor
               // already finished the transaction to stop the replay
               // loop, and an alert on every launch would be noise the
               // user can't act on. Sentry only. (User-initiated
               // purchase/restore paths still alert with the
               // case-specific copy.)
-              const terminal = isTerminalApplePurchaseError(e);
+              const terminal = isTerminalError(e);
               Sentry.captureException(e, {
                 extra: { phase: "iap-purchase-submit", terminal },
               });
               if (terminal) return;
               Alert.alert(
                 "Purchase not confirmed",
-                describeApplePurchaseError(e),
+                describePurchaseError(e),
               );
             }
           })();
         });
-        // Asynchronous StoreKit failures (post-sheet) arrive here, NOT
+        // Asynchronous store failures (post-sheet) arrive here, NOT
         // via requestPurchase's promise. User cancellation is a normal
         // outcome — stay silent; everything else gets surfaced.
         errorSub = iap.purchaseErrorListener((err) => {
@@ -775,7 +785,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           });
           Alert.alert(
             "Purchase failed",
-            err.message || "The App Store couldn't complete the purchase.",
+            err.message ||
+              (Platform.OS === "android"
+                ? "Google Play couldn't complete the purchase."
+                : "The App Store couldn't complete the purchase."),
           );
         });
       } catch (e) {
