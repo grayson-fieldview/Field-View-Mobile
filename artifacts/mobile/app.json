@@ -92,6 +92,7 @@
         }
       ],
       "expo-task-manager",
+      "expo-iap",
       [
         "@sentry/react-native/expo",
         {
