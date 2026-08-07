@@ -70,11 +70,42 @@ const MAX_RECORDING_SECONDS = 180;
 const MAX_RECORDING_BYTES = 450 * 1024 * 1024;
 
 type ZoomPreset = { label: string; value: number };
+// No anchor above 4x, so pinch never zooms past the top preset's value.
+const PINCH_MAX_ZOOM = 0.45;
 const ZOOM_PRESETS: ZoomPreset[] = [
   { label: ".5x", value: 0 },
   { label: "1x", value: 0.05 },
   { label: "4x", value: 0.45 },
 ];
+// Multiplier anchors derived from the presets (0→0.5, 0.05→1, 0.45→4).
+// parseFloat(".5x") === 0.5, etc.
+const ZOOM_ANCHORS = ZOOM_PRESETS.map((p) => ({
+  value: p.value,
+  mult: parseFloat(p.label),
+}));
+// Piecewise-linear interpolation of a CameraView zoom (0..0.45) to the
+// user-facing multiplier. Returns a number ("1.4", not "1.4x").
+function zoomToLabel(z: number): number {
+  const a = ZOOM_ANCHORS;
+  if (z <= a[0]!.value) return a[0]!.mult;
+  for (let i = 1; i < a.length; i++) {
+    const lo = a[i - 1]!;
+    const hi = a[i]!;
+    if (z <= hi.value) {
+      const t = (z - lo.value) / (hi.value - lo.value);
+      return lo.mult + t * (hi.mult - lo.mult);
+    }
+  }
+  return a[a.length - 1]!.mult;
+}
+// One decimal, trailing ".0" stripped, leading "0" stripped to match the
+// preset labels (".5x" not "0.5x"): 1.4 → "1.4", 2 → "2", 0.5 → ".5".
+function formatZoomMult(m: number): string {
+  let s = m.toFixed(1);
+  if (s.endsWith(".0")) s = s.slice(0, -2);
+  if (s.startsWith("0.")) s = s.slice(1);
+  return s;
+}
 
 // prepareForUpload + PreparedUpload moved to services/imageProcessing so
 // the project gallery's add-from-camera-roll flow shares the exact same
@@ -284,7 +315,7 @@ export default function CaptureScreen() {
         })
         .onUpdate((e) => {
           const next = pinchBase.value + (e.scale - 1) * 0.25;
-          pinchZoom.value = Math.min(1, Math.max(0, next));
+          pinchZoom.value = Math.min(PINCH_MAX_ZOOM, Math.max(0, next));
         })
         .onFinalize(() => {
           // Always land the final value even if the ~60ms throttle
@@ -868,11 +899,23 @@ export default function CaptureScreen() {
             style={styles.zoomGroup}
           >
             <View style={styles.zoomGroupInner}>
-              {ZOOM_PRESETS.map((z) => {
-                // Exact-match highlight: after a pinch the continuous
-                // value rarely equals a preset, so none renders active —
-                // expected.
-                const active = z.value === zoomValue;
+              {ZOOM_PRESETS.map((z, i) => {
+                // Apple pattern: the pill sits on the NEAREST preset by
+                // value and shows the live interpolated multiplier
+                // ("1.4x"); neighbors render as bare labels without a
+                // pill or trailing x (".5", "4").
+                const nearestIdx = ZOOM_PRESETS.reduce(
+                  (best, p, j) =>
+                    Math.abs(p.value - zoomValue) <
+                    Math.abs(ZOOM_PRESETS[best]!.value - zoomValue)
+                      ? j
+                      : best,
+                  0,
+                );
+                const active = i === nearestIdx;
+                const label = active
+                  ? `${formatZoomMult(zoomToLabel(zoomValue))}x`
+                  : z.label.replace(/x$/, "");
                 return (
                   <Pressable
                     key={z.label}
@@ -905,7 +948,7 @@ export default function CaptureScreen() {
                         },
                       ]}
                     >
-                      {z.label}
+                      {label}
                     </Text>
                   </Pressable>
                 );
