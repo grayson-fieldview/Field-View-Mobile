@@ -654,6 +654,14 @@ export interface BackendUser {
    */
   subscriptionStatus?: string;
   /**
+   * ISO-8601 timestamp set once by POST /api/account/skip-paywall
+   * (owner+admin only), overlaid on every auth response. Optional like
+   * the other overlays — BUT the gating rule is inverted: absent means
+   * NOT skipped (paywall shows). A missing field must never
+   * permanently hide the paywall.
+   */
+  accountPaywallSkippedAt?: string | null;
+  /**
    * Soft-delete marker from /api/users. Non-null means the user has been
    * deactivated and should be filtered out of any "pick a teammate" UI.
    */
@@ -1317,6 +1325,18 @@ export const api = {
     apiFetch<BackendUser | { user: BackendUser } | null>(
       "/api/verify-email-code",
       { method: "POST", json: { email, code } },
+    ),
+
+  /**
+   * Persist the paywall skip (owner+admin only, body-less, set-once).
+   * Returns the full serialized user with accountPaywallSkippedAt
+   * stamped — same union as verifyEmailCode; callers normalize via
+   * normalizeUser and apply with applyUpdatedUser.
+   */
+  skipPaywall: () =>
+    apiFetch<BackendUser | { user: BackendUser } | null>(
+      "/api/account/skip-paywall",
+      { method: "POST" },
     ),
 
   /**

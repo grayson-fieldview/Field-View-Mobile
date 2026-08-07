@@ -96,6 +96,16 @@ export interface AuthUser {
    * values, never branch on "not one of the known set".
    */
   subscriptionStatus?: string;
+  /**
+   * ISO-8601 timestamp of the persisted "Skip this step" on the
+   * paywall (POST /api/account/skip-paywall, set-once). Optional, BUT
+   * the rule is INVERTED relative to the other optional fields:
+   * undefined means NOT skipped — the paywall may show. A missing
+   * field must never permanently hide the paywall; the harmless
+   * failure mode is showing it again (one tap to dismiss), not
+   * hiding a gate Apple expects.
+   */
+  accountPaywallSkippedAt?: string;
 }
 
 interface AuthState {
@@ -224,6 +234,14 @@ function toAuthUser(raw: BackendUser | null): AuthUser | null {
       raw.subscriptionStatus.length > 0
         ? raw.subscriptionStatus
         : undefined,
+    // Pass-through with the INVERTED default: non-empty string =
+    // skipped, anything else (absent, null) → undefined = NOT
+    // skipped, paywall may show. Absent must never hide the paywall.
+    accountPaywallSkippedAt:
+      typeof raw.accountPaywallSkippedAt === "string" &&
+      raw.accountPaywallSkippedAt.length > 0
+        ? raw.accountPaywallSkippedAt
+        : undefined,
   };
 }
 
@@ -304,6 +322,15 @@ async function loadUserSnapshot(): Promise<AuthUser | null> {
         typeof parsed.subscriptionStatus === "string" &&
         parsed.subscriptionStatus.length > 0
           ? parsed.subscriptionStatus
+          : undefined,
+      // Same pass-through as toAuthUser, same INVERTED default:
+      // absent-in-snapshot → undefined = not skipped. An old snapshot
+      // re-showing the paywall is the harmless direction (one tap);
+      // silently hiding it forever is not.
+      accountPaywallSkippedAt:
+        typeof parsed.accountPaywallSkippedAt === "string" &&
+        parsed.accountPaywallSkippedAt.length > 0
+          ? parsed.accountPaywallSkippedAt
           : undefined,
     };
   } catch {

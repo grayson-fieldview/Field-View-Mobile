@@ -11,6 +11,7 @@ import { Button } from "@/components/Button";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { useAuth } from "@/contexts/AuthContext";
 import { useColors } from "@/hooks/useColors";
+import { api, normalizeUser } from "@/services/api";
 import {
   ALL_SEAT_PRODUCT_IDS,
   describeApplePurchaseError,
@@ -157,10 +158,28 @@ export default function ChoosePlanScreen() {
   };
 
   const handleSkip = () => {
+    // Per-session flag FIRST — immediate effect, so routing never
+    // races the network call below.
     markPlanSkippedThisSession();
-    // Nudge AuthGate to re-evaluate routing now that the skip flag is
-    // set (gate 4 wires the actual route-away).
-    void refreshUser();
+    void (async () => {
+      try {
+        // Persist the skip server-side (set-once). The response is the
+        // full serialized user with accountPaywallSkippedAt stamped —
+        // applying it re-runs AuthGate, which falls through to tabs.
+        const updated = await api.skipPaywall();
+        const me = normalizeUser(updated);
+        if (me) {
+          applyUpdatedUser(me);
+          return;
+        }
+      } catch {
+        // Swallow: the session flag still gets the user through this
+        // launch; they'd just see the paywall again next launch.
+      }
+      // Server call failed (or 200 without a user body) — nudge
+      // AuthGate to re-evaluate off the session flag, as before.
+      void refreshUser();
+    })();
   };
 
   const stepDisabled = purchasing || restoring;

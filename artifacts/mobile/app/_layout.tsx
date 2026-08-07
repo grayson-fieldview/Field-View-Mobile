@@ -174,11 +174,19 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     // handler calls refreshUser(), whose user-state update re-runs
     // this effect and falls through to tabs. Same commit-then-flip
     // pattern as the other branches.
+    // accountPaywallSkippedAt is the PERSISTED skip (set-once via
+    // POST /api/account/skip-paywall): any non-undefined value means
+    // the paywall was skipped for good. undefined = NOT skipped — the
+    // inverted default vs the other optional fields: a missing field
+    // shows the paywall again (harmless), never hides it permanently.
+    // The session flag stays as the immediate-effect fallback so
+    // routing doesn't race the skip network call.
     const needsChoosePlan =
       user.isOwner === true &&
       user.role === "admin" &&
       (user.subscriptionStatus === "trialing" ||
         user.subscriptionStatus === "trial") &&
+      user.accountPaywallSkippedAt === undefined &&
       !hasSkippedPlanThisSession();
 
     if (needsChoosePlan) {
