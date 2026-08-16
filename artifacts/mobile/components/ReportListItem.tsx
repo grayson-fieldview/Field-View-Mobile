@@ -24,13 +24,23 @@ const STATUS_LABEL: Record<string, string> = {
  */
 export function ReportListItem({ report, onPress }: Props) {
   const colors = useColors();
+  // Defensive reads: an AI-generated report row may omit or carry an
+  // unexpected status/title/date — render a neutral fallback, never
+  // throw (this row crashed the project screen post-walkthrough).
+  const status = typeof report.status === "string" ? report.status : "";
   const statusColor =
-    report.status === "approved"
+    status === "approved"
       ? colors.success
-      : report.status === "submitted"
+      : status === "submitted"
         ? colors.primary
         : colors.mutedForeground;
-  const updated = report.updatedAt ?? report.createdAt;
+  const title =
+    typeof report.title === "string" && report.title.length > 0
+      ? report.title
+      : "Untitled report";
+  const updated =
+    (typeof report.updatedAt === "string" ? report.updatedAt : null) ??
+    (typeof report.createdAt === "string" ? report.createdAt : null);
   return (
     <Pressable
       onPress={onPress}
@@ -48,7 +58,7 @@ export function ReportListItem({ report, onPress }: Props) {
           style={[styles.title, { color: colors.foreground }]}
           numberOfLines={1}
         >
-          {report.title}
+          {title}
         </Text>
         <View style={styles.metaRow}>
           <View
@@ -62,7 +72,7 @@ export function ReportListItem({ report, onPress }: Props) {
           >
             <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
             <Text style={[styles.statusLabel, { color: statusColor }]}>
-              {STATUS_LABEL[report.status] ?? report.status}
+              {STATUS_LABEL[status] ?? (status || "Unknown")}
             </Text>
           </View>
           {updated ? (

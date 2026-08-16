@@ -1,4 +1,4 @@
-import { initSentry } from "../services/sentry";
+import { initSentry, Sentry } from "../services/sentry";
 initSentry();
 
 import {
@@ -495,7 +495,21 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider>
-      <ErrorBoundary>
+      {/* Render crashes are otherwise invisible: the boundary swallows
+        * them before Sentry's global handlers ever run (build 63 white
+        * screen shipped with zero telemetry). */}
+      <ErrorBoundary
+        onError={(error, componentStack) => {
+          try {
+            Sentry.captureException(error, {
+              tags: { source: "error_boundary" },
+              contexts: { react: { componentStack } },
+            });
+          } catch {
+            // Sentry must never mask the original error.
+          }
+        }}
+      >
         <QueryClientProvider client={queryClient}>
           <GestureHandlerRootView>
             <KeyboardProvider>

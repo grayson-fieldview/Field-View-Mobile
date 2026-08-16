@@ -25,6 +25,24 @@ export interface ProjectReportsState {
   deleteReport: (id: string | number) => Promise<void>;
 }
 
+/**
+ * Element-level validation for the reports list. The API type promises
+ * BackendReport[], but a malformed ELEMENT (null, non-object, missing
+ * id) would otherwise flow straight into ReportListItem and crash the
+ * project screen render (root-boundary "Something went wrong"). Drop
+ * bad rows instead of rendering them.
+ */
+function sanitizeReports(list: unknown): BackendReport[] {
+  if (!Array.isArray(list)) return [];
+  return list.filter(
+    (r): r is BackendReport =>
+      typeof r === "object" &&
+      r !== null &&
+      (typeof (r as { id?: unknown }).id === "number" ||
+        typeof (r as { id?: unknown }).id === "string"),
+  );
+}
+
 export function useProjectReports(
   projectId: string | undefined,
 ): ProjectReportsState {
@@ -38,7 +56,7 @@ export function useProjectReports(
     setError(null);
     try {
       const list = await api.listReportsForProject(projectId);
-      setReports(Array.isArray(list) ? list : []);
+      setReports(sanitizeReports(list));
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) return;
       setError(e instanceof Error ? e.message : "Couldn't load reports.");
