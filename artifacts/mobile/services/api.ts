@@ -2019,6 +2019,19 @@ export const api = {
    * items into a fresh checklist instance and returns it. The list view
    * should refetch after this resolves.
    */
+  /**
+   * Generate a checklist from a free-text description (typed or a
+   * voice-note transcript). Server does the AI pass and creates the
+   * checklist in one shot. 400 = nothing actionable found in the
+   * description, 429 = monthly generation limit — both carry readable
+   * messages for inline display.
+   */
+  generateChecklist: (projectId: string | number, note: string) =>
+    apiFetch<{ checklistId: number; itemCount: number }>(
+      `/api/projects/${projectId}/checklists/generate`,
+      { method: "POST", json: { note } },
+    ),
+
   applyChecklistTemplate: (
     projectId: string | number,
     templateId: string | number,

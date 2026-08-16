@@ -40,6 +40,7 @@ import { ThumbImage } from "@/components/ThumbImage";
 import { ApplyReportTemplateModal } from "@/components/ApplyReportTemplateModal";
 import { ReportListItem } from "@/components/ReportListItem";
 import { TemplatePickerModal } from "@/components/TemplatePickerModal";
+import { ChecklistGenerateSheet } from "@/components/ChecklistGenerateSheet";
 import * as DocumentPicker from "expo-document-picker";
 import * as WebBrowser from "expo-web-browser";
 
@@ -233,6 +234,7 @@ export default function ProjectDetailScreen() {
   // One ref covers all rows — only one press gesture is live at a time.
   const taskRowLongPressed = useRef(false);
   const [showChecklistModal, setShowChecklistModal] = useState(false);
+  const [showGenerateModal, setShowGenerateModal] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false);
   const [showAssignUserModal, setShowAssignUserModal] = useState(false);
   // Top-right kebab overflow menu. Houses destructive / infrequent
@@ -1583,12 +1585,19 @@ export default function ProjectDetailScreen() {
               <EmptyState
                 icon="list"
                 title="No checklists yet"
-                description="Apply a template to spawn a checklist for this project. New templates and items are managed on the web."
+                description="Generate one with AI from a quick description, or apply a template. New templates and items are managed on the web."
                 action={
-                  <Button
-                    title="Apply template"
-                    onPress={() => setShowChecklistModal(true)}
-                  />
+                  <View style={{ gap: 8 }}>
+                    <Button
+                      title="Generate with AI"
+                      onPress={() => setShowGenerateModal(true)}
+                    />
+                    <Button
+                      title="Apply template"
+                      variant="secondary"
+                      onPress={() => setShowChecklistModal(true)}
+                    />
+                  </View>
                 }
               />
             ) : (
@@ -1649,6 +1658,10 @@ export default function ProjectDetailScreen() {
                     </Pressable>
                   );
                 })}
+                <Button
+                  title="Generate with AI"
+                  onPress={() => setShowGenerateModal(true)}
+                />
                 <Button
                   title="Apply template"
                   variant="secondary"
@@ -2103,6 +2116,18 @@ export default function ProjectDetailScreen() {
             );
             throw e;
           }
+        }}
+      />
+      <ChecklistGenerateSheet
+        visible={showGenerateModal}
+        onClose={() => setShowGenerateModal(false)}
+        projectId={project.id}
+        onCreated={(checklistId) => {
+          void refreshChecklists();
+          router.push({
+            pathname: "/checklist/[id]",
+            params: { id: String(checklistId), projectId: project.id },
+          });
         }}
       />
       <TemplatePickerModal
