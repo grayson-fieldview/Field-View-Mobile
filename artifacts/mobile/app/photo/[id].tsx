@@ -362,7 +362,7 @@ export default function PhotoViewerScreen() {
         ) : showing ? (
           <Text
             style={styles.translateBtn}
-            onPress={() => showOriginal(key)}
+            onPress={() => showOriginal(rawKey)}
             accessibilityRole="button"
           >
             Show original
@@ -370,7 +370,7 @@ export default function PhotoViewerScreen() {
         ) : (
           <Text
             style={styles.translateBtn}
-            onPress={() => void requestTranslation(key, text)}
+            onPress={() => void requestTranslation(rawKey, text)}
             accessibilityRole="button"
           >
             Translate
