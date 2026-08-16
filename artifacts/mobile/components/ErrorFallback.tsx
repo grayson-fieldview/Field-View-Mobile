@@ -50,7 +50,11 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      {__DEV__ ? (
+      {/* TEMPORARY DIAGNOSTIC — not permanent UI. The details pressable
+        * and modal below were __DEV__-gated; the gate is removed so the
+        * walkthrough-Done crash can be read on a production device.
+        * Restore the __DEV__ gates once the crash is identified. */}
+      {true ? (
         <Pressable
           onPress={() => setIsModalVisible(true)}
           accessibilityLabel="View error details"
@@ -124,7 +128,8 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
         </Pressable>
       </View>
 
-      {__DEV__ ? (
+      {/* TEMPORARY DIAGNOSTIC — see comment above; was __DEV__-gated. */}
+      {true ? (
         <Modal
           visible={isModalVisible}
           animationType="slide"
