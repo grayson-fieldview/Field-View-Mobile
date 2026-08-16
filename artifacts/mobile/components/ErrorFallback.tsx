@@ -19,9 +19,15 @@ import { formatBuildInfo, getBuildInfo } from "@/lib/buildInfo";
 export type ErrorFallbackProps = {
   error: Error;
   resetError: () => void;
+  /** React component stack from componentDidCatch, when available. */
+  componentStack?: string | null;
 };
 
-export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
+export function ErrorFallback({
+  error,
+  resetError,
+  componentStack,
+}: ErrorFallbackProps) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
 
@@ -45,9 +51,8 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
   };
 
   // Single plain-text blob for the "Copy details" button: build info,
-  // then message, then stack. componentStack is NOT available here —
-  // the boundary passes only { error, resetError } to its fallback —
-  // so it is named explicitly rather than silently omitted.
+  // then message, then stack, then the React component stack (readable
+  // even when Hermes' error.stack is minified noise).
   const buildCopyBlob = (): string =>
     [
       "—— Build ——",
@@ -60,7 +65,7 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
       error.stack ?? "unavailable",
       "",
       "—— Component stack ——",
-      "unavailable (not passed to ErrorFallback)",
+      componentStack ?? "unavailable (not passed to ErrorFallback)",
     ].join("\n");
 
   const [copied, setCopied] = useState(false);
@@ -263,6 +268,24 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
                     {formatErrorDetails()}
                   </Text>
                 </View>
+                {componentStack ? (
+                  <View
+                    style={[
+                      styles.errorContainer,
+                      { backgroundColor: colors.card, marginTop: 12 },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.errorText,
+                        { color: colors.foreground, fontFamily: monoFont },
+                      ]}
+                      selectable
+                    >
+                      {`Component Stack:\n${componentStack}`}
+                    </Text>
+                  </View>
+                ) : null}
               </ScrollView>
             </View>
           </View>
