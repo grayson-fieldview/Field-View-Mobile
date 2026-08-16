@@ -313,11 +313,24 @@ export default function CaptureScreen() {
   useEffect(() => {
     mountedRef.current = true;
     return () => {
-      mountedRef.current = false;
-      burstActive.current = false;
-      if (holdTimer.current) {
-        clearTimeout(holdTimer.current);
-        holdTimer.current = null;
+      // Defensive: a throw from ANY unmount cleanup crashes the whole
+      // tree (commitHookEffectListUnmount) — swallow + report instead.
+      try {
+        mountedRef.current = false;
+        burstActive.current = false;
+        if (holdTimer.current) {
+          clearTimeout(holdTimer.current);
+          holdTimer.current = null;
+        }
+      } catch (err) {
+        try {
+          Sentry.captureException(err, {
+            tags: { source: "capture_cleanup" },
+            extra: { cleanup: "mounted/holdTimer (~:315)" },
+          });
+        } catch {
+          // Never let reporting itself throw during unmount.
+        }
       }
     };
   }, []);
@@ -352,7 +365,20 @@ export default function CaptureScreen() {
   useEffect(() => {
     if (!statusMsg) return;
     const t = setTimeout(() => setStatusMsg(null), 2400);
-    return () => clearTimeout(t);
+    return () => {
+      try {
+        clearTimeout(t);
+      } catch (err) {
+        try {
+          Sentry.captureException(err, {
+            tags: { source: "capture_cleanup" },
+            extra: { cleanup: "statusMsg timer (~:355)" },
+          });
+        } catch {
+          // Never let reporting itself throw during unmount.
+        }
+      }
+    };
   }, [statusMsg]);
 
   // ALWAYS cancel a live narration recording on unmount. The token
@@ -360,10 +386,44 @@ export default function CaptureScreen() {
   // recorder if it completes after this ran.
   useEffect(() => {
     return () => {
-      wtRunIdRef.current += 1;
-      wtClearTimers();
-      if (wtStatusRef.current === "recording") {
-        void cancelWtRecording().catch(() => {});
+      try {
+        wtRunIdRef.current += 1;
+        if (typeof wtClearTimers === "function") {
+          wtClearTimers();
+        } else {
+          Sentry.captureException(
+            new TypeError("wtClearTimers is not a function at cleanup"),
+            {
+              tags: { source: "capture_cleanup" },
+              extra: { cleanup: "walkthrough recorder (~:362)" },
+            },
+          );
+        }
+        if (wtStatusRef.current === "recording") {
+          // cancelWtRecording comes from an import — verify it survived
+          // module init before calling (a bad/partial bundle could leave
+          // it undefined, which is exactly a cleanup TypeError).
+          if (typeof cancelWtRecording === "function") {
+            void cancelWtRecording().catch(() => {});
+          } else {
+            Sentry.captureException(
+              new TypeError("cancelWtRecording is not a function at cleanup"),
+              {
+                tags: { source: "capture_cleanup" },
+                extra: { cleanup: "walkthrough recorder (~:362)" },
+              },
+            );
+          }
+        }
+      } catch (err) {
+        try {
+          Sentry.captureException(err, {
+            tags: { source: "capture_cleanup" },
+            extra: { cleanup: "walkthrough recorder (~:362)" },
+          });
+        } catch {
+          // Never let reporting itself throw during unmount.
+        }
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
