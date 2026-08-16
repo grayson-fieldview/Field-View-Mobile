@@ -2134,31 +2134,31 @@ export const api = {
     }),
 
   /**
-   * Transcribe a recorded voice note. POSTs the RAW file bytes to
-   * /api/transcribe (the server mounts express.raw there — NOT JSON,
-   * NOT multipart) with Content-Type set to the audio mimeType.
+   * Transcribe a recorded voice note via S3 (contract change, 2026-08:
+   * Vercel caps request bodies at 4.5MB, so raw-body POSTs died on any
+   * recording past ~4 minutes). Three steps:
    *
-   * Narrow raw-body path: apiFetch only speaks JSON, so this mirrors
-   * its auth surface (session Cookie jar + X-FieldView-Client) without
-   * reworking it. File bytes are read via the same fetch(uri) → blob()
-   * bridge uploadToS3 uses. Ingests Set-Cookie under the SAME policy
-   * as apiFetch (2xx-only) so a rotated session sid isn't dropped.
+   *   1. POST /api/uploads/sign { folder: "audio", files: [...] } —
+   *      fileName's extension and fileType are validated AS A PAIR by
+   *      the server (.m4a ↔ audio/mp4). No publicUrl for audio.
+   *   2. PUT bytes to uploadUrl with Content-Type + the sign response's
+   *      contentDisposition VERBATIM (baked into the PUT signature —
+   *      same contract as the files flow; never reconstruct it).
+   *   3. POST /api/transcribe { key } → { transcript }.
    *
-   * Fails fast (before uploading) when the file exceeds the server's
-   * 10MB raw-body limit.
+   * Bytes are read via the same fetch(uri) → blob() bridge uploadToS3
+   * uses. No client-side size ceiling — S3 PUT has none that we'd hit.
+   * Steps 1 and 3 go through apiFetch (plain JSON), so session-cookie
+   * handling is the standard 2xx-only policy.
+   *
+   * Distinct failure messages per step so a screenshot tells us which
+   * leg broke: presign → "Couldn't start upload.", PUT → "Couldn't
+   * upload the recording.", transcribe → the server's message.
    */
   transcribeAudio: async (
     uri: string,
     mimeType: string,
   ): Promise<{ transcript: string }> => {
-    if (!API_BASE_URL) {
-      throw new ApiError(
-        0,
-        "EXPO_PUBLIC_API_BASE_URL is not configured. Check artifacts/mobile/.env.",
-      );
-    }
-    if (!loaded) await loadSession();
-
     let blob: Blob;
     try {
       const fileRes = await fetch(uri);
@@ -2169,56 +2169,69 @@ export const api = {
         `Failed to read recording file: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
-    const MAX_TRANSCRIBE_BYTES = 10 * 1024 * 1024; // server raw-body limit
-    if (blob.size > MAX_TRANSCRIBE_BYTES) {
-      throw new ApiError(
-        0,
-        `Recording is too large to transcribe (${(blob.size / (1024 * 1024)).toFixed(1)}MB, limit 10MB).`,
-      );
-    }
 
-    const headers: Record<string, string> = {
-      Accept: "application/json",
-      "Content-Type": mimeType,
-    };
-    if (cookieJar.size > 0 && Platform.OS !== "web") {
-      headers["Cookie"] = serializeCookieJar();
-    }
-    if (Platform.OS === "ios" || Platform.OS === "android") {
-      headers["X-FieldView-Client"] = "mobile-1";
-    }
+    // Extension must match the mime — the server validates the pair.
+    // Recordings are audio/mp4 (.m4a) on both platforms; fall back to
+    // the mime subtype for anything unexpected.
+    const ext =
+      mimeType === "audio/mp4"
+        ? "m4a"
+        : (mimeType.split("/")[1] ?? "m4a").split(";")[0];
+    const fileName = `recording-${Date.now()}.${ext}`;
 
-    let res: Response;
+    // 1. Presign.
+    let signed: { key: string; uploadUrl: string; contentDisposition: string };
     try {
-      res = await fetch(`${API_BASE_URL}/api/transcribe`, {
+      const res = await apiFetch<
+        { key: string; uploadUrl: string; contentDisposition: string }[]
+      >("/api/uploads/sign", {
         method: "POST",
-        headers,
-        body: blob,
-        credentials: Platform.OS === "web" ? "include" : "omit",
+        json: {
+          folder: "audio",
+          files: [{ fileName, fileType: mimeType, fileSize: blob.size }],
+        },
       });
+      if (!res[0]?.uploadUrl) {
+        throw new ApiError(0, "Sign response was empty.");
+      }
+      signed = res[0];
     } catch (e) {
       throw new ApiError(
-        0,
-        `Network request failed: ${e instanceof Error ? e.message : String(e)}`,
+        e instanceof ApiError ? e.status : 0,
+        "Couldn't start upload.",
       );
     }
-    // Same session-cookie policy as apiFetch (build 41): ONLY 2xx
-    // responses may write to the jar — a rotated/regenerated sid on a
-    // successful transcribe must be ingested or the client keeps
-    // sending a dead cookie; error responses must never clobber the
-    // authenticated session.
-    const setCookie = res.headers.get("set-cookie");
-    if (setCookie && res.ok) {
-      parseAndPersistSetCookie(setCookie);
-    }
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
+
+    // 2. PUT to S3 — Content-Disposition verbatim from the sign
+    // response or the signature check fails.
+    try {
+      console.log("[api] → PUT (s3, audio)", signed.uploadUrl.split("?")[0]);
+      const putRes = await fetch(signed.uploadUrl, {
+        method: "PUT",
+        body: blob,
+        headers: {
+          "Content-Type": mimeType,
+          "Content-Length": String(blob.size),
+          "Content-Disposition": signed.contentDisposition,
+        },
+      });
+      console.log("[api] ← (s3, audio)", putRes.status);
+      if (!putRes.ok) {
+        throw new ApiError(putRes.status, "s3 put failed");
+      }
+    } catch (e) {
       throw new ApiError(
-        res.status,
-        `Transcription failed (${res.status}): ${text.slice(0, 200)}`,
+        e instanceof ApiError ? e.status : 0,
+        "Couldn't upload the recording.",
       );
     }
-    return (await res.json()) as { transcript: string };
+
+    // 3. Transcribe by key. Server errors surface as-is (apiFetch
+    // throws ApiError carrying the server's message).
+    return apiFetch<{ transcript: string }>("/api/transcribe", {
+      method: "POST",
+      json: { key: signed.key },
+    });
   },
 
   // ----- Media annotations (cross-platform sync, 2026-06) -----
