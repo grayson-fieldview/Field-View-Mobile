@@ -2138,9 +2138,11 @@ export const api = {
    * Vercel caps request bodies at 4.5MB, so raw-body POSTs died on any
    * recording past ~4 minutes). Three steps:
    *
-   *   1. POST /api/uploads/sign { folder: "audio", files: [...] } —
-   *      fileName's extension and fileType are validated AS A PAIR by
-   *      the server (.m4a ↔ audio/mp4). No publicUrl for audio.
+   *   1. POST /api/uploads/sign { files: [{ folder: "audio",
+   *      originalName, mimeType, fileSize }] } — folder is PER FILE
+   *      (same contract as the files flow / SignFileUploadItem).
+   *      originalName's extension and mimeType are validated AS A PAIR
+   *      by the server (.m4a ↔ audio/mp4). No publicUrl for audio.
    *   2. PUT bytes to uploadUrl with Content-Type + the sign response's
    *      contentDisposition VERBATIM (baked into the PUT signature —
    *      same contract as the files flow; never reconstruct it).
@@ -2177,9 +2179,11 @@ export const api = {
       mimeType === "audio/mp4"
         ? "m4a"
         : (mimeType.split("/")[1] ?? "m4a").split(";")[0];
-    const fileName = `recording-${Date.now()}.${ext}`;
+    const originalName = `recording-${Date.now()}.${ext}`;
 
-    // 1. Presign.
+    // 1. Presign. Field names match server/routes.ts (f.folder,
+    // f.originalName, f.mimeType, f.fileSize) — the same per-file
+    // shape the files sign flow (SignFileUploadItem) already speaks.
     let signed: { key: string; uploadUrl: string; contentDisposition: string };
     try {
       const res = await apiFetch<
@@ -2187,8 +2191,14 @@ export const api = {
       >("/api/uploads/sign", {
         method: "POST",
         json: {
-          folder: "audio",
-          files: [{ fileName, fileType: mimeType, fileSize: blob.size }],
+          files: [
+            {
+              folder: "audio",
+              originalName,
+              mimeType,
+              fileSize: blob.size,
+            },
+          ],
         },
       });
       if (!res[0]?.uploadUrl) {
