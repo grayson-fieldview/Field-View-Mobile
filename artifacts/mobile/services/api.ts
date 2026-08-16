@@ -2100,6 +2100,94 @@ export const api = {
       json: { text },
     }),
 
+  /**
+   * Transcribe a recorded voice note. POSTs the RAW file bytes to
+   * /api/transcribe (the server mounts express.raw there — NOT JSON,
+   * NOT multipart) with Content-Type set to the audio mimeType.
+   *
+   * Narrow raw-body path: apiFetch only speaks JSON, so this mirrors
+   * its auth surface (session Cookie jar + X-FieldView-Client) without
+   * reworking it. File bytes are read via the same fetch(uri) → blob()
+   * bridge uploadToS3 uses. Ingests Set-Cookie under the SAME policy
+   * as apiFetch (2xx-only) so a rotated session sid isn't dropped.
+   *
+   * Fails fast (before uploading) when the file exceeds the server's
+   * 10MB raw-body limit.
+   */
+  transcribeAudio: async (
+    uri: string,
+    mimeType: string,
+  ): Promise<{ transcript: string }> => {
+    if (!API_BASE_URL) {
+      throw new ApiError(
+        0,
+        "EXPO_PUBLIC_API_BASE_URL is not configured. Check artifacts/mobile/.env.",
+      );
+    }
+    if (!loaded) await loadSession();
+
+    let blob: Blob;
+    try {
+      const fileRes = await fetch(uri);
+      blob = await fileRes.blob();
+    } catch (e) {
+      throw new ApiError(
+        0,
+        `Failed to read recording file: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    const MAX_TRANSCRIBE_BYTES = 10 * 1024 * 1024; // server raw-body limit
+    if (blob.size > MAX_TRANSCRIBE_BYTES) {
+      throw new ApiError(
+        0,
+        `Recording is too large to transcribe (${(blob.size / (1024 * 1024)).toFixed(1)}MB, limit 10MB).`,
+      );
+    }
+
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+      "Content-Type": mimeType,
+    };
+    if (cookieJar.size > 0 && Platform.OS !== "web") {
+      headers["Cookie"] = serializeCookieJar();
+    }
+    if (Platform.OS === "ios" || Platform.OS === "android") {
+      headers["X-FieldView-Client"] = "mobile-1";
+    }
+
+    let res: Response;
+    try {
+      res = await fetch(`${API_BASE_URL}/api/transcribe`, {
+        method: "POST",
+        headers,
+        body: blob,
+        credentials: Platform.OS === "web" ? "include" : "omit",
+      });
+    } catch (e) {
+      throw new ApiError(
+        0,
+        `Network request failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    // Same session-cookie policy as apiFetch (build 41): ONLY 2xx
+    // responses may write to the jar — a rotated/regenerated sid on a
+    // successful transcribe must be ingested or the client keeps
+    // sending a dead cookie; error responses must never clobber the
+    // authenticated session.
+    const setCookie = res.headers.get("set-cookie");
+    if (setCookie && res.ok) {
+      parseAndPersistSetCookie(setCookie);
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new ApiError(
+        res.status,
+        `Transcription failed (${res.status}): ${text.slice(0, 200)}`,
+      );
+    }
+    return (await res.json()) as { transcript: string };
+  },
+
   // ----- Media annotations (cross-platform sync, 2026-06) -----
   //
   // Annotations live in their own table, one row PER USER per media, and

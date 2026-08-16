@@ -113,6 +113,12 @@
         {
           "iosUrlScheme": "com.googleusercontent.apps.457117433845-cfv2vp7d2v5ime9889hn9tgabj542bqm"
         }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Field View records audio for voice notes and with your project videos so the captured footage matches what you said on site."
+        }
       ]
     ],
     "experiments": {
