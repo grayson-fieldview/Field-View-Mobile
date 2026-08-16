@@ -1562,10 +1562,16 @@ export default function CaptureScreen() {
         sessionPhotos={wtPhotosRef.current}
         onDismiss={wtReset}
         onExit={() => {
-          // Forward to the project's Reports tab (the freshly-created
-          // "generating" report row lives there). replace, not push —
-          // Back from Reports should not return to the camera. wtReset
-          // AFTER dispatching navigation.
+          // Land on the project's Reports tab WITHOUT modal presentation:
+          // 1) dismiss() pops this fullScreenModal off the stack, so the
+          //    next action targets the underlying (non-modal) stack;
+          // 2) replace() swaps the project screen already beneath the
+          //    camera for the same project seeded on tab=reports — a
+          //    normal card, no duplicate project entry behind it.
+          // dismissTo() was rejected: it would pop back to the EXISTING
+          // /project/[id] entry, which was mounted without the tab param
+          // (lands on Photos, not Reports). wtReset AFTER dispatching.
+          if (router.canDismiss()) router.dismiss();
           router.replace({
             pathname: "/project/[id]",
             params: { id: String(project.id), tab: "reports" },
