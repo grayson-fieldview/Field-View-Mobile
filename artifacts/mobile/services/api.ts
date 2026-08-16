@@ -2020,6 +2020,26 @@ export const api = {
    * should refetch after this resolves.
    */
   /**
+   * Walkthrough capture: submit the narration transcript + this
+   * session's uploaded media ids (+ per-photo timing offsets from the
+   * recording start). Server generates the report ASYNCHRONOUSLY and
+   * push-notifies with data.type "walkthrough_report_ready" — the 202
+   * only acknowledges the job started.
+   */
+  generateWalkthrough: (
+    projectId: string | number,
+    body: {
+      transcript: string;
+      mediaIds: number[];
+      photoOffsets?: Array<{ mediaId: number; offsetMs: number }>;
+    },
+  ) =>
+    apiFetch<{ status: string }>(`/api/projects/${projectId}/walkthrough`, {
+      method: "POST",
+      json: body,
+    }),
+
+  /**
    * Generate a checklist from a free-text description (typed or a
    * voice-note transcript). Server does the AI pass and creates the
    * checklist in one shot. 400 = nothing actionable found in the

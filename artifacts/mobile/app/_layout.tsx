@@ -287,17 +287,29 @@ function subscribeAuthGateRouted(cb: (v: boolean) => void): () => void {
  * `pending` is a one-shot — cleared after consume so subsequent auth
  * state changes don't re-fire the same navigation.
  */
-type PendingDeepLink = { projectId: number };
+type PendingDeepLink =
+  | { kind: "project"; projectId: number }
+  | { kind: "report"; reportId: number; projectId?: number };
 
-// Generic project deep-link: a notification whose data payload
-// carries a numeric `projectId` routes to /project/<id>. Intentionally
-// decoupled from any clock-receipt shape — the tap bridge only needs
-// the destination project.
+// Deep-link parsing:
+// - data.type "walkthrough_report_ready" with numeric `reportId`
+//   routes to the in-app report screen /report/<id> (projectId is
+//   forwarded when present — the screen's photo picker wants it).
+// - Otherwise, any payload carrying a numeric `projectId` routes to
+//   /project/<id>. Intentionally decoupled from any clock-receipt
+//   shape — the tap bridge only needs the destination.
 function parseDeepLink(data: unknown): PendingDeepLink | null {
   if (!data || typeof data !== "object") return null;
   const d = data as Record<string, unknown>;
+  if (d.type === "walkthrough_report_ready" && typeof d.reportId === "number") {
+    return {
+      kind: "report",
+      reportId: d.reportId,
+      projectId: typeof d.projectId === "number" ? d.projectId : undefined,
+    };
+  }
   if (typeof d.projectId !== "number") return null;
-  return { projectId: d.projectId };
+  return { kind: "project", projectId: d.projectId };
 }
 
 function NotificationDeepLinkHandler() {
@@ -316,7 +328,13 @@ function NotificationDeepLinkHandler() {
       if (!alive) return;
       const link = parseDeepLink(data);
       if (!link) return;
-      console.log(`[notifications] cold-launch tap project=${link.projectId}`);
+      console.log(
+        `[notifications] cold-launch tap ${
+          link.kind === "report"
+            ? `report=${link.reportId}`
+            : `project=${link.projectId}`
+        }`,
+      );
       setPending(link);
     });
 
@@ -326,7 +344,13 @@ function NotificationDeepLinkHandler() {
     const unsub = subscribeToNotificationResponses((data) => {
       const link = parseDeepLink(data);
       if (!link) return;
-      console.log(`[notifications] tap received project=${link.projectId}`);
+      console.log(
+        `[notifications] tap received ${
+          link.kind === "report"
+            ? `report=${link.reportId}`
+            : `project=${link.projectId}`
+        }`,
+      );
       setPending(link);
     });
 
@@ -338,10 +362,22 @@ function NotificationDeepLinkHandler() {
 
   useEffect(() => {
     if (!pending || !ready || !user) return;
-    router.push({
-      pathname: "/project/[id]",
-      params: { id: String(pending.projectId) },
-    });
+    if (pending.kind === "report") {
+      router.push({
+        pathname: "/report/[id]",
+        params: {
+          id: String(pending.reportId),
+          ...(pending.projectId !== undefined
+            ? { projectId: String(pending.projectId) }
+            : {}),
+        },
+      });
+    } else {
+      router.push({
+        pathname: "/project/[id]",
+        params: { id: String(pending.projectId) },
+      });
+    }
     setPending(null);
   }, [pending, ready, user, router]);
 

@@ -55,6 +55,17 @@ import {
   retryItem as retryUploadQueueItem,
 } from "@/services/uploadQueue";
 import type { Photo } from "@/services/types";
+import { storage } from "@/services/storage";
+import {
+  cancelRecording as cancelWtRecording,
+  requestPermission as requestWtMicPermission,
+  startRecording as startWtRecording,
+  stopRecording as stopWtRecording,
+} from "@/services/voiceRecording";
+import {
+  WalkthroughDoneSheet,
+  type WalkthroughSessionPhoto,
+} from "@/components/WalkthroughDoneSheet";
 
 const HOLD_TO_BURST_MS = 350;
 
@@ -68,6 +79,18 @@ const MAX_RECORDING_SECONDS = 180;
 // bytes, which stays under the 500MB cap whether the server measures it as
 // 500 MiB (524,288,000) or decimal 500,000,000 bytes.
 const MAX_RECORDING_BYTES = 450 * 1024 * 1024;
+
+// ---- Walkthrough mode ----
+// Hard cap for the CONTINUOUS narration recording (walkthrough only —
+// voice notes elsewhere stay at 5 minutes). Enforced with a single
+// ABSOLUTE setTimeout from the recording start, never tick counting.
+const WT_MAX_MS = 15 * 60 * 1000;
+// Narration turns warning-colored near the cap.
+const WT_WARN_MS = 13 * 60 * 1000;
+// First-run explainer seen-flag. Follows the repo's `@fv/` AsyncStorage
+// key convention (see services/storage.ts KEYS and
+// services/legacyTaskCleanup.ts CLEANUP_FLAG).
+const WT_INTRO_FLAG = "@fv/walkthrough/intro_seen_v1";
 
 type ZoomPreset = { label: string; value: number };
 // No anchor above 4x, so pinch never zooms past the top preset's value.
@@ -152,7 +175,7 @@ export default function CaptureScreen() {
   >(null);
   const [facing, setFacing] = useState<"back" | "front">("back");
   const [flash, setFlash] = useState<"off" | "on" | "auto">("off");
-  const [mode, setMode] = useState<"photo" | "video">("photo");
+  const [mode, setMode] = useState<"photo" | "video" | "walkthru">("photo");
   // Continuous zoom value fed to CameraView (0..1). Presets snap it to
   // their exact value; pinch moves it freely between them. After a pinch
   // the value usually matches no preset, so no preset renders as active —
@@ -176,6 +199,41 @@ export default function CaptureScreen() {
   const [cameraReady, setCameraReady] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+
+  // ---- Walkthrough session state ----
+  // wtStatus is mirrored in a ref (set SYNCHRONOUSLY before awaits in
+  // wtStart) so double-taps can't admit two concurrent recordings and
+  // capture callbacks can read the live value without stale closures.
+  const [wtStatus, setWtStatus] = useState<
+    "idle" | "starting" | "recording" | "done"
+  >("idle");
+  const wtStatusRef = useRef<"idle" | "starting" | "recording" | "done">(
+    "idle",
+  );
+  // Disposal/run token: bumped on unmount (and consulted after every
+  // await in wtStart) so a start that "wins" after cleanup ran can
+  // cancel the recorder it just created instead of leaking it.
+  const wtRunIdRef = useRef(0);
+  // Live mode for async continuations (flag read, start) — state
+  // closures go stale across awaits.
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const wtStartMsRef = useRef(0);
+  // Display-only tick; elapsed is ALWAYS wall-clock derived.
+  const [wtNow, setWtNow] = useState(0);
+  const wtCapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wtTickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Photos captured during THIS recording: local id + queue id +
+  // ms offset from recording start (derived from each photo's takenAt).
+  const wtPhotosRef = useRef<WalkthroughSessionPhoto[]>([]);
+  const [wtPhotoCount, setWtPhotoCount] = useState(0);
+  const [wtAudio, setWtAudio] = useState<{
+    uri: string;
+    mimeType: string;
+  } | null>(null);
+  const [wtError, setWtError] = useState<string | null>(null);
+  const [wtIntroVisible, setWtIntroVisible] = useState(false);
+  const [wtSheetVisible, setWtSheetVisible] = useState(false);
 
   // ---- Photo tray (session-scoped) ----
   // Local photo ids captured/imported since this screen mounted, newest
@@ -478,6 +536,7 @@ export default function CaptureScreen() {
           taskId,
         });
         addToTray([saved]);
+        wtTrackPhoto(saved);
         setSessionCount((s) => s + 1);
         Haptics.notificationAsync(
           Haptics.NotificationFeedbackType.Success,
@@ -535,6 +594,7 @@ export default function CaptureScreen() {
         })),
       );
       addToTray(savedBatch);
+      for (const saved of savedBatch) wtTrackPhoto(saved);
       setSessionCount((s) => s + buffer.current.length);
       buffer.current = [];
       Haptics.notificationAsync(
@@ -688,10 +748,180 @@ export default function CaptureScreen() {
     }
   };
 
+  // ---- Walkthrough handlers ----
+
+  // Record a session photo's offset. offsetMs derives from the photo's
+  // takenAt stamp (set at shutter time) minus the recording start —
+  // both Date.now()-based, so the math is consistent even if the save
+  // pipeline lags the shutter.
+  const wtTrackPhoto = (saved: Photo) => {
+    if (wtStatusRef.current !== "recording") return;
+    const taken = Date.parse(saved.takenAt ?? "");
+    const offsetMs = Math.max(
+      0,
+      (Number.isFinite(taken) ? taken : Date.now()) - wtStartMsRef.current,
+    );
+    wtPhotosRef.current.push({
+      localId: String(saved.id),
+      uploadQueueId: saved.uploadQueueId,
+      offsetMs,
+    });
+    setWtPhotoCount(wtPhotosRef.current.length);
+  };
+
+  const wtClearTimers = () => {
+    if (wtCapTimerRef.current) {
+      clearTimeout(wtCapTimerRef.current);
+      wtCapTimerRef.current = null;
+    }
+    if (wtTickRef.current) {
+      clearInterval(wtTickRef.current);
+      wtTickRef.current = null;
+    }
+  };
+
+  // Start narration recording. NOT called on mode switch — only from
+  // the explainer's "Start walkthrough" button or the Start control.
+  const wtStart = async () => {
+    if (wtStatusRef.current !== "idle") return;
+    if (modeRef.current !== "walkthru") return;
+    // Synchronous reservation before any await — a second tap in the
+    // permission/start window must not admit a concurrent start.
+    wtStatusRef.current = "starting";
+    setWtStatus("starting");
+    setWtError(null);
+    const run = wtRunIdRef.current;
+    // Disposed = unmounted (token bumped) or the user escaped the
+    // walkthrough mode while an await was pending.
+    const disposed = () =>
+      wtRunIdRef.current !== run || modeRef.current !== "walkthru";
+    const bail = (msg: string | null) => {
+      wtStatusRef.current = "idle";
+      if (wtRunIdRef.current === run) {
+        setWtStatus("idle");
+        if (msg) setWtError(msg);
+      }
+    };
+    let granted: boolean;
+    try {
+      granted = await requestWtMicPermission();
+    } catch {
+      // Dynamic import threw — this dev client predates expo-audio.
+      bail("Walkthrough needs an app update to record audio.");
+      return;
+    }
+    if (disposed()) {
+      bail(null);
+      return;
+    }
+    if (!granted) {
+      bail(
+        "Microphone access is blocked. Enable it in Settings to record a walkthrough.",
+      );
+      return;
+    }
+    try {
+      await startWtRecording();
+    } catch (e) {
+      // startRecording cleans up after itself on failure. No global
+      // cancel here — this attempt never owned the recorder.
+      bail(
+        e instanceof Error && e.message
+          ? e.message
+          : "Couldn't start recording.",
+      );
+      return;
+    }
+    if (disposed()) {
+      // Start won AFTER cleanup/mode-escape — the unmount cleanup
+      // (or nothing) already ran and missed this recorder. It is ours;
+      // discard it now.
+      void cancelWtRecording().catch(() => {});
+      bail(null);
+      return;
+    }
+    const start = Date.now();
+    wtStartMsRef.current = start;
+    wtPhotosRef.current = [];
+    setWtPhotoCount(0);
+    setWtNow(start);
+    wtStatusRef.current = "recording";
+    setWtStatus("recording");
+    // Single ABSOLUTE timeout for the 15-minute cap — auto-stop and
+    // proceed to the Done flow with what was captured, never discard.
+    wtCapTimerRef.current = setTimeout(() => {
+      void wtDone();
+    }, WT_MAX_MS);
+    // Display refresh only; the shown value is wall-clock derived.
+    wtTickRef.current = setInterval(() => setWtNow(Date.now()), 500);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+  };
+
+  // Done (user tap or 15-minute cap): stop the recording and hand the
+  // audio + session photos to the Done sheet, which runs connection
+  // check → upload blocking → transcribe → POST.
+  const wtDone = async () => {
+    if (wtStatusRef.current !== "recording") return;
+    wtStatusRef.current = "done";
+    setWtStatus("done");
+    wtClearTimers();
+    try {
+      const { uri, mimeType } = await stopWtRecording();
+      setWtAudio({ uri, mimeType });
+    } catch (e) {
+      // Stop failed — no usable audio. The sheet reports the failure
+      // plainly (photos are already safe in the queue).
+      setWtAudio(null);
+      console.log("[walkthrough] stopRecording failed:", e);
+    }
+    setWtSheetVisible(true);
+  };
+
+  // Sheet closed back to the camera (cancel / error / offline exit
+  // handled by caller): reset session state. Photos stay in the queue.
+  const wtReset = () => {
+    wtClearTimers();
+    wtStatusRef.current = "idle";
+    setWtStatus("idle");
+    setWtSheetVisible(false);
+    setWtAudio(null);
+    wtPhotosRef.current = [];
+    setWtPhotoCount(0);
+  };
+
+  // Entering WALKTHRU for the first time ever shows the explainer once
+  // (AsyncStorage-flagged), after which Start begins immediately.
+  const enterWalkthruMode = () => {
+    setMode("walkthru");
+    modeRef.current = "walkthru";
+    void storage.getFlag(WT_INTRO_FLAG).then((seen) => {
+      // Stale-read guard: the user may have switched away before the
+      // flag resolved — never surface the intro outside WALKTHRU.
+      if (!seen && modeRef.current === "walkthru") setWtIntroVisible(true);
+    });
+  };
+
+  // ALWAYS cancel a live narration recording on unmount. The token
+  // bump also disposes any in-flight wtStart, which cancels its own
+  // recorder if it completes after this ran.
+  useEffect(() => {
+    return () => {
+      wtRunIdRef.current += 1;
+      wtClearTimers();
+      if (wtStatusRef.current === "recording") {
+        void cancelWtRecording().catch(() => {});
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Differentiate tap vs. hold for the shutter.
   const onShutterPressIn = () => {
     if (!cameraReady) return;
     if (mode === "video") return; // video uses tap-to-start, tap-to-stop
+    // Walkthrough: the shutter only shoots while narration is live —
+    // Start owns the entry point, so an idle tap does nothing.
+    if (mode === "walkthru" && wtStatusRef.current !== "recording") return;
     if (saving) return;
     tappedRef.current = true;
     holdTimer.current = setTimeout(() => {
@@ -705,6 +935,7 @@ export default function CaptureScreen() {
       toggleRecording();
       return;
     }
+    if (mode === "walkthru" && wtStatusRef.current !== "recording") return;
     if (holdTimer.current) {
       clearTimeout(holdTimer.current);
       holdTimer.current = null;
@@ -802,7 +1033,9 @@ export default function CaptureScreen() {
             facing={facing}
             flash={flash}
             zoom={zoomValue}
-            mode={mode}
+            // Walkthrough shoots stills — the camera itself runs in
+            // photo mode; only the narration recorder differs.
+            mode={mode === "video" ? "video" : "photo"}
             videoQuality="1080p"
             onCameraReady={() => setCameraReady(true)}
           />
@@ -816,7 +1049,7 @@ export default function CaptureScreen() {
            * 0px because the parent `previewFrame` is already
            * exactly 3:4 — only the inner masks (1:1 / 9:16) draw
            * pixels. The component itself is unchanged. */}
-          {mode === "photo" ? (
+          {mode !== "video" ? (
             <LetterboxOverlay ratio={captureAspectRatio} />
           ) : null}
         </View>
@@ -842,6 +1075,31 @@ export default function CaptureScreen() {
           >
             <View style={styles.recDot} />
             <Text style={styles.burstText}>REC</Text>
+          </View>
+        ) : wtStatus === "recording" ? (
+          // Walkthrough status: photo count + wall-clock elapsed
+          // ("12 photos · 4:31"). Turns warning-colored near the cap.
+          <View
+            style={[
+              styles.previewPillBurst,
+              {
+                backgroundColor:
+                  Math.max(0, wtNow - wtStartMsRef.current) >= WT_WARN_MS
+                    ? "rgba(245,158,11,0.9)"
+                    : "rgba(220,38,38,0.85)",
+              },
+            ]}
+          >
+            <View style={styles.recDot} />
+            <Text style={styles.burstText}>
+              {wtPhotoCount} photo{wtPhotoCount === 1 ? "" : "s"} ·{" "}
+              {(() => {
+                const s = Math.floor(
+                  Math.max(0, wtNow - wtStartMsRef.current) / 1000,
+                );
+                return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+              })()}
+            </Text>
           </View>
         ) : statusMsg ? (
           <View style={styles.previewPillSession}>
@@ -1047,14 +1305,45 @@ export default function CaptureScreen() {
           </Pressable>
 
           <Pressable
-            onPress={() => router.back()}
-            disabled={saving || recording}
+            onPress={() => {
+              // In a live walkthrough, Done ends the session (stop →
+              // upload-block → transcribe → generate) instead of
+              // leaving the screen.
+              if (mode === "walkthru" && wtStatus === "recording") {
+                void wtDone();
+                return;
+              }
+              router.back();
+            }}
+            // `bursting` included so Done can't end a walkthrough
+            // session while a burst is still capturing — its photos
+            // finalize (and get offset-tracked) before the session can
+            // close, so none are dropped from the report.
+            disabled={
+              saving ||
+              recording ||
+              bursting ||
+              wtStatus === "starting" ||
+              wtStatus === "done"
+            }
             accessibilityLabel="Done"
             style={({ pressed }) => [
               styles.doneBtn,
               {
-                backgroundColor: "rgba(255,255,255,0.16)",
-                opacity: saving || recording ? 0.4 : pressed ? 0.8 : 1,
+                backgroundColor:
+                  mode === "walkthru" && wtStatus === "recording"
+                    ? colors.primary
+                    : "rgba(255,255,255,0.16)",
+                opacity:
+                  saving ||
+                  recording ||
+                  bursting ||
+                  wtStatus === "starting" ||
+                  wtStatus === "done"
+                    ? 0.4
+                    : pressed
+                      ? 0.8
+                      : 1,
               },
             ]}
           >
@@ -1068,17 +1357,21 @@ export default function CaptureScreen() {
 
         {/* Mode tabs (PHOTO / VIDEO) */}
         <View style={styles.modeRow}>
-          {(["photo", "video"] as const).map((m) => {
+          {(["photo", "video", "walkthru"] as const).map((m) => {
             const active = mode === m;
             return (
               <Pressable
                 key={m}
                 onPress={() => {
-                  if (recording) return;
+                  if (recording || wtStatus !== "idle") return;
                   Haptics.selectionAsync().catch(() => {});
-                  setMode(m);
+                  if (m === "walkthru") {
+                    enterWalkthruMode();
+                  } else {
+                    setMode(m);
+                  }
                 }}
-                disabled={recording}
+                disabled={recording || wtStatus !== "idle"}
                 accessibilityLabel={`${m} mode`}
                 accessibilityState={{ selected: active }}
                 style={styles.modeBtn}
@@ -1111,15 +1404,35 @@ export default function CaptureScreen() {
           })}
         </View>
 
+        {/* Walkthrough Start control — recording starts HERE, never on
+         * mode switch. Subsequent visits (intro already seen) start
+         * from this button directly. */}
+        {mode === "walkthru" && wtStatus === "idle" ? (
+          <Button
+            title="Start"
+            onPress={() => void wtStart()}
+            style={{ alignSelf: "center", marginTop: 8, minWidth: 160 }}
+          />
+        ) : null}
+        {mode === "walkthru" && wtError ? (
+          <Text style={styles.wtError}>{wtError}</Text>
+        ) : null}
+
         {/* Hint */}
         <Text style={styles.hint}>
-          {mode === "video"
-            ? recording
-              ? "Tap to stop"
-              : "Tap to record"
-            : bursting
-              ? "Hold to keep capturing…"
-              : "Tap for one photo · Hold for burst"}
+          {mode === "walkthru"
+            ? wtStatus === "recording"
+              ? "Talk as you go · Tap Done to finish"
+              : wtStatus === "starting"
+                ? "Starting…"
+                : "Narrate the site while you snap photos"
+            : mode === "video"
+              ? recording
+                ? "Tap to stop"
+                : "Tap to record"
+              : bursting
+                ? "Hold to keep capturing…"
+                : "Tap for one photo · Hold for burst"}
         </Text>
       </View>
 
@@ -1132,6 +1445,55 @@ export default function CaptureScreen() {
         onClose={() => setTrayOpen(false)}
         onRemovedPhoto={removeFromTray}
         primary={colors.primary}
+      />
+
+      {/* Walkthrough first-run explainer — shown once ever (flagged in
+       * AsyncStorage). Its button is also the FIRST Start. */}
+      <Modal
+        visible={wtIntroVisible}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setWtIntroVisible(false)}
+      >
+        <View style={styles.wtIntroBackdrop}>
+          <View
+            style={[styles.wtIntroCard, { backgroundColor: colors.card }]}
+          >
+            <Feather name="mic" size={28} color={colors.primary} />
+            <Text style={[styles.wtIntroTitle, { color: colors.foreground }]}>
+              Talk while you shoot
+            </Text>
+            <Text
+              style={[styles.wtIntroBody, { color: colors.mutedForeground }]}
+            >
+              Walk the site and describe what you see. Snap photos as you
+              go. When you're done, AI turns your narration and photos into
+              a report.
+            </Text>
+            <Button
+              title="Start walkthrough"
+              onPress={() => {
+                void storage.setFlag(WT_INTRO_FLAG, true);
+                setWtIntroVisible(false);
+                void wtStart();
+              }}
+            />
+          </View>
+        </View>
+      </Modal>
+
+      {/* Walkthrough Done pipeline (connection check → upload block →
+       * transcribe → generate). Cancel keeps photos, skips the report. */}
+      <WalkthroughDoneSheet
+        visible={wtSheetVisible}
+        projectId={project.id}
+        audio={wtAudio}
+        sessionPhotos={wtPhotosRef.current}
+        onDismiss={wtReset}
+        onExit={() => {
+          wtReset();
+          router.back();
+        }}
       />
     </View>
   );
@@ -1942,6 +2304,41 @@ const styles = StyleSheet.create({
     width: 5,
     height: 5,
     marginTop: 4,
+  },
+  wtError: {
+    color: "#fca5a5",
+    fontFamily: "Inter_500Medium",
+    fontSize: 12,
+    textAlign: "center",
+    marginTop: 6,
+    paddingHorizontal: 24,
+  },
+  wtIntroBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.65)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+  },
+  wtIntroCard: {
+    width: "100%",
+    maxWidth: 340,
+    borderRadius: 16,
+    padding: 24,
+    alignItems: "center",
+    gap: 12,
+  },
+  wtIntroTitle: {
+    fontFamily: "Inter_700Bold",
+    fontSize: 18,
+    textAlign: "center",
+  },
+  wtIntroBody: {
+    fontFamily: "Inter_400Regular",
+    fontSize: 14,
+    lineHeight: 21,
+    textAlign: "center",
+    marginBottom: 4,
   },
   hint: {
     color: "rgba(255,255,255,0.7)",
