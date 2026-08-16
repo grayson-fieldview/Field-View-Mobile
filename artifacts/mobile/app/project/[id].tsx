@@ -129,8 +129,10 @@ export default function ProjectDetailScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { id } = useLocalSearchParams<{
+  const { id, tab: tabParam } = useLocalSearchParams<{
     id: string;
+    /** Optional initial tab (e.g. capture's walkthrough Done → reports). */
+    tab?: string;
   }>();
   const { showToast } = useToast();
   const {
@@ -226,7 +228,19 @@ export default function ProjectDetailScreen() {
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
   const [assignmentsError, setAssignmentsError] = useState<string | null>(null);
 
-  const [tab, setTab] = useState<TabKey>("photos");
+  // Seeded from the optional ?tab= search param (validated against the
+  // real tab set; anything else falls back to photos). Read once on
+  // mount — the param does not drive the state afterwards.
+  const [tab, setTab] = useState<TabKey>(() =>
+    tabParam === "photos" ||
+    tabParam === "tasks" ||
+    tabParam === "checklists" ||
+    tabParam === "reports" ||
+    tabParam === "files" ||
+    tabParam === "team"
+      ? tabParam
+      : "photos",
+  );
   const [showTaskModal, setShowTaskModal] = useState(false);
   // Long-press suppression for task rows (same pattern as PhotoTile's
   // longPressed ref): RN Web fires onPress after onLongPress on release,

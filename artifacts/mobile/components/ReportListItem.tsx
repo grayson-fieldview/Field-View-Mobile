@@ -1,6 +1,12 @@
 import { Feather } from "@expo/vector-icons";
 import React from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 
 import { useColors } from "@/hooks/useColors";
 import type { BackendReport } from "@/services/api";
@@ -14,6 +20,8 @@ const STATUS_LABEL: Record<string, string> = {
   draft: "Draft",
   submitted: "Submitted",
   approved: "Approved",
+  generating: "Generating",
+  failed: "Failed",
 };
 
 /**
@@ -41,48 +49,81 @@ export function ReportListItem({ report, onPress }: Props) {
   const updated =
     (typeof report.updatedAt === "string" ? report.updatedAt : null) ??
     (typeof report.createdAt === "string" ? report.createdAt : null);
+  // Walkthrough pipeline rows: mid-generation and failed-generation
+  // rows are NOT tappable — the detail screen has no sections to show
+  // for either. Any unrecognized status renders as a normal report.
+  const generating = status === "generating";
+  const failed = status === "failed";
+  const disabled = generating || failed;
   return (
     <Pressable
       onPress={onPress}
+      disabled={disabled}
       style={({ pressed }) => [
         styles.card,
         {
           backgroundColor: colors.card,
           borderColor: colors.border,
-          opacity: pressed ? 0.85 : 1,
+          opacity: pressed && !disabled ? 0.85 : 1,
         },
       ]}
     >
       <View style={{ flex: 1, gap: 6 }}>
         <Text
-          style={[styles.title, { color: colors.foreground }]}
+          style={[
+            styles.title,
+            { color: failed ? colors.mutedForeground : colors.foreground },
+          ]}
           numberOfLines={1}
         >
           {title}
         </Text>
-        <View style={styles.metaRow}>
-          <View
-            style={[
-              styles.statusPill,
-              {
-                backgroundColor: colors.muted,
-                borderColor: colors.border,
-              },
-            ]}
-          >
-            <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
-            <Text style={[styles.statusLabel, { color: statusColor }]}>
-              {STATUS_LABEL[status] ?? (status || "Unknown")}
+        {generating ? (
+          <View style={styles.metaRow}>
+            <ActivityIndicator size="small" color={colors.mutedForeground} />
+            <Text style={[styles.metaText, { color: colors.mutedForeground }]}>
+              Generating report…
             </Text>
           </View>
-          {updated ? (
-            <Text style={[styles.metaText, { color: colors.mutedForeground }]}>
-              Updated {formatRelative(updated)}
-            </Text>
-          ) : null}
-        </View>
+        ) : failed ? (
+          <Text style={[styles.metaText, { color: colors.destructive }]}>
+            Report failed to generate
+          </Text>
+        ) : (
+          <View style={styles.metaRow}>
+            <View
+              style={[
+                styles.statusPill,
+                {
+                  backgroundColor: colors.muted,
+                  borderColor: colors.border,
+                },
+              ]}
+            >
+              <View
+                style={[styles.statusDot, { backgroundColor: statusColor }]}
+              />
+              <Text style={[styles.statusLabel, { color: statusColor }]}>
+                {STATUS_LABEL[status] ?? (status || "Unknown")}
+              </Text>
+            </View>
+            {updated ? (
+              <Text
+                style={[styles.metaText, { color: colors.mutedForeground }]}
+              >
+                Updated {formatRelative(updated)}
+              </Text>
+            ) : null}
+          </View>
+        )}
       </View>
-      <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
+      {disabled ? null : (
+        <Feather
+          name="chevron-right"
+          size={18}
+          color={colors.mutedForeground}
+        />
+      )}
     </Pressable>
   );
 }

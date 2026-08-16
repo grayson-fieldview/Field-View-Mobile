@@ -1502,8 +1502,15 @@ export default function CaptureScreen() {
         sessionPhotos={wtPhotosRef.current}
         onDismiss={wtReset}
         onExit={() => {
+          // Forward to the project's Reports tab (the freshly-created
+          // "generating" report row lives there). replace, not push —
+          // Back from Reports should not return to the camera. wtReset
+          // AFTER dispatching navigation.
+          router.replace({
+            pathname: "/project/[id]",
+            params: { id: String(project.id), tab: "reports" },
+          });
           wtReset();
-          router.back();
         }}
       />
     </View>

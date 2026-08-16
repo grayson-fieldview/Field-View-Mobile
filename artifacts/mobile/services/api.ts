@@ -1054,7 +1054,15 @@ export interface RegisterProjectFileItem {
 // from existing report_templates rows. All field names are camelCase
 // to match the wire format.
 
-export type ReportStatus = "draft" | "submitted" | "approved";
+export type ReportStatus =
+  | "draft"
+  | "submitted"
+  | "approved"
+  // Walkthrough pipeline (2026-08): the server now creates the report
+  // row up-front, so a report can be observed mid-generation or after
+  // a failed generation.
+  | "generating"
+  | "failed";
 
 export interface BackendReport {
   id: number | string;
@@ -2034,10 +2042,13 @@ export const api = {
       photoOffsets?: Array<{ mediaId: number; offsetMs: number }>;
     },
   ) =>
-    apiFetch<{ status: string }>(`/api/projects/${projectId}/walkthrough`, {
-      method: "POST",
-      json: body,
-    }),
+    apiFetch<{ status: string; reportId: number | string }>(
+      `/api/projects/${projectId}/walkthrough`,
+      {
+        method: "POST",
+        json: body,
+      },
+    ),
 
   /**
    * Generate a checklist from a free-text description (typed or a
