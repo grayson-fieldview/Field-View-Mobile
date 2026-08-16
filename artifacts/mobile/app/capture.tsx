@@ -62,6 +62,7 @@ import {
   startRecording as startWtRecording,
   stopRecording as stopWtRecording,
 } from "@/services/voiceRecording";
+import { isModuleUnavailableError } from "@/services/voiceRecordingErrors";
 import {
   WalkthroughDoneSheet,
   type WalkthroughSessionPhoto,
@@ -805,9 +806,14 @@ export default function CaptureScreen() {
     let granted: boolean;
     try {
       granted = await requestWtMicPermission();
-    } catch {
-      // Dynamic import threw — this dev client predates expo-audio.
-      bail("Walkthrough needs an app update to record audio.");
+    } catch (e) {
+      // Dynamic import / native module failure — degrade inline, same
+      // messaging as VoiceNoteButton. Never rethrow (crash in prod).
+      bail(
+        isModuleUnavailableError(e)
+          ? "Voice notes need an app update."
+          : "Couldn't start recording. Try again.",
+      );
       return;
     }
     if (disposed()) {
@@ -824,11 +830,13 @@ export default function CaptureScreen() {
       await startWtRecording();
     } catch (e) {
       // startRecording cleans up after itself on failure. No global
-      // cancel here — this attempt never owned the recorder.
+      // cancelRecording() here — this attempt never obtained the
+      // recorder, and a global cancel could kill a recording owned by
+      // someone else (fixed earlier; must not regress).
       bail(
-        e instanceof Error && e.message
-          ? e.message
-          : "Couldn't start recording.",
+        isModuleUnavailableError(e)
+          ? "Voice notes need an app update."
+          : "Couldn't start recording. Try again.",
       );
       return;
     }

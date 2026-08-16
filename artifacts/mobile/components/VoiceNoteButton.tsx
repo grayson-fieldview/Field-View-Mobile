@@ -10,6 +10,7 @@ import {
   startRecording,
   stopRecording,
 } from "@/services/voiceRecording";
+import { isModuleUnavailableError } from "@/services/voiceRecordingErrors";
 
 /**
  * Mic → record → transcribe → hand the text to the parent. Mobile
@@ -41,15 +42,6 @@ interface Props {
 // tap can never admit a concurrent start, and it counts as busy so the
 // parent disables Generate/close-adjacent actions during the window.
 type Phase = "idle" | "starting" | "recording" | "transcribing";
-
-/** Dev client predates expo-audio → dynamic import / native module
- *  failures. Heuristic match; both start paths route through this. */
-function isModuleUnavailableError(e: unknown): boolean {
-  const msg = e instanceof Error ? e.message : String(e);
-  return /cannot find module|requiring unknown module|native module|expo-audio|turbomodule|nativemodule/i.test(
-    msg,
-  );
-}
 
 export function VoiceNoteButton({ onTranscript, onBusyChange, disabled }: Props) {
   const colors = useColors();
