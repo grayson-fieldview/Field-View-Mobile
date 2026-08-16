@@ -1,5 +1,6 @@
 import { Feather } from "@expo/vector-icons";
 import { reloadAppAsync } from "expo";
+import * as Clipboard from "expo-clipboard";
 import React, { useState } from "react";
 import {
   Modal,
@@ -13,6 +14,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useColors } from "@/hooks/useColors";
+import { formatBuildInfo, getBuildInfo } from "@/lib/buildInfo";
 
 export type ErrorFallbackProps = {
   error: Error;
@@ -40,6 +42,35 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
       details += `Stack Trace:\n${error.stack}`;
     }
     return details;
+  };
+
+  // Single plain-text blob for the "Copy details" button: build info,
+  // then message, then stack. componentStack is NOT available here —
+  // the boundary passes only { error, resetError } to its fallback —
+  // so it is named explicitly rather than silently omitted.
+  const buildCopyBlob = (): string =>
+    [
+      "—— Build ——",
+      formatBuildInfo(),
+      "",
+      "—— Error ——",
+      error.message,
+      "",
+      "—— Stack ——",
+      error.stack ?? "unavailable",
+      "",
+      "—— Component stack ——",
+      "unavailable (not passed to ErrorFallback)",
+    ].join("\n");
+
+  const [copied, setCopied] = useState(false);
+  const copyDetails = async () => {
+    try {
+      await Clipboard.setStringAsync(buildCopyBlob());
+      setCopied(true);
+    } catch {
+      /* never throw from the fallback */
+    }
   };
 
   const monoFont = Platform.select({
@@ -173,6 +204,46 @@ export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
                 ]}
                 showsVerticalScrollIndicator
               >
+                {/* Build identity above the stack — which bundle is this
+                  * device actually running? (TEMP diagnostic surface.) */}
+                <View
+                  style={[
+                    styles.errorContainer,
+                    { backgroundColor: colors.card, marginBottom: 12 },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.errorText,
+                      { color: colors.foreground, fontFamily: monoFont },
+                    ]}
+                    selectable
+                  >
+                    {formatBuildInfo(getBuildInfo())}
+                  </Text>
+                </View>
+                <Pressable
+                  onPress={() => void copyDetails()}
+                  accessibilityRole="button"
+                  accessibilityLabel="Copy details"
+                  style={({ pressed }) => [
+                    styles.copyButton,
+                    {
+                      backgroundColor: colors.card,
+                      borderColor: colors.border,
+                      opacity: pressed ? 0.8 : 1,
+                    },
+                  ]}
+                >
+                  <Feather
+                    name={copied ? "check" : "copy"}
+                    size={16}
+                    color={colors.foreground}
+                  />
+                  <Text style={[styles.copyLabel, { color: colors.foreground }]}>
+                    {copied ? "Copied" : "Copy details"}
+                  </Text>
+                </Pressable>
                 <View
                   style={[
                     styles.errorContainer,
@@ -319,5 +390,19 @@ const styles = StyleSheet.create({
   devHint: {
     fontSize: 12,
     lineHeight: 16,
+  },
+  copyButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingVertical: 10,
+    marginBottom: 12,
+  },
+  copyLabel: {
+    fontSize: 14,
+    fontWeight: "600",
   },
 });

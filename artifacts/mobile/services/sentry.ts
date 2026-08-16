@@ -4,6 +4,11 @@ import { setUnclassifiedStrokeIdReporter } from "./annotations";
 
 const DSN = process.env.EXPO_PUBLIC_SENTRY_DSN;
 
+/** Whether the DSN was inlined into this bundle (never the value itself). */
+export const sentryDsnPresent = Boolean(DSN);
+/** True only after Sentry.init() actually ran (i.e. past the DSN gate). */
+export let sentryEnabled = false;
+
 export function initSentry() {
   // Measure whether the stroke-width heuristic's catch-all (ids matching
   // no known shape) is load-bearing — see services/annotations.ts. Wired
@@ -39,6 +44,7 @@ export function initSentry() {
     // footprint minimal — errors, native crashes, breadcrumbs only.
     sendDefaultPii: false,
   });
+  sentryEnabled = true;
   console.log("[sentry] initialized");
 }
 
