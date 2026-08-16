@@ -2435,6 +2435,25 @@ export const api = {
   listReportTemplates: () =>
     apiFetch<BackendReportTemplate[]>("/api/report-templates"),
 
+  // ----- Report public share tokens -----
+  /**
+   * Mint (or fetch the existing) public share token for a report.
+   * The recipient-facing URL is
+   * `https://app.field-view.com/report/<token>`. Server is idempotent
+   * like the project variant; 409 = report is still generating.
+   */
+  shareReport: (reportId: string | number) =>
+    apiFetch<BackendShareTokenResponse>(`/api/reports/${reportId}/share`, {
+      method: "POST",
+    }),
+
+  /** Revoke the report's current public share token. Server returns 204. */
+  unshareReport: (reportId: string | number) =>
+    apiFetch<void>(`/api/reports/${reportId}/share`, {
+      method: "DELETE",
+      allowEmptyBody: true,
+    }),
+
   /**
    * Generate a server-rendered PDF and return it as a Blob.
    *

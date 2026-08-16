@@ -8,6 +8,7 @@ import {
   Platform,
   Pressable,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -159,6 +160,48 @@ export default function ReportDetailScreen() {
     }
   };
 
+  // ----- Copy share link (kebab) -----
+  const [sharingReport, setSharingReport] = useState(false);
+  const handleShareReport = async () => {
+    if (!report || sharingReport) return;
+    // Reuse an existing token; only mint when the report has none.
+    let token =
+      typeof report.shareToken === "string" && report.shareToken.length > 0
+        ? report.shareToken
+        : null;
+    if (!token) {
+      setSharingReport(true);
+      try {
+        const res = await api.shareReport(report.id);
+        token = res.shareToken;
+      } catch (e) {
+        setSharingReport(false);
+        if (e instanceof ApiError && e.status === 401) return;
+        if (e instanceof ApiError && e.status === 409) {
+          showToast(
+            "This report is still generating — try sharing once it's ready.",
+          );
+          return;
+        }
+        showToast(
+          e instanceof Error ? e.message : "Couldn't create share link.",
+        );
+        return;
+      }
+      setSharingReport(false);
+    }
+    // Hard-coded public web origin, same reasoning as project shares:
+    // recipients open this in Safari, so it must not follow the API base.
+    const shareUrl = `https://app.field-view.com/report/${token}`;
+    showToast("Share link ready");
+    try {
+      // url-only — url+message double-renders link previews in iMessage.
+      await Share.share({ url: shareUrl });
+    } catch {
+      /* user cancelled */
+    }
+  };
+
   // ----- Delete report (kebab) -----
   const handleDeleteReport = () => {
     if (!report) return;
@@ -190,23 +233,31 @@ export default function ReportDetailScreen() {
   const openKebab = () => {
     if (!report) return;
     const pdfLabel = generatingPdf ? "Generating PDF…" : "Generate & share PDF";
+    const shareLabel = sharingReport
+      ? "Creating share link…"
+      : "Copy share link";
     if (Platform.OS === "ios") {
+      const disabled: number[] = [];
+      if (generatingPdf) disabled.push(1);
+      if (sharingReport) disabled.push(2);
       ActionSheetIOS.showActionSheetWithOptions(
         {
-          options: ["Cancel", pdfLabel, "Delete report"],
+          options: ["Cancel", pdfLabel, shareLabel, "Delete report"],
           cancelButtonIndex: 0,
-          destructiveButtonIndex: 2,
-          disabledButtonIndices: generatingPdf ? [1] : [],
+          destructiveButtonIndex: 3,
+          disabledButtonIndices: disabled,
         },
         (idx) => {
           if (idx === 1) void handleGeneratePdf();
-          else if (idx === 2) handleDeleteReport();
+          else if (idx === 2) void handleShareReport();
+          else if (idx === 3) handleDeleteReport();
         },
       );
     } else {
       Alert.alert("Report", undefined, [
         { text: "Cancel", style: "cancel" },
         { text: pdfLabel, onPress: () => void handleGeneratePdf() },
+        { text: shareLabel, onPress: () => void handleShareReport() },
         {
           text: "Delete report",
           style: "destructive",
