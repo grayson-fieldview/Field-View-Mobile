@@ -355,6 +355,20 @@ export default function CaptureScreen() {
     return () => clearTimeout(t);
   }, [statusMsg]);
 
+  // ALWAYS cancel a live narration recording on unmount. The token
+  // bump also disposes any in-flight wtStart, which cancels its own
+  // recorder if it completes after this ran.
+  useEffect(() => {
+    return () => {
+      wtRunIdRef.current += 1;
+      wtClearTimers();
+      if (wtStatusRef.current === "recording") {
+        void cancelWtRecording().catch(() => {});
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Pinch-to-zoom on the preview frame. The DETECTOR wraps the existing
   // `previewFrame` — no new overlay view is layered over CameraView (see
   // the fly-to-tray hazard note above: overlaying the CameraView's native
@@ -362,9 +376,12 @@ export default function CaptureScreen() {
   // can't slam 0→1; tune on device if it feels wrong. Enabled only once
   // the camera is up (mode is always "photo" | "video" here).
   //
-  // These two hooks MUST stay above the `!project` / `!permission` early
-  // returns below — `permission` flips from null after mount, so hooks
-  // declared after those returns would change hook order and crash.
+  // Every hook in CaptureScreen MUST be declared above the early returns
+  // below. `permission` is null on first render and flips after mount, so
+  // a hook declared after those returns changes the hook count between
+  // renders and throws "Rendered more hooks than during the previous
+  // render" — which unmounts the camera and shows a white screen. This
+  // shipped in 1.4.0 (build 63). Add new hooks above this line.
   const pinchGesture = React.useMemo(
     () =>
       Gesture.Pinch()
@@ -908,20 +925,6 @@ export default function CaptureScreen() {
       if (!seen && modeRef.current === "walkthru") setWtIntroVisible(true);
     });
   };
-
-  // ALWAYS cancel a live narration recording on unmount. The token
-  // bump also disposes any in-flight wtStart, which cancels its own
-  // recorder if it completes after this ran.
-  useEffect(() => {
-    return () => {
-      wtRunIdRef.current += 1;
-      wtClearTimers();
-      if (wtStatusRef.current === "recording") {
-        void cancelWtRecording().catch(() => {});
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // Differentiate tap vs. hold for the shutter.
   const onShutterPressIn = () => {
