@@ -13,6 +13,7 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  Dimensions,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -21,7 +22,6 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  useWindowDimensions,
   View,
 } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
@@ -1724,7 +1724,12 @@ function TraySheet({
   primary: string;
 }) {
   const insets = useSafeAreaInsets();
-  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  // Static read: portrait-locked app, so window size can't change while
+  // the sheet is open. Dimensions.get registers NO listener → no unmount
+  // cleanup (useWindowDimensions' subscription.remove() was the last
+  // remaining hook cleanup in TraySheet's own frame).
+  const { width: windowWidth, height: windowHeight } =
+    Dimensions.get("window");
   // Explicit tile size: percentage widths ("31.5%") don't reliably
   // resolve inside a ScrollView content container in a Modal on device
   // (tiles collapsed to zero width → blank grid). 3 columns:
