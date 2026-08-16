@@ -648,6 +648,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
             fileSize,
             latitude: input.latitude,
             longitude: input.longitude,
+            takenAt: input.takenAt,
             checklistItemId,
             taskId,
           });
@@ -696,6 +697,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
                 fileSize: i.fileSize,
                 latitude: i.latitude,
                 longitude: i.longitude,
+                takenAt: i.takenAt,
                 checklistItemId: i.checklistItemId,
                 taskId: i.taskId,
               });

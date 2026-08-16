@@ -38,6 +38,15 @@ export interface QueuedUpload {
   latitude?: number;
   longitude?: number;
   /**
+   * Capture time, strict ISO 8601 (new Date().toISOString() at capture).
+   * Persists in AsyncStorage with the rest of the item — a photo taken
+   * offline and uploaded days later must still carry its original
+   * capture time. Optional: items queued before this field existed (or
+   * paths that don't stamp it) upload without it and the server stores
+   * null. Passed through to createMedia UNCHANGED — never reformat.
+   */
+  takenAt?: string;
+  /**
    * Optional checklist-item attach target. When set, the post-upload tagger
    * (see processItem) calls api.attachPhotoToItem(checklistItemId, mediaId)
    * after the Media row is created. Errors there are logged but do not fail
@@ -694,6 +703,9 @@ async function processItem(item: QueuedUpload): Promise<void> {
         mimeType: item.mimeType,
         latitude: item.latitude,
         longitude: item.longitude,
+        // Only include when present — the server accepts the field's
+        // absence; null / "" must never be sent.
+        ...(item.takenAt ? { takenAt: item.takenAt } : {}),
       },
     ]);
     const created = createdArr[0];

@@ -39,7 +39,9 @@ export function mapBackendMedia(m: BackendMedia): Photo {
     remoteUrl: m.url,
     thumbUrl: m.thumbUrl ?? undefined,
     isVideo: typeof m.mimeType === "string" && m.mimeType.startsWith("video/"),
-    takenAt: m.createdAt,
+    // Capture time when the client reported one; upload time otherwise
+    // (pre-takenAt rows and rejected values are null server-side).
+    takenAt: m.takenAt ?? m.createdAt,
     latitude: m.latitude ?? undefined,
     longitude: m.longitude ?? undefined,
     note: m.caption ?? undefined,

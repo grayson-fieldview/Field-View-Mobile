@@ -766,6 +766,9 @@ export interface BackendMedia {
    * string "UNCLEAR" — renderers must never display that value.
    */
   aiCaption?: string | null;
+  /** Client-reported capture time; null when never sent or rejected
+   *  server-side. Fall back to createdAt when absent. */
+  takenAt?: string | null;
   latitude?: number | null;
   longitude?: number | null;
   tags?: string[] | null;
@@ -1168,6 +1171,13 @@ export interface CreateMediaFile {
   mimeType: string;
   latitude?: number;
   longitude?: number;
+  /**
+   * Capture time, strict ISO 8601 datetime (the server regex rejects
+   * bare dates / locale formats). Omit entirely when unknown — never
+   * send null or "". Malformed/out-of-range values are stored as null
+   * server-side and never fail the upload.
+   */
+  takenAt?: string;
 }
 
 export type CreateMediaResponse = BackendMedia;
