@@ -268,6 +268,121 @@ export default function PhotoViewerScreen() {
     if (currentMediaId !== undefined) void loadComments(currentMediaId);
   }, [currentMediaId, loadComments]);
 
+  // ----- Per-entry translation (comments + AI caption) -----
+  // Keys: String(comment.id) for comments, the literal "ai" for the AI
+  // caption entry. The "ai" key is SHARED across photos (the caption is
+  // per-photo but the key isn't), so every async path is generation-
+  // guarded: a late response for the previous photo must never land on
+  // the current one.
+  const [translations, setTranslations] = useState<Record<string, string>>({});
+  const [showingTranslation, setShowingTranslation] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [translatingKey, setTranslatingKey] = useState<string | null>(null);
+  // Holds the KEY that errored (inline "Couldn't translate." under it).
+  const [translateError, setTranslateError] = useState<string | null>(null);
+  // Bumped whenever the current photo changes; in-flight requests
+  // capture it before awaiting and discard on mismatch — for the
+  // result, the error, AND the loading-state clear.
+  const translateGen = useRef(0);
+
+  useEffect(() => {
+    // Swiped to a different photo: invalidate in-flight translations
+    // and drop all four state values (cache included — comment ids
+    // are per-photo anyway, and "ai" must not leak across photos).
+    translateGen.current++;
+    setTranslations({});
+    setShowingTranslation(new Set());
+    setTranslatingKey(null);
+    setTranslateError(null);
+  }, [currentPhotoId]);
+
+  // All state is keyed by a PHOTO-SCOPED key. The reset effect above
+  // runs only after the first render that follows a swipe, so bare
+  // keys (the shared "ai" literal especially) would let photo A's
+  // cached translation render under photo B for one frame — and a
+  // late response could repopulate the cache in that window. Scoping
+  // the key by photo id makes stale entries unmatchable instead of
+  // merely eventually-cleared; the generation guard + reset stay as
+  // defense in depth.
+  const scopedKey = useCallback(
+    (key: string) => `${currentPhotoId ?? ""}:${key}`,
+    [currentPhotoId],
+  );
+
+  const requestTranslation = async (rawKey: string, text: string) => {
+    const key = scopedKey(rawKey);
+    if (translatingKey !== null) return; // one in flight at a time
+    const cached = translations[key];
+    if (cached !== undefined) {
+      // Toggling back to the translation — cache hit, NO repeat call.
+      setShowingTranslation((prev) => new Set(prev).add(key));
+      return;
+    }
+    const gen = translateGen.current;
+    setTranslatingKey(key);
+    setTranslateError(null);
+    try {
+      const { translation } = await api.translateText(text);
+      if (translateGen.current !== gen) return;
+      setTranslations((prev) => ({ ...prev, [key]: translation }));
+      setShowingTranslation((prev) => new Set(prev).add(key));
+    } catch {
+      if (translateGen.current !== gen) return;
+      setTranslateError(key);
+    } finally {
+      // Only clear the spinner if we're still the current generation —
+      // the photo-change effect already reset it otherwise.
+      if (translateGen.current === gen) setTranslatingKey(null);
+    }
+  };
+
+  const showOriginal = (rawKey: string) => {
+    const key = scopedKey(rawKey);
+    setShowingTranslation((prev) => {
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+  };
+
+  // Comment/caption body + its translate controls. Translated-and-
+  // showing renders the translation IN PLACE of the original.
+  // `rawKey` is the spec key ("ai" / String(comment.id)); lookups all
+  // go through the photo-scoped form.
+  const renderTranslatableBody = (rawKey: string, text: string) => {
+    const key = scopedKey(rawKey);
+    const translated = translations[key];
+    const showing = translated !== undefined && showingTranslation.has(key);
+    return (
+      <>
+        <Text style={styles.commentText}>{showing ? translated : text}</Text>
+        {translatingKey === key ? (
+          <Text style={styles.translateBtn}>Translating...</Text>
+        ) : showing ? (
+          <Text
+            style={styles.translateBtn}
+            onPress={() => showOriginal(key)}
+            accessibilityRole="button"
+          >
+            Show original
+          </Text>
+        ) : (
+          <Text
+            style={styles.translateBtn}
+            onPress={() => void requestTranslation(key, text)}
+            accessibilityRole="button"
+          >
+            Translate
+          </Text>
+        )}
+        {translateError === key ? (
+          <Text style={styles.translateErrorTxt}>Couldn't translate.</Text>
+        ) : null}
+      </>
+    );
+  };
+
   const onPostComment = async () => {
     if (currentMediaId === undefined) return;
     const content = commentDraft.trim();
@@ -701,6 +816,21 @@ export default function PhotoViewerScreen() {
             {currentMediaId !== undefined ? (
               <View style={styles.commentsBlock}>
                 <Text style={styles.commentsHeader}>Comments</Text>
+                {/* AI caption — pinned above human comments, matching
+                    web. "UNCLEAR" is an internal sentinel and must
+                    never display. No timestamp, no edit/delete. */}
+                {currentPhoto.aiCaption &&
+                currentPhoto.aiCaption !== "UNCLEAR" ? (
+                  <View style={styles.commentItem}>
+                    <View style={styles.aiAuthorRow}>
+                      <View style={styles.aiAvatar}>
+                        <Feather name="zap" size={10} color="#fff" />
+                      </View>
+                      <Text style={styles.commentAuthor}>Field View AI</Text>
+                    </View>
+                    {renderTranslatableBody("ai", currentPhoto.aiCaption)}
+                  </View>
+                ) : null}
                 {comments === null ? (
                   <ActivityIndicator
                     size="small"
@@ -724,7 +854,7 @@ export default function PhotoViewerScreen() {
                           {formatCommentDate(c.createdAt)}
                         </Text>
                       </View>
-                      <Text style={styles.commentText}>{c.content}</Text>
+                      {renderTranslatableBody(String(c.id), c.content)}
                     </View>
                   ))
                 )}
@@ -967,6 +1097,32 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontFamily: "Inter_400Regular",
     fontSize: 13,
+    marginTop: 2,
+  },
+  aiAuthorRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  aiAvatar: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "#f09004",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  translateBtn: {
+    color: "rgba(255,255,255,0.55)",
+    fontFamily: "Inter_500Medium",
+    fontSize: 11,
+    marginTop: 4,
+    alignSelf: "flex-start",
+  },
+  translateErrorTxt: {
+    color: "#ff6b6b",
+    fontFamily: "Inter_400Regular",
+    fontSize: 11,
     marginTop: 2,
   },
   commentInputRow: {

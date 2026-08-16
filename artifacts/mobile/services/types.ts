@@ -278,6 +278,13 @@ export interface Photo {
   longitude?: number;
   accuracy?: number;
   note?: string;
+  /**
+   * AI-generated caption from the server media row (media.aiCaption).
+   * NOT the same as `note` (user-authored media.caption) — never
+   * collapse the two. May hold the internal sentinel "UNCLEAR", which
+   * must never be displayed.
+   */
+  aiCaption?: string;
   uploaded: boolean;
   /** Links a local photo to its background-upload queue item until reconciled. */
   uploadQueueId?: string;

@@ -43,6 +43,9 @@ export function mapBackendMedia(m: BackendMedia): Photo {
     latitude: m.latitude ?? undefined,
     longitude: m.longitude ?? undefined,
     note: m.caption ?? undefined,
+    // Deliberately NOT folded into `note` — different field, different
+    // meaning (AI vision caption vs user-authored caption).
+    aiCaption: m.aiCaption ?? undefined,
     tags: m.tags ?? undefined,
     uploaded: true,
     remote: true,

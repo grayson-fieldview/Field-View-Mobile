@@ -760,6 +760,12 @@ export interface BackendMedia {
    *  rows — always render `thumbUrl ?? url` in grids. */
   thumbUrl?: string | null;
   caption?: string | null;
+  /**
+   * AI-generated caption (server-side vision pass). DISTINCT from
+   * `caption` (the user-authored one). May be the internal sentinel
+   * string "UNCLEAR" — renderers must never display that value.
+   */
+  aiCaption?: string | null;
   latitude?: number | null;
   longitude?: number | null;
   tags?: string[] | null;
@@ -2071,6 +2077,17 @@ export const api = {
     apiFetch<BackendCommentResponse>(`/api/media/${mediaId}/comments`, {
       method: "POST",
       json: { content },
+    }),
+
+  /**
+   * Translate arbitrary text. Server auto-targets the language
+   * (English → Spanish, anything else → English) — the client never
+   * picks one.
+   */
+  translateText: (text: string) =>
+    apiFetch<{ translation: string }>(`/api/translate`, {
+      method: "POST",
+      json: { text },
     }),
 
   // ----- Media annotations (cross-platform sync, 2026-06) -----
