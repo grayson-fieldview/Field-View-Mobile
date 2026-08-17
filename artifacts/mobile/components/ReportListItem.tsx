@@ -17,12 +17,6 @@ interface Props {
   onPress: () => void;
 }
 
-// TEMP (remove before commit): one-shot runtime check that the LIST
-// endpoint actually returns shareToken on rows — the Shared badge
-// depends on it. Run the app, open a project's Reports tab, read the
-// Metro log line "[report-row keys]".
-let loggedRowKeys = false;
-
 /**
  * Compact card row used inside the project Reports tab.
  *
@@ -42,15 +36,6 @@ export function ReportListItem({ report, onPress }: Props) {
       : badge.tone === "destructive"
         ? colors.destructive
         : colors.mutedForeground;
-  if (__DEV__ && !loggedRowKeys) {
-    loggedRowKeys = true;
-    console.log(
-      "[report-row keys]",
-      Object.keys(report),
-      "shareToken:",
-      report.shareToken,
-    );
-  }
   const title =
     typeof report.title === "string" && report.title.length > 0
       ? report.title
