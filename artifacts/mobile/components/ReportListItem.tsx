@@ -9,6 +9,7 @@ import {
 } from "react-native";
 
 import { useColors } from "@/hooks/useColors";
+import { reportBadge } from "@/lib/reportBadge";
 import type { BackendReport } from "@/services/api";
 
 interface Props {
@@ -16,13 +17,11 @@ interface Props {
   onPress: () => void;
 }
 
-const STATUS_LABEL: Record<string, string> = {
-  draft: "Draft",
-  submitted: "Submitted",
-  approved: "Approved",
-  generating: "Generating",
-  failed: "Failed",
-};
+// TEMP (remove before commit): one-shot runtime check that the LIST
+// endpoint actually returns shareToken on rows — the Shared badge
+// depends on it. Run the app, open a project's Reports tab, read the
+// Metro log line "[report-row keys]".
+let loggedRowKeys = false;
 
 /**
  * Compact card row used inside the project Reports tab.
@@ -36,12 +35,22 @@ export function ReportListItem({ report, onPress }: Props) {
   // unexpected status/title/date — render a neutral fallback, never
   // throw (this row crashed the project screen post-walkthrough).
   const status = typeof report.status === "string" ? report.status : "";
+  const badge = reportBadge(report);
   const statusColor =
-    status === "approved"
+    badge.tone === "success"
       ? colors.success
-      : status === "submitted"
-        ? colors.primary
+      : badge.tone === "destructive"
+        ? colors.destructive
         : colors.mutedForeground;
+  if (__DEV__ && !loggedRowKeys) {
+    loggedRowKeys = true;
+    console.log(
+      "[report-row keys]",
+      Object.keys(report),
+      "shareToken:",
+      report.shareToken,
+    );
+  }
   const title =
     typeof report.title === "string" && report.title.length > 0
       ? report.title
@@ -104,7 +113,7 @@ export function ReportListItem({ report, onPress }: Props) {
                 style={[styles.statusDot, { backgroundColor: statusColor }]}
               />
               <Text style={[styles.statusLabel, { color: statusColor }]}>
-                {STATUS_LABEL[status] ?? (status || "Unknown")}
+                {badge.label}
               </Text>
             </View>
             {updated ? (

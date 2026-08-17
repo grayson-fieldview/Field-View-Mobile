@@ -23,16 +23,12 @@ import { ReportSectionCard } from "@/components/ReportSectionCard";
 import { useToast } from "@/contexts/ToastContext";
 import { useColors } from "@/hooks/useColors";
 import { REPORT_PHOTO_CAP, useReportDetail } from "@/hooks/useReportDetail";
+import { reportBadge } from "@/lib/reportBadge";
 import { ApiError, api } from "@/services/api";
 import { downloadAndSharePdf } from "@/services/reportPdf";
 
 const TITLE_DEBOUNCE_MS = 500;
 
-const STATUS_LABEL: Record<string, string> = {
-  draft: "Draft",
-  submitted: "Submitted",
-  approved: "Approved",
-};
 
 /**
  * Mobile Reports R1 detail screen.
@@ -260,12 +256,14 @@ export default function ReportDetailScreen() {
   };
 
   const headerTitle = report?.title ?? "Report";
-  const status = report?.status ?? "draft";
+  // Shared badge rule (lib/reportBadge) — handles generating/failed too,
+  // even though list rows currently block navigation for those states.
+  const badge = reportBadge(report ?? { status: "draft", shareToken: null });
   const statusColor =
-    status === "approved"
+    badge.tone === "success"
       ? colors.success
-      : status === "submitted"
-        ? colors.primary
+      : badge.tone === "destructive"
+        ? colors.destructive
         : colors.mutedForeground;
 
   return (
@@ -375,7 +373,7 @@ export default function ReportDetailScreen() {
                   style={[styles.statusDot, { backgroundColor: statusColor }]}
                 />
                 <Text style={[styles.statusLabel, { color: statusColor }]}>
-                  {STATUS_LABEL[status] ?? status}
+                  {badge.label}
                 </Text>
               </View>
               <Text
