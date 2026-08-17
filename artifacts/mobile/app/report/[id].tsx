@@ -282,6 +282,25 @@ export default function ReportDetailScreen() {
         options={{
           title: headerTitle,
           headerBackTitle: "Back",
+          // Explicit headerLeft fully replaces the system back button —
+          // guarantees the back action works even if the default
+          // chevron's hit region gets squeezed by a long title +
+          // headerRight kebab on iOS. (Same fix as checklist/[id].)
+          headerLeft: () => (
+            <Pressable
+              onPress={() => router.back()}
+              hitSlop={16}
+              accessibilityRole="button"
+              accessibilityLabel="Back"
+              style={{ paddingHorizontal: 8 }}
+            >
+              <Feather
+                name="chevron-left"
+                size={28}
+                color={colors.foreground}
+              />
+            </Pressable>
+          ),
           headerRight: () =>
             report ? (
               <Pressable onPress={openKebab} hitSlop={10}>

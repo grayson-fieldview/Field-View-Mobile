@@ -8,10 +8,16 @@ import {
   Inter_700Bold,
   useFonts,
 } from "@expo-google-fonts/inter";
+import {
+  DarkTheme,
+  DefaultTheme,
+  ThemeProvider,
+} from "@react-navigation/native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useColorScheme } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -385,8 +391,16 @@ function NotificationDeepLinkHandler() {
 }
 
 function RootLayoutNav() {
+  // Navigation theme: without a ThemeProvider, expo-router applies the
+  // light DefaultTheme unconditionally — native headers render white
+  // (bg + title + chevron colors) even in dark mode while screen
+  // bodies follow useColors(). Select the theme from the same source
+  // useColors() reads (system scheme; app.json userInterfaceStyle is
+  // "automatic") so headers track the bodies.
+  const scheme = useColorScheme();
   return (
-    <Stack screenOptions={{ headerBackTitle: "Back" }}>
+    <ThemeProvider value={scheme === "dark" ? DarkTheme : DefaultTheme}>
+      <Stack screenOptions={{ headerBackTitle: "Back" }}>
       <Stack.Screen name="(auth)" options={{ headerShown: false }} />
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen
@@ -413,7 +427,8 @@ function RootLayoutNav() {
         name="capture"
         options={{ headerShown: false, presentation: "fullScreenModal" }}
       />
-    </Stack>
+      </Stack>
+    </ThemeProvider>
   );
 }
 

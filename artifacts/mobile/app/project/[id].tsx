@@ -185,11 +185,6 @@ export default function ProjectDetailScreen() {
   // case where the checklist detail screen deleted the current checklist
   // via the header kebab and called router.back(). Without this we'd
   // show a stale row. Cheap (one GET) so we don't worry about debounce.
-  useFocusEffect(
-    useCallback(() => {
-      void refreshChecklists();
-    }, [refreshChecklists]),
-  );
   // Server-backed reports for this project (Mobile Reports R1).
   // Same pattern as checklists: hook owns its loading/error state,
   // refetches on project id change, and exposes optimistic create +
@@ -201,6 +196,14 @@ export default function ProjectDetailScreen() {
     refresh: refreshReports,
     createReport,
   } = useProjectReports(id);
+  useFocusEffect(
+    useCallback(() => {
+      void refreshChecklists();
+      // Reports too: a "generating" walkthrough row flips to done on the
+      // server without any push to this list, so re-fetch on focus.
+      void refreshReports();
+    }, [refreshChecklists, refreshReports]),
+  );
   // Read-only project files (uploads are web-only for now). Same hook
   // pattern as reports: fetches on project id change.
   const {
