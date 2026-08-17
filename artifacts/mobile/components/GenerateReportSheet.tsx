@@ -3,7 +3,9 @@ import { Image } from "expo-image";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -153,7 +155,11 @@ export function GenerateReportSheet({
       animationType="slide"
       onRequestClose={generating ? undefined : onClose}
     >
-      <View
+      {/* Same keyboard pattern as ApplyReportTemplateModal: KAV around
+          the whole sheet so the pinned footer (and the note input above
+          it) lift with the keyboard. */}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
         style={{
           flex: 1,
           backgroundColor: colors.background,
@@ -177,9 +183,10 @@ export function GenerateReportSheet({
         </View>
 
         <ScrollView
+          style={{ flex: 1 }}
           contentContainerStyle={{
             paddingHorizontal: 20,
-            paddingBottom: insets.bottom + 24,
+            paddingBottom: 24,
             gap: 16,
           }}
           scrollEnabled={!generating}
@@ -218,6 +225,27 @@ export function GenerateReportSheet({
               );
             })}
           </View>
+
+          <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>
+            Note (optional)
+          </Text>
+          <TextInput
+            value={note}
+            onChangeText={setNote}
+            placeholder="Anything the report should focus on…"
+            placeholderTextColor={colors.mutedForeground}
+            multiline
+            maxLength={MAX_NOTE_LENGTH}
+            editable={!generating}
+            style={[
+              styles.noteInput,
+              {
+                color: colors.foreground,
+                borderColor: colors.border,
+                backgroundColor: colors.card,
+              },
+            ]}
+          />
 
           <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>
             Photos · {selected.size}/{MAX_PHOTOS}
@@ -271,27 +299,20 @@ export function GenerateReportSheet({
             </View>
           )}
 
-          <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>
-            Note (optional)
-          </Text>
-          <TextInput
-            value={note}
-            onChangeText={setNote}
-            placeholder="Anything the report should focus on…"
-            placeholderTextColor={colors.mutedForeground}
-            multiline
-            maxLength={MAX_NOTE_LENGTH}
-            editable={!generating}
-            style={[
-              styles.noteInput,
-              {
-                color: colors.foreground,
-                borderColor: colors.border,
-                backgroundColor: colors.card,
-              },
-            ]}
-          />
+        </ScrollView>
 
+        {/* Pinned footer: error/progress + Generate stay reachable
+            without scrolling past the photo grid. */}
+        <View
+          style={[
+            styles.footer,
+            {
+              borderTopColor: colors.border,
+              backgroundColor: colors.background,
+              paddingBottom: insets.bottom + 12,
+            },
+          ]}
+        >
           {error ? (
             <Text style={[styles.error, { color: colors.destructive }]}>
               {error}
@@ -316,8 +337,8 @@ export function GenerateReportSheet({
             disabled={!canGenerate}
             onPress={() => void generate()}
           />
-        </ScrollView>
-      </View>
+        </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -373,6 +394,12 @@ const styles = StyleSheet.create({
     textAlignVertical: "top",
     fontSize: 15,
     fontFamily: "Inter_500Medium",
+  },
+  footer: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    gap: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
   },
   error: { fontSize: 13, fontFamily: "Inter_500Medium", lineHeight: 18 },
   progressRow: { flexDirection: "row", alignItems: "center", gap: 10 },
