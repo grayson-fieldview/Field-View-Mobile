@@ -1093,29 +1093,22 @@ export type ReportStatus =
 
 /**
  * Report types accepted by POST /api/projects/:id/reports/generate
- * (`reportType` is required). Mirror of the web app's shared
- * REPORT_TYPES constant.
- *
- * ⚠️ NEEDS CONFIRMATION: the shared REPORT_TYPES list lives in the web
- * repo, which is not accessible from here. The values below are a
- * placeholder set — confirm the exact wire values against the web
- * shared constant before shipping; a wrong value 400s at the server.
+ * (`reportType` is required). Exact mirror of the server source
+ * (server/lib/aiReports.ts) — any other value 400s.
  */
 export const REPORT_TYPES = [
-  "progress",
-  "inspection",
-  "punch_list",
+  "client_update",
   "daily_log",
+  "progress_recap",
 ] as const;
 
 export type ReportType = (typeof REPORT_TYPES)[number];
 
-/** Human labels for the REPORT_TYPES picker. */
+/** Human labels for the picker — match web's dialog exactly. */
 export const REPORT_TYPE_LABELS: Record<ReportType, string> = {
-  progress: "Progress",
-  inspection: "Inspection",
-  punch_list: "Punch list",
-  daily_log: "Daily log",
+  client_update: "Client Update",
+  daily_log: "Daily Log",
+  progress_recap: "Progress Recap",
 };
 
 export interface BackendReport {

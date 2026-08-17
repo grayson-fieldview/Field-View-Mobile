@@ -65,7 +65,8 @@ export function GenerateReportSheet({
 
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [note, setNote] = useState("");
-  const [reportType, setReportType] = useState<ReportType | null>(null);
+  // Defaults to client_update, matching web's dialog.
+  const [reportType, setReportType] = useState<ReportType>("client_update");
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -74,7 +75,7 @@ export function GenerateReportSheet({
     if (visible) {
       setSelected(new Set());
       setNote("");
-      setReportType(null);
+      setReportType("client_update");
       setGenerating(false);
       setError(null);
     }
@@ -104,11 +105,11 @@ export function GenerateReportSheet({
     });
   };
 
-  const canGenerate =
-    selected.size > 0 && reportType !== null && !generating;
+  // reportType always holds a valid value now (defaulted, non-null).
+  const canGenerate = selected.size > 0 && !generating;
 
   const generate = async () => {
-    if (!canGenerate || reportType === null) return;
+    if (!canGenerate) return;
     setGenerating(true);
     setError(null);
     try {
