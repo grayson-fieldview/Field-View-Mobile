@@ -18,6 +18,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "@/components/Button";
 import { EmptyState } from "@/components/EmptyState";
+import { VoiceNoteButton } from "@/components/VoiceNoteButton";
 import { useData } from "@/contexts/DataContext";
 import { useColors } from "@/hooks/useColors";
 import {
@@ -70,6 +71,7 @@ export function GenerateReportSheet({
   // Defaults to client_update, matching web's dialog.
   const [reportType, setReportType] = useState<ReportType>("client_update");
   const [generating, setGenerating] = useState(false);
+  const [voiceBusy, setVoiceBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Reset per open.
@@ -79,6 +81,7 @@ export function GenerateReportSheet({
       setNote("");
       setReportType("client_update");
       setGenerating(false);
+      setVoiceBusy(false);
       setError(null);
     }
   }, [visible]);
@@ -108,7 +111,9 @@ export function GenerateReportSheet({
   };
 
   // reportType always holds a valid value now (defaulted, non-null).
-  const canGenerate = selected.size > 0 && !generating;
+  // voiceBusy: a recording/transcription in flight must block submit —
+  // otherwise the note could be sent without the pending transcript.
+  const canGenerate = selected.size > 0 && !generating && !voiceBusy;
 
   const generate = async () => {
     if (!canGenerate) return;
@@ -153,7 +158,7 @@ export function GenerateReportSheet({
     <Modal
       visible={visible}
       animationType="slide"
-      onRequestClose={generating ? undefined : onClose}
+      onRequestClose={generating || voiceBusy ? undefined : onClose}
     >
       {/* Same keyboard pattern as ApplyReportTemplateModal: KAV around
           the whole sheet so the pinned footer (and the note input above
@@ -171,12 +176,12 @@ export function GenerateReportSheet({
             Generate report
           </Text>
           <Pressable
-            onPress={generating ? undefined : onClose}
+            onPress={generating || voiceBusy ? undefined : onClose}
             hitSlop={12}
-            disabled={generating}
+            disabled={generating || voiceBusy}
             accessibilityRole="button"
             accessibilityLabel="Close"
-            style={{ opacity: generating ? 0.35 : 1 }}
+            style={{ opacity: generating || voiceBusy ? 0.35 : 1 }}
           >
             <Feather name="x" size={22} color={colors.foreground} />
           </Pressable>
@@ -226,9 +231,21 @@ export function GenerateReportSheet({
             })}
           </View>
 
-          <Text style={[styles.sectionLabel, { color: colors.mutedForeground }]}>
-            Note (optional)
-          </Text>
+          <View style={styles.labelRow}>
+            <Text
+              style={[styles.sectionLabel, { color: colors.mutedForeground }]}
+            >
+              Note (optional)
+            </Text>
+            <VoiceNoteButton
+              disabled={generating}
+              onBusyChange={setVoiceBusy}
+              onTranscript={(text) =>
+                // APPEND with a space — never replace what's typed.
+                setNote((prev) => (prev ? `${prev} ${text}` : text))
+              }
+            />
+          </View>
           <TextInput
             value={note}
             onChangeText={setNote}
@@ -361,6 +378,11 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_600SemiBold",
     textTransform: "uppercase",
     letterSpacing: 0.6,
+  },
+  labelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
   },
   chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   chip: {
