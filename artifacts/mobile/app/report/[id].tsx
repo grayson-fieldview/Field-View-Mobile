@@ -233,31 +233,23 @@ export default function ReportDetailScreen() {
   const openKebab = () => {
     if (!report) return;
     const pdfLabel = generatingPdf ? "Generating PDF…" : "Generate & share PDF";
-    const shareLabel = sharingReport
-      ? "Creating share link…"
-      : "Copy share link";
     if (Platform.OS === "ios") {
-      const disabled: number[] = [];
-      if (generatingPdf) disabled.push(1);
-      if (sharingReport) disabled.push(2);
       ActionSheetIOS.showActionSheetWithOptions(
         {
-          options: ["Cancel", pdfLabel, shareLabel, "Delete report"],
+          options: ["Cancel", pdfLabel, "Delete report"],
           cancelButtonIndex: 0,
-          destructiveButtonIndex: 3,
-          disabledButtonIndices: disabled,
+          destructiveButtonIndex: 2,
+          disabledButtonIndices: generatingPdf ? [1] : [],
         },
         (idx) => {
           if (idx === 1) void handleGeneratePdf();
-          else if (idx === 2) void handleShareReport();
-          else if (idx === 3) handleDeleteReport();
+          else if (idx === 2) handleDeleteReport();
         },
       );
     } else {
       Alert.alert("Report", undefined, [
         { text: "Cancel", style: "cancel" },
         { text: pdfLabel, onPress: () => void handleGeneratePdf() },
-        { text: shareLabel, onPress: () => void handleShareReport() },
         {
           text: "Delete report",
           style: "destructive",
@@ -303,7 +295,26 @@ export default function ReportDetailScreen() {
           ),
           headerRight: () =>
             report ? (
-              <Pressable onPress={openKebab} hitSlop={10}>
+              // Explicit square bounds + flex centering: on iOS 26 the
+              // native bar wraps this custom view in a glass circle
+              // whose diameter exceeds the bare 22px glyph, and UIKit
+              // leading-aligns an undersized custom view inside it —
+              // the glyph rendered far LEFT of the circle. Sizing the
+              // Pressable to the full bar-button footprint makes the
+              // view's bounds match the circle, so centering is real,
+              // not a margin nudge.
+              <Pressable
+                onPress={openKebab}
+                hitSlop={10}
+                accessibilityRole="button"
+                accessibilityLabel="Report options"
+                style={{
+                  width: 36,
+                  height: 36,
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
                 <KebabIcon size={22} color={colors.foreground} />
               </Pressable>
             ) : null,
@@ -392,20 +403,38 @@ export default function ReportDetailScreen() {
                 Photo cap reached. Detach photos before adding more.
               </Text>
             ) : null}
-            <Button
-              title={generatingPdf ? "Generating…" : "Generate & share PDF"}
-              icon={
-                generatingPdf ? null : (
-                  <Feather
-                    name="share"
-                    size={14}
-                    color={colors.primaryForeground}
-                  />
-                )
-              }
-              loading={generatingPdf}
-              onPress={() => void handleGeneratePdf()}
-            />
+            <View style={styles.shareRow}>
+              <Button
+                title={generatingPdf ? "Generating…" : "Share PDF"}
+                icon={
+                  generatingPdf ? null : (
+                    <Feather
+                      name="share"
+                      size={14}
+                      color={colors.primaryForeground}
+                    />
+                  )
+                }
+                loading={generatingPdf}
+                onPress={() => void handleGeneratePdf()}
+                style={styles.shareBtn}
+              />
+              <Button
+                title={sharingReport ? "Creating…" : "Share link"}
+                icon={
+                  sharingReport ? null : (
+                    <Feather
+                      name="link"
+                      size={14}
+                      color={colors.primaryForeground}
+                    />
+                  )
+                }
+                loading={sharingReport}
+                onPress={() => void handleShareReport()}
+                style={styles.shareBtn}
+              />
+            </View>
           </View>
 
           {sections.map((s) => (
@@ -544,6 +573,8 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   metaRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  shareRow: { flexDirection: "row", gap: 10 },
+  shareBtn: { flex: 1 },
   statusPill: {
     flexDirection: "row",
     alignItems: "center",
