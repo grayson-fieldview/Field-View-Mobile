@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from "react";
 import {
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -85,7 +87,13 @@ export function ChecklistGenerateSheet({
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <View style={{ flex: 1, backgroundColor: colors.background }}>
+      {/* Same keyboard pattern as ApplyReportTemplateModal /
+          GenerateReportSheet: KAV around the whole sheet so the
+          description input lifts with the keyboard. */}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        style={{ flex: 1, backgroundColor: colors.background }}
+      >
         <View
           style={[
             styles.header,
@@ -150,7 +158,7 @@ export function ChecklistGenerateSheet({
             disabled={!canGenerate}
           />
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
