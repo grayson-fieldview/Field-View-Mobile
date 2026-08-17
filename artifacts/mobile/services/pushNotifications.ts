@@ -2,6 +2,26 @@ import Constants from "expo-constants";
 import { Platform } from "react-native";
 
 import { api } from "./api";
+import { Sentry } from "./sentry";
+
+/**
+ * Registration failures were previously console-only — invisible on
+ * user devices. Every terminal failure path now reports to Sentry
+ * under source "push_registration". Reporting itself must never throw.
+ */
+function reportPushFailure(err: unknown, stage: string): void {
+  try {
+    Sentry.captureException(
+      err instanceof Error ? err : new Error(String(err)),
+      {
+        tags: { source: "push_registration" },
+        extra: { stage },
+      },
+    );
+  } catch {
+    // Never let reporting itself throw.
+  }
+}
 
 let Notifications: typeof import("expo-notifications") | null = null;
 let notificationsAvailable = false;
@@ -105,6 +125,31 @@ export async function registerExistingPushTokenIfGranted(): Promise<
     return tok.data;
   } catch (err) {
     console.log("[push] getExpoPushTokenAsync failed:", err);
+    reportPushFailure(err, "token_fetch_check_only");
+    return null;
+  }
+}
+
+/**
+ * Current OS notification-permission state, WITHOUT prompting.
+ * Distinguishes never-asked ("undetermined") from an explicit user
+ * denial ("denied") so callers can prompt only in the former case.
+ * Returns null when the question is moot (missing native binding,
+ * web, simulator, or an unreadable permission state).
+ */
+export async function getPushPermissionStatus(): Promise<
+  "granted" | "denied" | "undetermined" | null
+> {
+  if (!notificationsAvailable || !Notifications) return null;
+  if (Platform.OS === "web") return null;
+  if (deviceAvailable && Device && Device.isDevice === false) return null;
+  try {
+    const p = await Notifications.getPermissionsAsync();
+    if (p.status === Notifications.PermissionStatus.GRANTED) return "granted";
+    if (p.status === Notifications.PermissionStatus.DENIED) return "denied";
+    return "undetermined";
+  } catch (err) {
+    console.log("[push] permission status read failed:", err);
     return null;
   }
 }
@@ -121,12 +166,13 @@ export async function registerExistingPushTokenIfGranted(): Promise<
  * Side-effect: ensures the Android default notification channel
  * exists on first call (no-op on iOS / repeat calls).
  *
- * NOTE (Build 23): no longer called from any production code path.
- * The onboarding notifications step requests permission directly
- * via `services/notifications.requestNotificationPermission`, and
- * `registerExistingPushTokenIfGranted` (above) handles token
- * capture without prompting. Retained for the rotation subscriber
- * and future debug surfaces.
+ * NOTE: the onboarding notifications step still requests permission
+ * directly via `services/notifications.requestNotificationPermission`,
+ * and `registerExistingPushTokenIfGranted` (above) handles token
+ * capture without prompting. Since the reinstall-gap fix, AuthGate
+ * (app/_layout.tsx) calls THIS function post-auth — but only when
+ * `getPushPermissionStatus()` reports "undetermined" (never asked),
+ * so an explicit denial is never re-prompted.
  */
 export async function registerForPushNotificationsAsync(): Promise<
   string | null
@@ -174,6 +220,7 @@ export async function registerForPushNotificationsAsync(): Promise<
     return tok.data;
   } catch (err) {
     console.log("[push] getExpoPushTokenAsync failed:", err);
+    reportPushFailure(err, "token_fetch_prompt");
     return null;
   }
 }
@@ -199,20 +246,28 @@ const isValidExpoPushToken = (t: unknown): t is string =>
  */
 export async function registerPushTokenWithServer(
   token: string,
-): Promise<void> {
+): Promise<boolean> {
   if (!isValidExpoPushToken(token)) {
     // `token` is typed `string` at the param boundary, but the guard
     // narrows it to `never` on the false branch. Re-widen via the
     // value, not the binding, to keep the diagnostic safe.
     const preview = String(token).slice(0, 16);
     console.warn("[push] skipping non-Expo token:", preview + "...");
-    return;
+    // Token prefix only — never the full token — in the report.
+    reportPushFailure(
+      new Error(`non-Expo push token rejected (${preview}...)`),
+      "token_format",
+    );
+    return false;
   }
   try {
     await api.registerPushToken(token);
     console.log("[push] token registered with server");
+    return true;
   } catch (err) {
     console.log("[push] registerPushToken failed:", err);
+    reportPushFailure(err, "server_register");
+    return false;
   }
 }
 

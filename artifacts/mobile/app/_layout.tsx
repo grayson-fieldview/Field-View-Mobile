@@ -17,7 +17,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { useColorScheme } from "react-native";
+import { AppState, useColorScheme } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -35,7 +35,9 @@ import {
   subscribeToNotificationResponses,
 } from "@/services/notifications";
 import {
+  getPushPermissionStatus,
   registerExistingPushTokenIfGranted,
+  registerForPushNotificationsAsync,
   registerPushTokenWithServer,
 } from "@/services/pushNotifications";
 import { startProcessor as startUploadQueueProcessor } from "@/services/uploadQueue";
@@ -210,31 +212,73 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     setRouted(true);
   }, [user, ready, segments, router]);
 
-  // Post-auth push token capture. Runs at most ONCE per provider
-  // lifetime, gated on (a) an authenticated user and (b) not
-  // currently on the auth/onboarding screens. This is the sole
-  // trigger now that the onboarding-completion gate is gone — without
-  // it, push registration would never fire.
-  // `registerExistingPushTokenIfGranted` is check-only — it never
-  // prompts. If permission isn't granted we silently do nothing; the
-  // profile screen's settings deep-link remains the recovery path.
-  const pushRegisteredRef = useRef(false);
+  // Post-auth push token capture, gated on (a) an authenticated user
+  // and (b) not currently on the auth/onboarding screens. This is the
+  // sole trigger now that the onboarding-completion gate is gone.
+  //
+  // Reinstall gap fix: the permission prompt is owned by onboarding,
+  // but a reinstalling EXISTING user (profileCompletedAt already set)
+  // skips onboarding entirely — so if the check-only capture returns
+  // nothing AND the OS reports the permission as never-requested
+  // ("undetermined"), we prompt ONCE right here. An explicit denial
+  // ("denied") is respected — never re-prompted; the profile screen's
+  // settings deep-link remains that recovery path.
+  //
+  // `pushAttemptedRef` gates the initial attempt (and the one prompt)
+  // to once per provider lifetime. `pushTokenRegisteredRef` tracks
+  // whether the SERVER accepted a token — the foreground-retry effect
+  // below keeps trying (check-only, no prompt) until it has.
+  const pushAttemptedRef = useRef(false);
+  const pushTokenRegisteredRef = useRef(false);
   useEffect(() => {
     if (!user) return;
-    if (pushRegisteredRef.current) return;
+    if (pushAttemptedRef.current) return;
     const inGate = segments[0] === "(auth)";
     if (inGate) return;
-    pushRegisteredRef.current = true;
+    pushAttemptedRef.current = true;
     let cancelled = false;
     void (async () => {
-      const token = await registerExistingPushTokenIfGranted();
+      let token = await registerExistingPushTokenIfGranted();
       if (cancelled) return;
-      if (token) await registerPushTokenWithServer(token);
+      if (!token) {
+        const status = await getPushPermissionStatus();
+        if (cancelled) return;
+        if (status === "undetermined") {
+          token = await registerForPushNotificationsAsync();
+          if (cancelled) return;
+        }
+      }
+      if (token) {
+        pushTokenRegisteredRef.current =
+          await registerPushTokenWithServer(token);
+      }
     })();
     return () => {
       cancelled = true;
     };
   }, [user, segments]);
+
+  // Foreground retry: the user may grant notification permission in
+  // Settings (or the server POST may have failed) after the initial
+  // attempt. On app-active, re-run the CHECK-ONLY capture — it never
+  // prompts — until one server registration succeeds. Event-driven
+  // only; no polling.
+  useEffect(() => {
+    if (!user) return;
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state !== "active") return;
+      if (!pushAttemptedRef.current) return; // initial attempt owns the first run
+      if (pushTokenRegisteredRef.current) return;
+      void (async () => {
+        const token = await registerExistingPushTokenIfGranted();
+        if (token) {
+          pushTokenRegisteredRef.current =
+            await registerPushTokenWithServer(token);
+        }
+      })();
+    });
+    return () => sub.remove();
+  }, [user]);
 
   return <>{children}</>;
 }
