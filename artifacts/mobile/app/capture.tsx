@@ -847,7 +847,14 @@ export default function CaptureScreen() {
     setWtPhotoCount(wtPhotosRef.current.length);
   };
 
-  const wtClearTimers = () => {
+  // Hoisted function declaration ON PURPOSE (not a const arrow): hooks
+  // run before the early returns (~:479/:496/:498), so on a render that
+  // returns early a `const` here never initializes and the mount
+  // effect's unmount cleanup (~:387) captures an uninitialized binding
+  // (Hermes reads it as undefined — Sentry "not a function" events).
+  // Function declarations initialize at scope entry, immune to every
+  // early-return path. Touches only refs, so no stale-closure hazard.
+  function wtClearTimers() {
     if (wtCapTimerRef.current) {
       clearTimeout(wtCapTimerRef.current);
       wtCapTimerRef.current = null;
@@ -856,7 +863,7 @@ export default function CaptureScreen() {
       clearInterval(wtTickRef.current);
       wtTickRef.current = null;
     }
-  };
+  }
 
   // Start narration recording. NOT called on mode switch — only from
   // the explainer's "Start walkthrough" button or the Start control.
