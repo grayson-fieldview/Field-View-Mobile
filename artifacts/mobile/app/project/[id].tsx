@@ -41,6 +41,8 @@ import { ApplyReportTemplateModal } from "@/components/ApplyReportTemplateModal"
 import { ReportListItem } from "@/components/ReportListItem";
 import { TemplatePickerModal } from "@/components/TemplatePickerModal";
 import { ChecklistGenerateSheet } from "@/components/ChecklistGenerateSheet";
+import { GenerateReportSheet } from "@/components/GenerateReportSheet";
+import { TitlePromptModal } from "@/components/TitlePromptModal";
 import * as DocumentPicker from "expo-document-picker";
 import * as WebBrowser from "expo-web-browser";
 
@@ -253,6 +255,11 @@ export default function ProjectDetailScreen() {
   const [showChecklistModal, setShowChecklistModal] = useState(false);
   const [showGenerateModal, setShowGenerateModal] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false);
+  const [showCreateChecklistPrompt, setShowCreateChecklistPrompt] =
+    useState(false);
+  const [showReportGenerateSheet, setShowReportGenerateSheet] =
+    useState(false);
+  const [showCreateReportPrompt, setShowCreateReportPrompt] = useState(false);
   const [showAssignUserModal, setShowAssignUserModal] = useState(false);
   // Top-right kebab overflow menu. Houses destructive / infrequent
   // actions (Delete, plus manual Clock Out when the user is currently
@@ -1614,6 +1621,11 @@ export default function ProjectDetailScreen() {
                       variant="secondary"
                       onPress={() => setShowChecklistModal(true)}
                     />
+                    <Button
+                      title="Create new"
+                      variant="secondary"
+                      onPress={() => setShowCreateChecklistPrompt(true)}
+                    />
                   </View>
                 }
               />
@@ -1684,6 +1696,11 @@ export default function ProjectDetailScreen() {
                   variant="secondary"
                   onPress={() => setShowChecklistModal(true)}
                 />
+                <Button
+                  title="Create new"
+                  variant="secondary"
+                  onPress={() => setShowCreateChecklistPrompt(true)}
+                />
               </View>
             )}
           </View>
@@ -1718,10 +1735,22 @@ export default function ProjectDetailScreen() {
                 title="No reports yet"
                 description="Create a blank report or apply a template to get started. Templates are managed on the web."
                 action={
-                  <Button
-                    title="New report"
-                    onPress={() => setShowReportModal(true)}
-                  />
+                  <View style={{ gap: 8 }}>
+                    <Button
+                      title="Generate with AI"
+                      onPress={() => setShowReportGenerateSheet(true)}
+                    />
+                    <Button
+                      title="Apply template"
+                      variant="secondary"
+                      onPress={() => setShowReportModal(true)}
+                    />
+                    <Button
+                      title="Create new"
+                      variant="secondary"
+                      onPress={() => setShowCreateReportPrompt(true)}
+                    />
+                  </View>
                 }
               />
             ) : (
@@ -1742,9 +1771,18 @@ export default function ProjectDetailScreen() {
                   />
                 ))}
                 <Button
-                  title="New report"
+                  title="Generate with AI"
+                  onPress={() => setShowReportGenerateSheet(true)}
+                />
+                <Button
+                  title="Apply template"
                   variant="secondary"
                   onPress={() => setShowReportModal(true)}
+                />
+                <Button
+                  title="Create new"
+                  variant="secondary"
+                  onPress={() => setShowCreateReportPrompt(true)}
                 />
               </View>
             )}
@@ -2160,6 +2198,63 @@ export default function ProjectDetailScreen() {
             );
             throw e;
           }
+        }}
+      />
+      <TitlePromptModal
+        visible={showCreateChecklistPrompt}
+        heading="New checklist"
+        placeholder="Checklist title"
+        submitLabel="Create"
+        busyLabel="Creating…"
+        onClose={() => setShowCreateChecklistPrompt(false)}
+        onSubmit={async (title) => {
+          // Throwing keeps the prompt open with the message inline.
+          const created = await api.createChecklist(project.id, title);
+          setShowCreateChecklistPrompt(false);
+          void refreshChecklists();
+          router.push({
+            pathname: "/checklist/[id]",
+            params: {
+              id: String(created.id),
+              title: created.title,
+              projectId: project.id,
+            },
+          });
+        }}
+      />
+      <TitlePromptModal
+        visible={showCreateReportPrompt}
+        heading="New report"
+        placeholder="Report title"
+        submitLabel="Create"
+        busyLabel="Creating…"
+        onClose={() => setShowCreateReportPrompt(false)}
+        onSubmit={async (title) => {
+          const created = await createReport({ title });
+          setShowCreateReportPrompt(false);
+          showToast(`Created "${created.title}".`);
+          router.push({
+            pathname: "/report/[id]",
+            params: { id: String(created.id), projectId: project.id },
+          });
+        }}
+      />
+      <GenerateReportSheet
+        visible={showReportGenerateSheet}
+        projectId={project.id}
+        onClose={() => setShowReportGenerateSheet(false)}
+        onCreated={(reportId, excludedCount) => {
+          setShowReportGenerateSheet(false);
+          void refreshReports();
+          showToast(
+            excludedCount > 0
+              ? `Report generated — ${excludedCount} photo${excludedCount === 1 ? "" : "s"} couldn't be used.`
+              : "Report generated.",
+          );
+          router.push({
+            pathname: "/report/[id]",
+            params: { id: String(reportId), projectId: project.id },
+          });
         }}
       />
       <ApplyReportTemplateModal

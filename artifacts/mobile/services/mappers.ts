@@ -8,6 +8,23 @@ import type { Photo, Project, Task, TaskPriority, TaskStatus } from "./types";
 const VALID_STATUS = new Set<TaskStatus>(["todo", "in_progress", "done"]);
 const VALID_PRIORITY = new Set<TaskPriority>(["low", "medium", "high"]);
 
+/**
+ * GET /api/projects serializes photoCount from a SQL COUNT — depending
+ * on the driver/serializer this can arrive as a number OR a numeric
+ * string. The old `typeof === "number"` check silently dropped string
+ * counts, leaving every list card at 0 photos on fresh login (empty
+ * cache, nothing to fall back on). Coerce both shapes; anything else
+ * maps to undefined (never 0 — 0 is a real count).
+ */
+function coerceCount(v: unknown): number | undefined {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
+}
+
 export function mapBackendProject(b: BackendProject): Project {
   return {
     id: String(b.id),
@@ -21,7 +38,7 @@ export function mapBackendProject(b: BackendProject): Project {
     status: (b.status ?? "active").toString(),
     createdAt: b.createdAt,
     updatedAt: b.updatedAt,
-    photoCount: typeof b.photoCount === "number" ? b.photoCount : undefined,
+    photoCount: coerceCount(b.photoCount),
     color: b.color ?? undefined,
     tags: b.tags ?? undefined,
     latitude: b.latitude ?? undefined,

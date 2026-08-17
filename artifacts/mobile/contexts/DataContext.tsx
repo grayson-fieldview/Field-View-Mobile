@@ -397,7 +397,20 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       try {
         const detail = await api.project(id);
         if (!detail?.project) return;
-        const mappedProject = mapBackendProject(detail.project);
+        const rawMapped = mapBackendProject(detail.project);
+        // The DETAIL payload does NOT include photoCount (list-only
+        // field) — the old upsert cached `undefined` back onto the
+        // list row, zeroing that card's count after visiting the
+        // project. The detail payload DOES carry the full media list,
+        // so use its length as the explicit count; if media were
+        // omitted entirely, preserve the row's previous count.
+        const mappedProject = {
+          ...rawMapped,
+          photoCount:
+            detail.media !== undefined
+              ? detail.media.length
+              : existing.photoCount,
+        };
         const idStr = String(mappedProject.id);
         // Single-row upsert. DO NOT use mergeById here: mergeById assumes
         // `incoming` is the FULL backend list and drops every remote row

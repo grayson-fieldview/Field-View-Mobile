@@ -371,6 +371,15 @@ interface FetchOpts {
    * unregister) where a body is intentionally absent.
    */
   allowEmptyBody?: boolean;
+  /**
+   * Abort the request after this many ms. RN fetch has NO default
+   * timeout (requests hang until the OS gives up) — leave unset for
+   * normal calls. Set explicitly for known-slow SYNCHRONOUS endpoints
+   * (e.g. AI report generation) so a hung connection eventually
+   * surfaces as an error instead of spinning forever. On abort the
+   * request throws ApiError(0, "Request timed out ...").
+   */
+  timeoutMs?: number;
 }
 
 async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
@@ -442,6 +451,15 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
   }
 
   let res: Response;
+  const timeoutController = opts.timeoutMs ? new AbortController() : null;
+  let timedOut = false;
+  const timeoutHandle =
+    timeoutController && opts.timeoutMs
+      ? setTimeout(() => {
+          timedOut = true;
+          timeoutController.abort();
+        }, opts.timeoutMs)
+      : null;
   try {
     console.log("[api] →", opts.method ?? "GET", API_BASE_URL + path);
     console.log(
@@ -453,6 +471,7 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
       headers,
       body,
       credentials: Platform.OS === "web" ? "include" : "omit",
+      signal: timeoutController?.signal,
     });
     console.log("[api] ←", res.status, path);
     breadcrumbApiResponse(
@@ -486,10 +505,18 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
     }
   } catch (e) {
     breadcrumbApiError(opts.method ?? "GET", path, 0);
+    if (timedOut) {
+      throw new ApiError(
+        0,
+        `Request timed out after ${opts.timeoutMs}ms: ${path}`,
+      );
+    }
     throw new ApiError(
       0,
       `Network request failed: ${e instanceof Error ? e.message : String(e)}`,
     );
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
   }
 
   // Capture any new/rotated session cookies — but ONLY from success
@@ -1063,6 +1090,33 @@ export type ReportStatus =
   // a failed generation.
   | "generating"
   | "failed";
+
+/**
+ * Report types accepted by POST /api/projects/:id/reports/generate
+ * (`reportType` is required). Mirror of the web app's shared
+ * REPORT_TYPES constant.
+ *
+ * ⚠️ NEEDS CONFIRMATION: the shared REPORT_TYPES list lives in the web
+ * repo, which is not accessible from here. The values below are a
+ * placeholder set — confirm the exact wire values against the web
+ * shared constant before shipping; a wrong value 400s at the server.
+ */
+export const REPORT_TYPES = [
+  "progress",
+  "inspection",
+  "punch_list",
+  "daily_log",
+] as const;
+
+export type ReportType = (typeof REPORT_TYPES)[number];
+
+/** Human labels for the REPORT_TYPES picker. */
+export const REPORT_TYPE_LABELS: Record<ReportType, string> = {
+  progress: "Progress",
+  inspection: "Inspection",
+  punch_list: "Punch list",
+  daily_log: "Daily log",
+};
 
 export interface BackendReport {
   id: number | string;
@@ -2079,6 +2133,18 @@ export const api = {
     }),
 
   /**
+   * Create a blank (manual) checklist. Same endpoint as
+   * applyChecklistTemplate minus the clone signal — `items: []`
+   * creates it empty; items/sections are then managed on web (or a
+   * future in-app editor).
+   */
+  createChecklist: (projectId: string | number, title: string) =>
+    apiFetch<BackendChecklist>(`/api/projects/${projectId}/checklists`, {
+      method: "POST",
+      json: { title, items: [] },
+    }),
+
+  /**
    * Delete a checklist instance. Server returns 200 {message:"Deleted"};
    * FK cascade removes sections, items, item options, photo joins, and
    * responses. The underlying media rows are preserved (only the join
@@ -2345,6 +2411,36 @@ export const api = {
       method: "POST",
       json: body,
     });
+  },
+
+  /**
+   * AI report generation from selected photos + optional note.
+   * POST /api/projects/:id/reports/generate — SYNCHRONOUS: the server
+   * runs the full AI pass before responding, which can take tens of
+   * seconds. The long explicit timeout exists only to surface a truly
+   * hung connection; callers MUST show blocking progress UI and MUST
+   * NOT present a client-side timeout as a server failure (the report
+   * may still have been created — tell the user to check the list).
+   *
+   * 201 {reportId, excludedCount} · 400 invalid input · 429 monthly
+   * limit · 503 AI service busy · 500 generation error. mediaIds
+   * capped at 75 (client enforces; server backstops). note <= 5000.
+   */
+  generateProjectReport: (
+    projectId: string | number,
+    input: { mediaIds: number[]; note?: string; reportType: ReportType },
+  ) => {
+    const body: Record<string, unknown> = {
+      mediaIds: input.mediaIds,
+      reportType: input.reportType,
+    };
+    if (input.note !== undefined && input.note.trim().length > 0) {
+      body.note = input.note.trim();
+    }
+    return apiFetch<{ reportId: number | string; excludedCount: number }>(
+      `/api/projects/${projectId}/reports/generate`,
+      { method: "POST", json: body, timeoutMs: 180_000 },
+    );
   },
 
   updateReport: (
