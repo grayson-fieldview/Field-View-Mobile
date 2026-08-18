@@ -26,6 +26,10 @@ import {
   COLORS,
   SIZES,
 } from "@/components/AnnotationEditor";
+import {
+  AssigneePickerSheet,
+  type AssigneeSelection,
+} from "@/components/AssigneePickerSheet";
 import { fittedContainRect } from "@/services/annotations";
 import { useData } from "@/contexts/DataContext";
 import { useToast } from "@/contexts/ToastContext";
@@ -80,6 +84,7 @@ export default function PhotoViewerScreen() {
     photos,
     projects,
     tasks,
+    createTask,
     updatePhoto,
     deletePhoto,
     loadPhotoAnnotations,
@@ -135,6 +140,13 @@ export default function PhotoViewerScreen() {
   // "Attach to task" picker sheet.
   const [taskSheetOpen, setTaskSheetOpen] = useState(false);
   const [attachingTaskId, setAttachingTaskId] = useState<string | null>(null);
+  // "New task from photo" mini-form (inside the task sheet).
+  const [creatingTaskOpen, setCreatingTaskOpen] = useState(false);
+  const [newTaskTitle, setNewTaskTitle] = useState("");
+  const [newTaskAssignee, setNewTaskAssignee] =
+    useState<AssigneeSelection>(null);
+  const [assigneePickerOpen, setAssigneePickerOpen] = useState(false);
+  const [creatingTask, setCreatingTask] = useState(false);
   const [settingCover, setSettingCover] = useState(false);
   const [color, setColor] = useState(COLORS[0]);
   const [size, setSize] = useState(SIZES[1]);
@@ -663,6 +675,51 @@ export default function PhotoViewerScreen() {
     }
   };
 
+  /**
+   * Create a new task on this photo's project, then attach the photo to
+   * it. Two server calls; if the attach fails the task still exists (it
+   * was genuinely created), so the toast says exactly that instead of
+   * pretending the whole thing failed.
+   */
+  const onCreateTaskWithPhoto = async () => {
+    const mid = currentPhoto.mediaId;
+    const title = newTaskTitle.trim();
+    if (mid === undefined || !title || creatingTask) return;
+    setCreatingTask(true);
+    let created = false;
+    try {
+      const task = await createTask(currentPhoto.projectId, {
+        title,
+        assignedToId: newTaskAssignee?.userId ?? null,
+        assignedToName: newTaskAssignee?.displayName,
+      });
+      created = true;
+      await api.attachPhotosToTask(task.id, [mid]);
+      setTaskSheetOpen(false);
+      setCreatingTaskOpen(false);
+      setNewTaskTitle("");
+      setNewTaskAssignee(null);
+      showToast("Task created with photo attached");
+    } catch (e) {
+      showToast(
+        created
+          ? "Task created, but attaching the photo failed"
+          : e instanceof ApiError && e.message
+            ? e.message
+            : "Couldn't create task",
+      );
+      if (created) {
+        // Task exists — close the form so the user doesn't re-create it.
+        setTaskSheetOpen(false);
+        setCreatingTaskOpen(false);
+        setNewTaskTitle("");
+        setNewTaskAssignee(null);
+      }
+    } finally {
+      setCreatingTask(false);
+    }
+  };
+
   return (
     <View style={styles.bg}>
       <Stack.Screen options={{ headerShown: false }} />
@@ -680,6 +737,23 @@ export default function PhotoViewerScreen() {
         >
           <Feather name="x" size={20} color="#fff" />
         </Pressable>
+        {/* Project name — centered, tappable, navigates to the project
+            (same push the global photo-search results use). Absolutely
+            positioned so close/counter keep their edge alignment; inset
+            leaves room for both side controls. */}
+        {project ? (
+          <Pressable
+            onPress={() => router.push(`/project/${project.id}`)}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={`Open project ${project.name}`}
+            style={styles.topBarTitleWrap}
+          >
+            <Text style={styles.topBarTitle} numberOfLines={1}>
+              {project.name}
+            </Text>
+          </Pressable>
+        ) : null}
         <Text style={styles.counter}>
           {currentIndex + 1} of {projectPhotos.length}
         </Text>
@@ -895,12 +969,21 @@ export default function PhotoViewerScreen() {
                 captionExpanded ? "Collapse AI caption" : "Expand AI caption"
               }
             >
-              <Text
-                style={styles.captionLine}
-                numberOfLines={captionExpanded ? undefined : 1}
-              >
-                {aiCaption}
-              </Text>
+              {/* Compact AI attribution — same identity as the comments
+                  sheet ("Field View AI" + orange zap), inline instead of
+                  a full author row. */}
+              <View style={styles.captionRow}>
+                <View style={styles.aiAvatar}>
+                  <Feather name="zap" size={10} color="#fff" />
+                </View>
+                <Text
+                  style={[styles.captionLine, { flex: 1 }]}
+                  numberOfLines={captionExpanded ? undefined : 1}
+                >
+                  <Text style={styles.captionAiLabel}>Field View AI{"  "}</Text>
+                  {aiCaption}
+                </Text>
+              </View>
             </Pressable>
           ) : null}
 
@@ -1168,9 +1251,14 @@ export default function PhotoViewerScreen() {
             onPress={() => setTaskSheetOpen(false)}
             accessibilityLabel="Close task picker"
           />
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : undefined}
+          >
           <View style={[styles.sheet, { paddingBottom: insets.bottom + 8 }]}>
             <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>Attach to task</Text>
+              <Text style={styles.sheetTitle}>
+                {creatingTaskOpen ? "New task from photo" : "Add to task"}
+              </Text>
               <Pressable
                 onPress={() => setTaskSheetOpen(false)}
                 hitSlop={10}
@@ -1180,7 +1268,93 @@ export default function PhotoViewerScreen() {
                 <Feather name="x" size={20} color="#fff" />
               </Pressable>
             </View>
+            {creatingTaskOpen ? (
+              <View style={{ gap: 10, paddingBottom: 4 }}>
+                <TextInput
+                  value={newTaskTitle}
+                  onChangeText={setNewTaskTitle}
+                  placeholder="Task title"
+                  placeholderTextColor="rgba(255,255,255,0.45)"
+                  style={styles.newTaskInput}
+                  editable={!creatingTask}
+                  autoFocus
+                  accessibilityLabel="Task title"
+                />
+                <Pressable
+                  onPress={() => setAssigneePickerOpen(true)}
+                  disabled={creatingTask}
+                  accessibilityRole="button"
+                  accessibilityLabel="Assign to"
+                  style={styles.newTaskAssigneeRow}
+                >
+                  <Feather
+                    name={newTaskAssignee ? "user" : "user-x"}
+                    size={16}
+                    color="rgba(255,255,255,0.7)"
+                  />
+                  <Text style={styles.newTaskAssigneeTxt}>
+                    {newTaskAssignee
+                      ? newTaskAssignee.displayName
+                      : "Unassigned"}
+                  </Text>
+                  <Feather
+                    name="chevron-right"
+                    size={16}
+                    color="rgba(255,255,255,0.5)"
+                  />
+                </Pressable>
+                <View style={{ flexDirection: "row", gap: 10 }}>
+                  <Pressable
+                    onPress={() => setCreatingTaskOpen(false)}
+                    disabled={creatingTask}
+                    accessibilityRole="button"
+                    accessibilityLabel="Back to task list"
+                    style={[styles.newTaskBtn, styles.newTaskBtnGhost]}
+                  >
+                    <Text style={styles.newTaskBtnGhostTxt}>Back</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => void onCreateTaskWithPhoto()}
+                    disabled={creatingTask || !newTaskTitle.trim()}
+                    accessibilityRole="button"
+                    accessibilityLabel="Create task and attach photo"
+                    accessibilityState={{
+                      disabled: creatingTask || !newTaskTitle.trim(),
+                      busy: creatingTask,
+                    }}
+                    style={[
+                      styles.newTaskBtn,
+                      styles.newTaskBtnPrimary,
+                      {
+                        opacity:
+                          creatingTask || !newTaskTitle.trim() ? 0.5 : 1,
+                      },
+                    ]}
+                  >
+                    {creatingTask ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <Text style={styles.newTaskBtnPrimaryTxt}>
+                        Create & attach
+                      </Text>
+                    )}
+                  </Pressable>
+                </View>
+              </View>
+            ) : (
             <ScrollView style={styles.sheetScroll}>
+              <Pressable
+                onPress={() => setCreatingTaskOpen(true)}
+                disabled={attachingTaskId !== null}
+                accessibilityRole="button"
+                accessibilityLabel="Create new task from this photo"
+                style={styles.taskRow}
+              >
+                <Feather name="plus-circle" size={16} color="#f09004" />
+                <Text style={[styles.taskTitle, { color: "#f09004" }]}>
+                  New task…
+                </Text>
+              </Pressable>
               {projectTasks.length === 0 ? (
                 <Text style={styles.commentEmpty}>
                   No tasks in this project yet.
@@ -1219,9 +1393,21 @@ export default function PhotoViewerScreen() {
                 ))
               )}
             </ScrollView>
+            )}
           </View>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
+
+      {/* Assignee picker for the new-task form. Rendered outside the task
+          sheet Modal is not possible on iOS (sibling Modals stack fine). */}
+      <AssigneePickerSheet
+        visible={assigneePickerOpen}
+        projectId={currentPhoto.projectId}
+        selectedUserId={newTaskAssignee?.userId ?? null}
+        onClose={() => setAssigneePickerOpen(false)}
+        onSelect={setNewTaskAssignee}
+      />
     </View>
   );
 }
@@ -1388,6 +1574,28 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  topBarTitleWrap: {
+    position: "absolute",
+    left: 64,
+    right: 64,
+    bottom: 8,
+    alignItems: "center",
+  },
+  topBarTitle: {
+    color: "#fff",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 14,
+  },
+  captionRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 6,
+  },
+  captionAiLabel: {
+    color: "#f09004",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 12,
+  },
   counter: {
     color: "rgba(255,255,255,0.85)",
     fontFamily: "Inter_500Medium",
@@ -1473,15 +1681,22 @@ const styles = StyleSheet.create({
   actionRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 22,
+    gap: 14,
   },
   barIconBtn: {
-    paddingVertical: 4,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.3)",
+    backgroundColor: "rgba(255,255,255,0.08)",
+    alignItems: "center",
+    justifyContent: "center",
   },
   barBadge: {
     position: "absolute",
-    top: -2,
-    right: -10,
+    top: -4,
+    right: -4,
     minWidth: 16,
     height: 16,
     borderRadius: 8,
@@ -1533,6 +1748,58 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_500Medium",
     fontSize: 14,
     flex: 1,
+  },
+  newTaskInput: {
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.2)",
+    color: "#fff",
+    fontFamily: "Inter_400Regular",
+    fontSize: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  newTaskAssigneeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.2)",
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  newTaskAssigneeTxt: {
+    color: "#fff",
+    fontFamily: "Inter_500Medium",
+    fontSize: 14,
+    flex: 1,
+  },
+  newTaskBtn: {
+    flex: 1,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  newTaskBtnGhost: {
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.3)",
+  },
+  newTaskBtnGhostTxt: {
+    color: "#fff",
+    fontFamily: "Inter_500Medium",
+    fontSize: 14,
+  },
+  newTaskBtnPrimary: {
+    backgroundColor: "#f09004",
+  },
+  newTaskBtnPrimaryTxt: {
+    color: "#fff",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 14,
   },
   detailsHeader: {
     color: "rgba(255,255,255,0.6)",
