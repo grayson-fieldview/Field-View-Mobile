@@ -18,6 +18,7 @@ import {
   Share,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -37,6 +38,8 @@ import KebabIcon from "@/components/KebabIcon";
 import { Input } from "@/components/Input";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { ThumbImage } from "@/components/ThumbImage";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { mapBackendMedia } from "@/services/mappers";
 import { ApplyReportTemplateModal } from "@/components/ApplyReportTemplateModal";
 import { ReportListItem } from "@/components/ReportListItem";
 import { TemplatePickerModal } from "@/components/TemplatePickerModal";
@@ -333,6 +336,51 @@ export default function ProjectDetailScreen() {
   // Gallery filters (client-side; the photo list is fully loaded).
   const [filters, setFilters] = useState<GalleryFilters>(DEFAULT_FILTERS);
   const [filterSheetOpen, setFilterSheetOpen] = useState(false);
+
+  // Photo search (server-side, over AI captions). Empty query = normal
+  // grid; search is never called with an empty q.
+  const [photoQuery, setPhotoQuery] = useState("");
+  const debouncedPhotoQuery = useDebouncedValue(photoQuery, 300);
+  const [photoSearchResults, setPhotoSearchResults] = useState<
+    import("@/services/types").Photo[] | null
+  >(null);
+  const [photoSearching, setPhotoSearching] = useState(false);
+  const [photoSearchError, setPhotoSearchError] = useState<string | null>(
+    null,
+  );
+  const photoSearchActive = photoQuery.trim().length > 0;
+
+  useEffect(() => {
+    const q = debouncedPhotoQuery.trim();
+    if (!q) {
+      setPhotoSearchResults(null);
+      setPhotoSearching(false);
+      setPhotoSearchError(null);
+      return;
+    }
+    let cancelled = false;
+    setPhotoSearching(true);
+    setPhotoSearchError(null);
+    api
+      .searchMedia(q, { projectId: id, limit: 200 })
+      .then((rows) => {
+        if (cancelled) return;
+        setPhotoSearchResults(rows.map(mapBackendMedia));
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setPhotoSearchResults(null);
+        setPhotoSearchError(
+          e instanceof Error ? e.message : "Search failed.",
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setPhotoSearching(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedPhotoQuery, id]);
   const filterActive =
     filters.sort !== "newest" ||
     filters.type !== "all" ||
@@ -443,7 +491,14 @@ export default function ProjectDetailScreen() {
   // of photos — same visual 2-up layout, one list item per row.
   type GridRowItem =
     | { kind: "header"; key: string; label: string; ids: string[] }
-    | { kind: "row"; key: string; photos: typeof projectPhotos };
+    | { kind: "row"; key: string; photos: typeof projectPhotos }
+    | {
+        // Server search result row: full-width, thumb + AI caption so
+        // it's obvious why the photo matched.
+        kind: "searchResult";
+        key: string;
+        photo: import("@/services/types").Photo;
+      };
   const gridItems = useMemo<GridRowItem[]>(() => {
     const items: GridRowItem[] = [];
     for (const g of photoGroups) {
@@ -463,6 +518,17 @@ export default function ProjectDetailScreen() {
     }
     return items;
   }, [photoGroups]);
+
+  // While a search query is active the FlashList swaps to result rows —
+  // same list component so the header (and its TextInput) stays mounted.
+  const searchItems = useMemo<GridRowItem[]>(() => {
+    if (!photoSearchResults) return [];
+    return photoSearchResults.map((p) => ({
+      kind: "searchResult" as const,
+      key: `s-${p.id}`,
+      photo: p,
+    }));
+  }, [photoSearchResults]);
 
   const exitSelectMode = () => {
     setSelected(new Set());
@@ -1285,7 +1351,62 @@ export default function ProjectDetailScreen() {
               colors={colors}
             />
 
-            {projectPhotos.length === 0 ? (
+            <View
+              style={[
+                styles.photoSearchWrap,
+                { backgroundColor: colors.muted, borderColor: colors.border },
+              ]}
+            >
+              <Feather name="search" size={16} color={colors.mutedForeground} />
+              <TextInput
+                value={photoQuery}
+                onChangeText={setPhotoQuery}
+                placeholder="Search photos…"
+                placeholderTextColor={colors.mutedForeground}
+                style={[styles.photoSearchInput, { color: colors.foreground }]}
+                autoCorrect={false}
+                autoCapitalize="none"
+                returnKeyType="search"
+              />
+              {photoSearching ? (
+                <ActivityIndicator size="small" color={colors.mutedForeground} />
+              ) : photoQuery ? (
+                <Pressable
+                  onPress={() => setPhotoQuery("")}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Clear photo search"
+                >
+                  <Feather
+                    name="x-circle"
+                    size={16}
+                    color={colors.mutedForeground}
+                  />
+                </Pressable>
+              ) : null}
+            </View>
+
+            {photoSearchActive ? (
+              photoSearchError ? (
+                <View style={{ paddingTop: 20 }}>
+                  <EmptyState
+                    icon="alert-circle"
+                    title="Search failed"
+                    description={photoSearchError}
+                  />
+                </View>
+              ) : photoSearchResults !== null &&
+                photoSearchResults.length === 0 &&
+                !photoSearching ? (
+                <View style={{ paddingTop: 20 }}>
+                  <EmptyState
+                    icon="search"
+                    title="No matching photos"
+                    description={`Nothing matches "${photoQuery.trim()}". Try different words.`}
+                  />
+                </View>
+              ) : null
+            ) : projectPhotos.length === 0 ? (
               <View style={{ paddingTop: 20 }}>
                 <EmptyState
                   icon="camera"
@@ -1343,6 +1464,52 @@ export default function ProjectDetailScreen() {
         </View>
       );
     }
+    if (item.kind === "searchResult") {
+      const ph = item.photo;
+      const caption =
+        ph.aiCaption && ph.aiCaption !== "UNCLEAR" ? ph.aiCaption : null;
+      return (
+        <Pressable
+          onPress={() => router.push(`/photo/${ph.id}`)}
+          style={[
+            styles.searchResultRow,
+            { borderColor: colors.border, backgroundColor: colors.card },
+          ]}
+        >
+          <View
+            style={[
+              styles.searchResultThumb,
+              { backgroundColor: colors.muted },
+            ]}
+          >
+            <ThumbImage
+              cacheKey={ph.id}
+              uri={ph.thumbUrl ?? ph.uri}
+              style={StyleSheet.absoluteFill}
+            />
+          </View>
+          <View style={{ flex: 1, gap: 2 }}>
+            {caption ? (
+              <Text
+                style={[styles.searchResultCaption, { color: colors.foreground }]}
+                numberOfLines={3}
+              >
+                {caption}
+              </Text>
+            ) : (
+              <Text
+                style={[
+                  styles.searchResultCaption,
+                  { color: colors.mutedForeground },
+                ]}
+              >
+                Matched photo
+              </Text>
+            )}
+          </View>
+        </Pressable>
+      );
+    }
     return (
       <View style={styles.gridPairRow}>
         {item.photos.map((ph) => (
@@ -1375,7 +1542,7 @@ export default function ProjectDetailScreen() {
       {tab === "photos" ? (
         <>
           <FlashList
-            data={gridItems}
+            data={photoSearchActive ? searchItems : gridItems}
             keyExtractor={(it) => it.key}
             renderItem={renderGridItem}
             // Selection state lives outside the items — every selection
@@ -3697,6 +3864,43 @@ const styles = StyleSheet.create({
   // Virtualized grid rows carry the horizontal padding styles.body used
   // to provide (the grid is no longer nested inside a body View).
   gridHeaderRow: { paddingHorizontal: 20, paddingTop: 18 },
+  photoSearchWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginTop: 12,
+  },
+  photoSearchInput: {
+    flex: 1,
+    fontSize: 14,
+    fontFamily: "Inter_500Medium",
+    padding: 0,
+  },
+  searchResultRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 10,
+    marginHorizontal: 16,
+    marginTop: 8,
+  },
+  searchResultThumb: {
+    width: 64,
+    height: 64,
+    borderRadius: 8,
+    overflow: "hidden",
+  },
+  searchResultCaption: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    lineHeight: 18,
+  },
   gridPairRow: {
     flexDirection: "row",
     justifyContent: "space-between",

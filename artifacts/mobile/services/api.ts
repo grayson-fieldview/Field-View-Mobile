@@ -2159,6 +2159,29 @@ export const api = {
    * batch (multi-select) path skips the references check intentionally
    * — see TECH_DEBT.md.
    */
+  /**
+   * Server-side photo search over AI captions/metadata.
+   * GET /api/media/search?q=…[&projectId=…][&limit=…][&offset=…] —
+   * q required (callers must never send an empty q), limit defaults
+   * to 50 server-side (max 200). Returns the same media shape as
+   * GET /api/media, so rows map through mapBackendMedia unchanged.
+   */
+  searchMedia: (
+    q: string,
+    opts?: {
+      projectId?: string | number;
+      limit?: number;
+      offset?: number;
+    },
+  ) => {
+    const params = new URLSearchParams({ q });
+    if (opts?.projectId !== undefined)
+      params.set("projectId", String(opts.projectId));
+    if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+    if (opts?.offset !== undefined) params.set("offset", String(opts.offset));
+    return apiFetch<BackendMedia[]>(`/api/media/search?${params.toString()}`);
+  },
+
   deleteMedia: (mediaId: string | number) =>
     apiFetch<{ success: boolean }>(`/api/media/${mediaId}`, {
       method: "DELETE",

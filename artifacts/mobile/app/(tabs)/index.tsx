@@ -29,7 +29,10 @@ import { EmptyState } from "@/components/EmptyState";
 import { LoadingScreen } from "@/components/LoadingScreen";
 import { useData } from "@/contexts/DataContext";
 import { useColors } from "@/hooks/useColors";
-import type { Project } from "@/services/types";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { api } from "@/services/api";
+import { mapBackendMedia } from "@/services/mappers";
+import type { Photo, Project } from "@/services/types";
 
 type SortMode = "nearby" | "recent";
 
@@ -65,7 +68,15 @@ export default function ProjectsScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { projects, photos, tasks, ready, syncError, refresh } = useData();
+  const {
+    projects,
+    photos,
+    tasks,
+    ready,
+    syncError,
+    refresh,
+    loadProjectDetail,
+  } = useData();
 
   // Refresh whenever the screen gains focus. The DataContext throttles this
   // internally so it's safe to call frequently.
@@ -77,6 +88,72 @@ export default function ProjectsScreen() {
 
   const [sortMode, setSortMode] = useState<SortMode>("nearby");
   const [query, setQuery] = useState("");
+
+  // Combined search: project filtering stays exactly as before (local,
+  // instant); photo results are ADDITIVE — a server search across all
+  // projects, debounced, never called with an empty q.
+  const debouncedQuery = useDebouncedValue(query, 300);
+  const [photoResults, setPhotoResults] = useState<Photo[] | null>(null);
+  const [photoSearching, setPhotoSearching] = useState(false);
+  const [photoSearchError, setPhotoSearchError] = useState<string | null>(
+    null,
+  );
+  // Photo being opened from a result: the viewer reads DataContext, so
+  // the photo's project detail must load first (cross-project results
+  // aren't cached locally yet).
+  const [openingPhotoId, setOpeningPhotoId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const q = debouncedQuery.trim();
+    if (!q) {
+      setPhotoResults(null);
+      setPhotoSearching(false);
+      setPhotoSearchError(null);
+      return;
+    }
+    let cancelled = false;
+    setPhotoSearching(true);
+    setPhotoSearchError(null);
+    api
+      .searchMedia(q, { limit: 50 })
+      .then((rows) => {
+        if (cancelled) return;
+        setPhotoResults(rows.map(mapBackendMedia));
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setPhotoResults(null);
+        setPhotoSearchError(e instanceof Error ? e.message : "Search failed.");
+      })
+      .finally(() => {
+        if (!cancelled) setPhotoSearching(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedQuery]);
+
+  const projectNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of projects) m.set(p.id, p.name);
+    return m;
+  }, [projects]);
+
+  const openPhotoResult = useCallback(
+    async (ph: Photo) => {
+      if (openingPhotoId) return;
+      setOpeningPhotoId(ph.id);
+      try {
+        // Ensure the photo's project media is in DataContext before the
+        // viewer mounts (it resolves the photo by id from context).
+        await loadProjectDetail(String(ph.projectId));
+        router.push(`/photo/${ph.id}`);
+      } finally {
+        setOpeningPhotoId(null);
+      }
+    },
+    [openingPhotoId, loadProjectDetail, router],
+  );
   // Track ONLY user-initiated pull-to-refresh. Bound to the FlatList's
   // `refreshing` prop so iOS doesn't animate the RefreshControl inset
   // for programmatic background refreshes (focus/foreground), which
@@ -402,13 +479,121 @@ export default function ProjectsScreen() {
             onPress={() => router.push(`/project/${item.id}`)}
           />
         )}
+        ListFooterComponent={
+          query.trim() ? (
+            <View style={{ gap: 8, paddingTop: 8 }}>
+              <Text
+                style={[styles.photoSectionLabel, { color: colors.mutedForeground }]}
+              >
+                Photos
+              </Text>
+              {photoSearching && !photoResults ? (
+                <Text
+                  style={[styles.photoSectionHint, { color: colors.mutedForeground }]}
+                >
+                  Searching photos…
+                </Text>
+              ) : photoSearchError ? (
+                <Text
+                  style={[styles.photoSectionHint, { color: colors.destructive }]}
+                >
+                  {photoSearchError}
+                </Text>
+              ) : photoResults && photoResults.length === 0 ? (
+                <Text
+                  style={[styles.photoSectionHint, { color: colors.mutedForeground }]}
+                >
+                  No photos match "{query.trim()}".
+                </Text>
+              ) : (
+                (photoResults ?? []).map((ph) => {
+                  const caption =
+                    ph.aiCaption && ph.aiCaption !== "UNCLEAR"
+                      ? ph.aiCaption
+                      : null;
+                  const projectName =
+                    projectNameById.get(String(ph.projectId)) ??
+                    "Unknown project";
+                  const opening = openingPhotoId === ph.id;
+                  return (
+                    <Pressable
+                      key={ph.id}
+                      onPress={() => void openPhotoResult(ph)}
+                      disabled={openingPhotoId !== null}
+                      style={[
+                        styles.photoResultRow,
+                        {
+                          borderColor: colors.border,
+                          backgroundColor: colors.card,
+                          opacity:
+                            openingPhotoId !== null && !opening ? 0.6 : 1,
+                        },
+                      ]}
+                    >
+                      <View
+                        style={[
+                          styles.photoResultThumb,
+                          { backgroundColor: colors.muted },
+                        ]}
+                      >
+                        <ThumbImage
+                          cacheKey={ph.id}
+                          uri={ph.thumbUrl ?? ph.uri}
+                          style={StyleSheet.absoluteFill}
+                        />
+                      </View>
+                      <View style={{ flex: 1, gap: 2 }}>
+                        {caption ? (
+                          <Text
+                            style={[
+                              styles.photoResultCaption,
+                              { color: colors.foreground },
+                            ]}
+                            numberOfLines={2}
+                          >
+                            {caption}
+                          </Text>
+                        ) : (
+                          <Text
+                            style={[
+                              styles.photoResultCaption,
+                              { color: colors.mutedForeground },
+                            ]}
+                          >
+                            Matched photo
+                          </Text>
+                        )}
+                        <Text
+                          style={[
+                            styles.photoResultProject,
+                            { color: colors.mutedForeground },
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {projectName}
+                        </Text>
+                      </View>
+                      {opening ? (
+                        <Feather
+                          name="loader"
+                          size={16}
+                          color={colors.mutedForeground}
+                        />
+                      ) : null}
+                    </Pressable>
+                  );
+                })
+              )}
+            </View>
+          ) : null
+        }
         ListEmptyComponent={
           <View style={{ flex: 1, justifyContent: "center", paddingTop: 60 }}>
             {query ? (
               <EmptyState
                 icon="search"
-                title="No matches"
-                description={`Nothing matches "${query}". Try a different search.`}
+                title="No matching projects"
+                description={`No projects match "${query}".`}
               />
             ) : (
               <EmptyState
@@ -648,6 +833,40 @@ const styles = StyleSheet.create({
   toggleLabel: {
     fontFamily: "Inter_600SemiBold",
     fontSize: 14,
+  },
+  photoSectionLabel: {
+    fontSize: 12,
+    fontFamily: "Inter_600SemiBold",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    marginTop: 4,
+  },
+  photoSectionHint: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+  },
+  photoResultRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 10,
+  },
+  photoResultThumb: {
+    width: 56,
+    height: 56,
+    borderRadius: 8,
+    overflow: "hidden",
+  },
+  photoResultCaption: {
+    fontSize: 13,
+    fontFamily: "Inter_500Medium",
+    lineHeight: 18,
+  },
+  photoResultProject: {
+    fontSize: 12,
+    fontFamily: "Inter_400Regular",
   },
   searchWrap: {
     flexDirection: "row",
