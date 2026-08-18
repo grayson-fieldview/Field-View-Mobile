@@ -44,73 +44,13 @@ import type {
   BackendCommentResponse,
 } from "@/services/api";
 import type { Photo, StoredStroke } from "@/services/types";
-import { getBuildInfo } from "@/lib/buildInfo";
-
-/* ------------------------------------------------------------------ */
-/* TEMP [SHEET-DEBUG] on-device debug bus — strip when done.           */
-/* Every sheetDebug() call console.logs (greppable in Xcode/Console)   */
-/* AND appends to a rolling buffer the overlay panel renders.          */
-const SHEET_DEBUG_MAX = 8;
-const sheetDebugLines: string[] = [];
-const sheetDebugSubs = new Set<() => void>();
-function sheetDebug(msg: string) {
-  console.log(`[SHEET-DEBUG] ${msg}`);
-  sheetDebugLines.push(msg);
-  while (sheetDebugLines.length > SHEET_DEBUG_MAX) sheetDebugLines.shift();
-  sheetDebugSubs.forEach((notify) => notify());
-}
-
-/** TEMP [SHEET-DEBUG] overlay — always visible, ignores chrome toggle. */
-function SheetDebugOverlay() {
-  const insets = useSafeAreaInsets();
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    const notify = () => setTick((t) => t + 1);
-    sheetDebugSubs.add(notify);
-    return () => {
-      sheetDebugSubs.delete(notify);
-    };
-  }, []);
-  return (
-    <View
-      pointerEvents="none"
-      style={{
-        position: "absolute",
-        top: insets.top + 2,
-        left: 4,
-        right: 4,
-        zIndex: 9999,
-        backgroundColor: "rgba(0,0,0,0.65)",
-        borderRadius: 6,
-        paddingHorizontal: 6,
-        paddingVertical: 4,
-      }}
-    >
-      {sheetDebugLines.map((line, i) => (
-        <Text
-          key={`${i}-${line}`}
-          style={{
-            color: "#7CFC00",
-            fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
-            fontSize: 9,
-            lineHeight: 12,
-          }}
-        >
-          {line}
-        </Text>
-      ))}
-    </View>
-  );
-}
-/* ------------------------------------------------------------------ */
-
 // Module-level snap-point constants: an inline array literal gets a new
 // identity every render, which gorhom treats as a config change while a
 // present animation may be in flight. One frozen instance per sheet.
-const SNAP_COMMENTS = ["75%"];
-const SNAP_TASK = ["60%"];
-const SNAP_TAG = ["50%"];
-const SNAP_OVERFLOW = ["45%"];
+const SNAP_COMMENTS = ["45%"];
+const SNAP_TASK = ["40%"];
+const SNAP_TAG = ["35%"];
+const SNAP_OVERFLOW = ["40%"];
 
 /**
  * Full-screen video player for the viewer. Used both inside the gallery
@@ -788,17 +728,7 @@ export default function PhotoViewerScreen() {
    * first open (retried on demand after an error). Fetch is per-viewer
    * lifetime — the vocabulary changes rarely.
    */
-  // TEMP [SHEET-DEBUG] — confirm the sheets' host component mounts at all,
-  // and record which bundle is running (updateId prefix).
-  useEffect(() => {
-    sheetDebug(
-      `mounted (sheet host) update=${getBuildInfo().updateId.slice(0, 8)}`,
-    );
-    return () => sheetDebug("PhotoViewerScreen unmounted");
-  }, []);
-
   const openTagSheet = () => {
-    sheetDebug("tag icon pressed → setTagSheetOpen(true)"); // TEMP
     setTagSheetOpen(true);
     if (accountTags === null || accountTagsError) void loadAccountTags();
   };
@@ -901,8 +831,6 @@ export default function PhotoViewerScreen() {
     <View style={styles.bg}>
       <Stack.Screen options={{ headerShown: false }} />
 
-      {/* TEMP [SHEET-DEBUG] overlay — always on, ignores chrome toggle. */}
-      <SheetDebugOverlay />
 
       {/* Top bar — hides with the rest of the chrome on photo tap; always
           visible while editing (the annotate flow needs the exit). */}
@@ -1183,10 +1111,7 @@ export default function PhotoViewerScreen() {
               label="Comments"
               disabled={currentMediaId === undefined}
               badge={commentCount > 0 ? commentCount : undefined}
-              onPress={() => {
-                sheetDebug("comment icon pressed → setCommentsOpen(true)"); // TEMP
-                setCommentsOpen(true);
-              }}
+              onPress={() => setCommentsOpen(true)}
             />
             <BarIcon
               icon="edit-2"
@@ -1198,10 +1123,7 @@ export default function PhotoViewerScreen() {
               icon="check-square"
               label="Attach to task"
               disabled={currentMediaId === undefined}
-              onPress={() => {
-                sheetDebug("task icon pressed → setTaskSheetOpen(true)"); // TEMP
-                setTaskSheetOpen(true);
-              }}
+              onPress={() => setTaskSheetOpen(true)}
             />
             <BarIcon
               icon="tag"
@@ -1218,10 +1140,7 @@ export default function PhotoViewerScreen() {
             <BarIcon
               icon="more-horizontal"
               label="More options"
-              onPress={() => {
-                sheetDebug("overflow icon pressed → setOverflowOpen(true)"); // TEMP
-                setOverflowOpen(true);
-              }}
+              onPress={() => setOverflowOpen(true)}
             />
           </View>
         </View>
@@ -1719,33 +1638,29 @@ function AppSheet({
   children: React.ReactNode;
 }) {
   const ref = useRef<BottomSheetModal>(null);
-  // Never call dismiss() before the modal has been presented at least once:
-  // gorhom's dismiss() does not early-exit from MODAL_STATUS.INITIAL and
-  // wedges a virgin modal in DISMISSING, permanently blocking present().
-  const hasPresentedRef = useRef(false);
+  // Only call dismiss() while the modal is actually presented. gorhom's
+  // dismiss() does not early-exit from MODAL_STATUS.INITIAL, so a redundant
+  // dismiss on a non-presented modal (on mount, or in the echo after
+  // onDismiss already ran and reset gorhom to INITIAL) wedges it in
+  // DISMISSING and permanently blocks the next present(). Track "currently
+  // presented" and clear it in onDismiss so the post-close effect echo skips.
+  const presentedRef = useRef(false);
   const insets = useSafeAreaInsets();
   useEffect(() => {
-    // TEMP [SHEET-DEBUG] instrumentation
-    sheetDebug(
-      `AppSheet effect: open=${open} refNonNull=${
-        ref.current !== null
-      } branch=${
-        open ? "present" : hasPresentedRef.current ? "dismiss" : "skip-dismiss"
-      }`,
-    );
     if (open) {
-      hasPresentedRef.current = true;
+      presentedRef.current = true;
       ref.current?.present();
-    } else if (hasPresentedRef.current) {
+    } else if (presentedRef.current) {
+      presentedRef.current = false;
       ref.current?.dismiss();
     }
   }, [open]);
   return (
     <BottomSheetModal
       ref={ref}
-      onDismiss={onClose}
-      onChange={(index) => {
-        sheetDebug(`BottomSheetModal onChange index=${index}`); // TEMP
+      onDismiss={() => {
+        presentedRef.current = false;
+        onClose();
       }}
       enablePanDownToClose
       snapPoints={snapPoints}

@@ -27,7 +27,6 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useData } from "@/contexts/DataContext";
 import { useToast } from "@/contexts/ToastContext";
 import { useColors } from "@/hooks/useColors";
-import { getBuildInfo } from "@/lib/buildInfo";
 import { ApiError, api } from "@/services/api";
 import { restoreApplePurchases } from "@/services/appleIap";
 import {
@@ -469,18 +468,6 @@ export default function SettingsScreen() {
             {versionString}
           </Text>
         </Pressable>
-        {/* Read-only bundle diagnostic: which JS bundle is running
-          * (embedded vs OTA) and whether Sentry actually initialized. */}
-        <Text style={[styles.version, { color: colors.mutedForeground }]}>
-          {(() => {
-            const info = getBuildInfo();
-            const shortId =
-              info.updateId === "unavailable"
-                ? "unavailable"
-                : info.updateId.slice(0, 8);
-            return `update ${shortId} · embedded ${info.isEmbeddedLaunch} · sentry ${info.sentryEnabled}`;
-          })()}
-        </Text>
       </View>
 
       <DeleteAccountConfirmModal
