@@ -44,6 +44,65 @@ import type {
   BackendCommentResponse,
 } from "@/services/api";
 import type { Photo, StoredStroke } from "@/services/types";
+import { getBuildInfo } from "@/lib/buildInfo";
+
+/* ------------------------------------------------------------------ */
+/* TEMP [SHEET-DEBUG] on-device debug bus — strip when done.           */
+/* Every sheetDebug() call console.logs (greppable in Xcode/Console)   */
+/* AND appends to a rolling buffer the overlay panel renders.          */
+const SHEET_DEBUG_MAX = 8;
+const sheetDebugLines: string[] = [];
+const sheetDebugSubs = new Set<() => void>();
+function sheetDebug(msg: string) {
+  console.log(`[SHEET-DEBUG] ${msg}`);
+  sheetDebugLines.push(msg);
+  while (sheetDebugLines.length > SHEET_DEBUG_MAX) sheetDebugLines.shift();
+  sheetDebugSubs.forEach((notify) => notify());
+}
+
+/** TEMP [SHEET-DEBUG] overlay — always visible, ignores chrome toggle. */
+function SheetDebugOverlay() {
+  const insets = useSafeAreaInsets();
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const notify = () => setTick((t) => t + 1);
+    sheetDebugSubs.add(notify);
+    return () => {
+      sheetDebugSubs.delete(notify);
+    };
+  }, []);
+  return (
+    <View
+      pointerEvents="none"
+      style={{
+        position: "absolute",
+        top: insets.top + 2,
+        left: 4,
+        right: 4,
+        zIndex: 9999,
+        backgroundColor: "rgba(0,0,0,0.65)",
+        borderRadius: 6,
+        paddingHorizontal: 6,
+        paddingVertical: 4,
+      }}
+    >
+      {sheetDebugLines.map((line, i) => (
+        <Text
+          key={`${i}-${line}`}
+          style={{
+            color: "#7CFC00",
+            fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+            fontSize: 9,
+            lineHeight: 12,
+          }}
+        >
+          {line}
+        </Text>
+      ))}
+    </View>
+  );
+}
+/* ------------------------------------------------------------------ */
 
 /**
  * Full-screen video player for the viewer. Used both inside the gallery
@@ -698,14 +757,17 @@ export default function PhotoViewerScreen() {
    * first open (retried on demand after an error). Fetch is per-viewer
    * lifetime — the vocabulary changes rarely.
    */
-  // TEMP [SHEET-DEBUG] — confirm the sheets' host component mounts at all.
+  // TEMP [SHEET-DEBUG] — confirm the sheets' host component mounts at all,
+  // and record which bundle is running (updateId prefix).
   useEffect(() => {
-    console.log("[SHEET-DEBUG] PhotoViewerScreen mounted (sheet host)");
-    return () => console.log("[SHEET-DEBUG] PhotoViewerScreen unmounted");
+    sheetDebug(
+      `mounted (sheet host) update=${getBuildInfo().updateId.slice(0, 8)}`,
+    );
+    return () => sheetDebug("PhotoViewerScreen unmounted");
   }, []);
 
   const openTagSheet = () => {
-    console.log("[SHEET-DEBUG] tag icon pressed → setTagSheetOpen(true)"); // TEMP
+    sheetDebug("tag icon pressed → setTagSheetOpen(true)"); // TEMP
     setTagSheetOpen(true);
     if (accountTags === null || accountTagsError) void loadAccountTags();
   };
@@ -807,6 +869,9 @@ export default function PhotoViewerScreen() {
   return (
     <View style={styles.bg}>
       <Stack.Screen options={{ headerShown: false }} />
+
+      {/* TEMP [SHEET-DEBUG] overlay — always on, ignores chrome toggle. */}
+      <SheetDebugOverlay />
 
       {/* Top bar — hides with the rest of the chrome on photo tap; always
           visible while editing (the annotate flow needs the exit). */}
@@ -1083,9 +1148,7 @@ export default function PhotoViewerScreen() {
               disabled={currentMediaId === undefined}
               badge={commentCount > 0 ? commentCount : undefined}
               onPress={() => {
-                console.log(
-                  "[SHEET-DEBUG] comment icon pressed → setCommentsOpen(true)",
-                ); // TEMP
+                sheetDebug("comment icon pressed → setCommentsOpen(true)"); // TEMP
                 setCommentsOpen(true);
               }}
             />
@@ -1100,9 +1163,7 @@ export default function PhotoViewerScreen() {
               label="Attach to task"
               disabled={currentMediaId === undefined}
               onPress={() => {
-                console.log(
-                  "[SHEET-DEBUG] task icon pressed → setTaskSheetOpen(true)",
-                ); // TEMP
+                sheetDebug("task icon pressed → setTaskSheetOpen(true)"); // TEMP
                 setTaskSheetOpen(true);
               }}
             />
@@ -1122,9 +1183,7 @@ export default function PhotoViewerScreen() {
               icon="more-horizontal"
               label="More options"
               onPress={() => {
-                console.log(
-                  "[SHEET-DEBUG] overflow icon pressed → setOverflowOpen(true)",
-                ); // TEMP
+                sheetDebug("overflow icon pressed → setOverflowOpen(true)"); // TEMP
                 setOverflowOpen(true);
               }}
             />
@@ -1627,8 +1686,8 @@ function AppSheet({
   const insets = useSafeAreaInsets();
   useEffect(() => {
     // TEMP [SHEET-DEBUG] instrumentation
-    console.log(
-      `[SHEET-DEBUG] AppSheet effect: open=${open} refNonNull=${
+    sheetDebug(
+      `AppSheet effect: open=${open} refNonNull=${
         ref.current !== null
       } branch=${open ? "present" : "dismiss"}`,
     );
@@ -1640,7 +1699,7 @@ function AppSheet({
       ref={ref}
       onDismiss={onClose}
       onChange={(index) => {
-        console.log(`[SHEET-DEBUG] BottomSheetModal onChange index=${index}`); // TEMP
+        sheetDebug(`BottomSheetModal onChange index=${index}`); // TEMP
       }}
       enablePanDownToClose
       snapPoints={snapPoints}
