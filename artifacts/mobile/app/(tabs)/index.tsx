@@ -588,6 +588,19 @@ export default function ProjectsScreen() {
           ) : null
         }
         ListEmptyComponent={
+          // When the query found photos (or is still searching for them),
+          // collapse the projects empty state to one compact line so photo
+          // results stay above the fold and reachable under the keyboard.
+          query && (photoSearching || (photoResults?.length ?? 0) > 0) ? (
+            <Text
+              style={[
+                styles.photoSectionHint,
+                { color: colors.mutedForeground, paddingTop: 12 },
+              ]}
+            >
+              No matching projects
+            </Text>
+          ) : (
           <View style={{ flex: 1, justifyContent: "center", paddingTop: 60 }}>
             {query ? (
               <EmptyState
@@ -609,6 +622,7 @@ export default function ProjectsScreen() {
               />
             )}
           </View>
+          )
         }
       />
     </View>

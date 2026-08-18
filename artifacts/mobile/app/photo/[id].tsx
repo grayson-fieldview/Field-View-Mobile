@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -75,8 +76,15 @@ export default function PhotoViewerScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { photos, updatePhoto, deletePhoto, loadPhotoAnnotations, saveAnnotations } =
-    useData();
+  const {
+    photos,
+    projects,
+    tasks,
+    updatePhoto,
+    deletePhoto,
+    loadPhotoAnnotations,
+    saveAnnotations,
+  } = useData();
   const { showToast } = useToast();
   // True while we're fetching references for the trash button — drives
   // the inline spinner replacement of the trash icon. The actual
@@ -114,6 +122,20 @@ export default function PhotoViewerScreen() {
   const currentPhoto = projectPhotos[currentIndex];
 
   const [editing, setEditing] = useState(false);
+
+  // Viewer chrome: photo is the content, everything else toggles off on a
+  // tap of the image (standard viewer gesture).
+  const [chromeVisible, setChromeVisible] = useState(true);
+  // AI caption: one truncated line by default, tap to expand.
+  const [captionExpanded, setCaptionExpanded] = useState(false);
+  // Comments live behind the comment icon in a bottom sheet now.
+  const [commentsOpen, setCommentsOpen] = useState(false);
+  // Overflow (three-dots) sheet: actions + details/metadata.
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  // "Attach to task" picker sheet.
+  const [taskSheetOpen, setTaskSheetOpen] = useState(false);
+  const [attachingTaskId, setAttachingTaskId] = useState<string | null>(null);
+  const [settingCover, setSettingCover] = useState(false);
   const [color, setColor] = useState(COLORS[0]);
   const [size, setSize] = useState(SIZES[1]);
   // Per-photo EDITABLE buffer — the current user's OWN strokes, in canonical
@@ -579,11 +601,75 @@ export default function PhotoViewerScreen() {
   const currentStrokeList = strokesById[currentPhoto.id] ?? [];
   const editOthers = othersById[currentPhoto.id] ?? [];
 
+  // ----- Bottom-bar / sheet derived data -----
+  const project = projects.find((p) => p.id === currentPhoto.projectId);
+  const projectAddress = project?.address?.trim() || null;
+  const uploaderName = currentPhoto.uploader
+    ? [currentPhoto.uploader.firstName, currentPhoto.uploader.lastName]
+        .filter(Boolean)
+        .join(" ")
+        .trim() || "Unknown user"
+    : "Unknown user";
+  const uploaderInitials =
+    uploaderName === "Unknown user"
+      ? "?"
+      : uploaderName
+          .split(/\s+/)
+          .map((w) => w[0])
+          .slice(0, 2)
+          .join("")
+          .toUpperCase();
+  // "UNCLEAR" is an internal sentinel and must never display.
+  const aiCaption =
+    currentPhoto.aiCaption && currentPhoto.aiCaption !== "UNCLEAR"
+      ? currentPhoto.aiCaption
+      : null;
+  const commentCount = comments?.length ?? 0;
+  const projectTasks = tasks.filter(
+    (t) => t.projectId === currentPhoto.projectId,
+  );
+
+  const onSetCover = async () => {
+    const mid = currentPhoto.mediaId;
+    if (mid === undefined || settingCover) return;
+    setSettingCover(true);
+    try {
+      await api.updateProject(currentPhoto.projectId, { coverPhotoId: mid });
+      setOverflowOpen(false);
+      showToast("Cover photo updated");
+    } catch {
+      showToast("Couldn't set cover photo");
+    } finally {
+      setSettingCover(false);
+    }
+  };
+
+  const onAttachToTask = async (taskId: string) => {
+    const mid = currentPhoto.mediaId;
+    if (mid === undefined || attachingTaskId) return;
+    setAttachingTaskId(taskId);
+    try {
+      await api.attachPhotosToTask(taskId, [mid]);
+      setTaskSheetOpen(false);
+      showToast("Photo attached to task");
+    } catch (e) {
+      showToast(
+        e instanceof ApiError && e.message
+          ? e.message
+          : "Couldn't attach photo to task",
+      );
+    } finally {
+      setAttachingTaskId(null);
+    }
+  };
+
   return (
     <View style={styles.bg}>
       <Stack.Screen options={{ headerShown: false }} />
 
-      {/* Top bar — persists across both branches. */}
+      {/* Top bar — hides with the rest of the chrome on photo tap; always
+          visible while editing (the annotate flow needs the exit). */}
+      {chromeVisible || editing ? (
       <View style={[styles.topBar, { paddingTop: insets.top + 6 }]}>
         <Pressable
           onPress={() => router.back()}
@@ -598,6 +684,7 @@ export default function PhotoViewerScreen() {
           {currentIndex + 1} of {projectPhotos.length}
         </Text>
       </View>
+      ) : null}
 
       {/* Photo display — branched by edit mode.
           Read mode: react-native-awesome-gallery provides pinch-to-zoom,
@@ -631,7 +718,12 @@ export default function PhotoViewerScreen() {
           data={projectPhotos}
           keyExtractor={(p: Photo) => p.id}
           initialIndex={currentIndex}
-          onIndexChange={(i: number) => setCurrentIndex(i)}
+          onIndexChange={(i: number) => {
+            setCurrentIndex(i);
+            // Per-photo transient UI resets on swipe.
+            setCaptionExpanded(false);
+          }}
+          onTap={() => setChromeVisible((v) => !v)}
           onSwipeToClose={() => router.back()}
           renderItem={({
             item,
@@ -737,90 +829,152 @@ export default function PhotoViewerScreen() {
         />
       )}
 
-      {/* Tools panel (top-left) — persists across both branches. */}
-      <View style={[styles.toolsPanel, { top: insets.top + 56 }]}>
-        <View style={styles.toolRow}>
-          <ToolButton
-            active={editing}
-            onPress={() => setEditing((v) => !v)}
-            icon="edit-2"
-            disabled={currentPhoto?.isVideo}
-            label={editing ? "Stop drawing" : "Draw on photo"}
-          />
-          <ToolButton
-            onPress={onDownload}
-            icon="download"
-            label="Save photo to camera roll"
-          />
-          <ToolButton
-            onPress={undo}
-            icon="rotate-ccw"
-            disabled={currentStrokeList.length === 0}
-            label="Undo last stroke"
-          />
-          {trashLoading ? (
-            // Match ToolButton footprint so the toolbar doesn't reflow.
-            // We disable the press surface entirely while the references
-            // fetch is in flight — a second tap during the round-trip
-            // would just queue another dialog.
-            <View style={styles.trashSpinner}>
-              <ActivityIndicator color="#ef4444" />
-            </View>
-          ) : (
+      {/* Tools panel (top-left) — edit mode only. Read-mode entry points
+          moved to the bottom action bar (draw) and the overflow sheet
+          (save / delete). Row height is unchanged so AnnotationEditor's
+          panelTop math still lines up. */}
+      {editing ? (
+        <View style={[styles.toolsPanel, { top: insets.top + 56 }]}>
+          <View style={styles.toolRow}>
             <ToolButton
-              onPress={() => void onDelete()}
-              icon="trash-2"
-              tint="#ef4444"
-              label="Delete photo"
+              active={editing}
+              onPress={() => setEditing((v) => !v)}
+              icon="edit-2"
+              disabled={currentPhoto?.isVideo}
+              label="Stop drawing"
             />
-          )}
+            <ToolButton
+              onPress={undo}
+              icon="rotate-ccw"
+              disabled={currentStrokeList.length === 0}
+              label="Undo last stroke"
+            />
+          </View>
+          {/* Edit-mode rows (colors / sizes / clear / save + tool scaffold)
+              now render inside AnnotationEditor, absolutely positioned to
+              the same spot below this row. */}
         </View>
-        {/* Edit-mode rows (colors / sizes / clear / save + tool scaffold)
-            now render inside AnnotationEditor, absolutely positioned to
-            the same spot below this row. */}
-      </View>
+      ) : null}
 
-      {/* Caption / metadata + comments — only when not editing (preserved
-          behavior). KeyboardAvoidingView lifts the whole bottom sheet so
-          the comment input stays visible above the keyboard on iOS. */}
-      {!editing ? (
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={styles.metaWrap}
+      {/* Compact bottom bar — overlaid chrome, hidden with the rest of
+          the chrome on photo tap and while editing. */}
+      {!editing && chromeVisible ? (
+        <View
+          style={[styles.bottomBar, { paddingBottom: insets.bottom + 10 }]}
         >
-          <ScrollView
-            style={styles.metaScroll}
-            contentContainerStyle={{
-              paddingHorizontal: 16,
-              paddingVertical: 10,
-            }}
-            keyboardShouldPersistTaps="handled"
-          >
-            {currentPhoto.note ? (
-              <Text style={styles.metaCaption}>{currentPhoto.note}</Text>
-            ) : null}
-            {currentPhoto.takenAt ? (
-              <Text style={styles.metaSub}>
-                {new Date(currentPhoto.takenAt).toLocaleString()}
+          {/* Line 1: uploader + date/time; project address replaces the
+              old raw-GPS line (coordinates live in the overflow sheet). */}
+          <View style={styles.metaRow}>
+            <View style={styles.uploaderAvatar}>
+              <Text style={styles.uploaderInitials}>{uploaderInitials}</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.uploaderName} numberOfLines={1}>
+                {uploaderName}
+                {currentPhoto.takenAt ? (
+                  <Text style={styles.metaDate}>
+                    {"   "}
+                    {formatCommentDate(currentPhoto.takenAt)}
+                  </Text>
+                ) : null}
               </Text>
-            ) : null}
-            {currentPhoto.latitude != null && currentPhoto.longitude != null ? (
-              <Text style={styles.metaSub}>
-                {currentPhoto.latitude.toFixed(5)},{" "}
-                {currentPhoto.longitude.toFixed(5)}
-              </Text>
-            ) : null}
+              {projectAddress ? (
+                <Text style={styles.metaAddress} numberOfLines={1}>
+                  {projectAddress}
+                </Text>
+              ) : null}
+            </View>
+          </View>
 
-            {/* Comments — hidden entirely for local-only photos (no
-                backend media row yet, so there's nothing to comment on). */}
-            {currentMediaId !== undefined ? (
-              <View style={styles.commentsBlock}>
-                <Text style={styles.commentsHeader}>Comments</Text>
+          {/* Line 2: AI caption, one truncated line, tap to expand. */}
+          {aiCaption ? (
+            <Pressable
+              onPress={() => setCaptionExpanded((v) => !v)}
+              accessibilityRole="button"
+              accessibilityLabel={
+                captionExpanded ? "Collapse AI caption" : "Expand AI caption"
+              }
+            >
+              <Text
+                style={styles.captionLine}
+                numberOfLines={captionExpanded ? undefined : 1}
+              >
+                {aiCaption}
+              </Text>
+            </Pressable>
+          ) : null}
+
+          {/* Line 3: single icon row. Tag has no existing per-photo
+              implementation on mobile, so no tag icon (no stubs). */}
+          <View style={styles.actionRow}>
+            <BarIcon
+              icon="message-circle"
+              label="Comments"
+              disabled={currentMediaId === undefined}
+              badge={commentCount > 0 ? commentCount : undefined}
+              onPress={() => setCommentsOpen(true)}
+            />
+            <BarIcon
+              icon="edit-2"
+              label="Draw on photo"
+              disabled={currentPhoto.isVideo}
+              onPress={() => setEditing(true)}
+            />
+            <BarIcon
+              icon="check-square"
+              label="Attach to task"
+              disabled={currentMediaId === undefined}
+              onPress={() => setTaskSheetOpen(true)}
+            />
+            <View style={{ flex: 1 }} />
+            <BarIcon
+              icon="more-horizontal"
+              label="More options"
+              onPress={() => setOverflowOpen(true)}
+            />
+          </View>
+        </View>
+      ) : null}
+
+      {/* Comments sheet — thread + AI caption + composer, behind the
+          comment icon. Never rendered for local-only photos (no media
+          row to comment on; the icon is disabled). */}
+      <Modal
+        visible={commentsOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setCommentsOpen(false)}
+      >
+        <View style={styles.sheetBackdrop}>
+          <Pressable
+            style={{ flex: 1 }}
+            onPress={() => setCommentsOpen(false)}
+            accessibilityLabel="Close comments"
+          />
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : undefined}
+          >
+            <View style={[styles.sheet, { paddingBottom: insets.bottom + 8 }]}>
+              <View style={styles.sheetHeader}>
+                <Text style={styles.sheetTitle}>Comments</Text>
+                <Pressable
+                  onPress={() => setCommentsOpen(false)}
+                  hitSlop={10}
+                  accessibilityRole="button"
+                  accessibilityLabel="Close comments"
+                >
+                  <Feather name="x" size={20} color="#fff" />
+                </Pressable>
+              </View>
+
+              <ScrollView
+                style={styles.sheetScroll}
+                keyboardShouldPersistTaps="handled"
+              >
                 {/* AI caption — pinned above human comments, matching
                     web. "UNCLEAR" is an internal sentinel and must
                     never display. No timestamp, no edit/delete. */}
-                {currentPhoto.aiCaption &&
-                currentPhoto.aiCaption !== "UNCLEAR" ? (
+                {aiCaption ? (
                   <View style={styles.commentItem}>
                     <View style={styles.aiAuthorRow}>
                       <View style={styles.aiAvatar}>
@@ -828,7 +982,7 @@ export default function PhotoViewerScreen() {
                       </View>
                       <Text style={styles.commentAuthor}>Field View AI</Text>
                     </View>
-                    {renderTranslatableBody("ai", currentPhoto.aiCaption)}
+                    {renderTranslatableBody("ai", aiCaption)}
                   </View>
                 ) : null}
                 {comments === null ? (
@@ -858,59 +1012,291 @@ export default function PhotoViewerScreen() {
                     </View>
                   ))
                 )}
-              </View>
-            ) : null}
-          </ScrollView>
+              </ScrollView>
 
-          {currentMediaId !== undefined ? (
-            <View
-              style={[
-                styles.commentInputRow,
-                { paddingBottom: insets.bottom + 8 },
-              ]}
-            >
-              <TextInput
-                value={commentDraft}
-                onChangeText={setCommentDraft}
-                placeholder="Add Comment"
-                placeholderTextColor="rgba(255,255,255,0.45)"
-                style={styles.commentInput}
-                multiline
-                editable={!postingComment}
-                accessibilityLabel="Add Comment"
-              />
-              <Pressable
-                onPress={() => void onPostComment()}
-                disabled={postingComment || commentDraft.trim().length === 0}
-                accessibilityRole="button"
-                accessibilityLabel="Post comment"
-                accessibilityState={{
-                  disabled:
-                    postingComment || commentDraft.trim().length === 0,
-                  busy: postingComment,
-                }}
-                style={[
-                  styles.commentPostBtn,
-                  {
-                    opacity:
+              {currentMediaId !== undefined ? (
+                <View style={styles.commentInputRow}>
+                  <TextInput
+                    value={commentDraft}
+                    onChangeText={setCommentDraft}
+                    placeholder="Add Comment"
+                    placeholderTextColor="rgba(255,255,255,0.45)"
+                    style={styles.commentInput}
+                    multiline
+                    editable={!postingComment}
+                    accessibilityLabel="Add Comment"
+                  />
+                  <Pressable
+                    onPress={() => void onPostComment()}
+                    disabled={
                       postingComment || commentDraft.trim().length === 0
-                        ? 0.5
-                        : 1,
-                  },
-                ]}
+                    }
+                    accessibilityRole="button"
+                    accessibilityLabel="Post comment"
+                    accessibilityState={{
+                      disabled:
+                        postingComment || commentDraft.trim().length === 0,
+                      busy: postingComment,
+                    }}
+                    style={[
+                      styles.commentPostBtn,
+                      {
+                        opacity:
+                          postingComment || commentDraft.trim().length === 0
+                            ? 0.5
+                            : 1,
+                      },
+                    ]}
+                  >
+                    {postingComment ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <Feather name="send" size={16} color="#fff" />
+                    )}
+                  </Pressable>
+                </View>
+              ) : null}
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
+      {/* Overflow sheet — actions + full details (incl. raw coordinates).
+          "Move to project" has no existing implementation (no API), so it
+          is intentionally absent rather than stubbed. */}
+      <Modal
+        visible={overflowOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setOverflowOpen(false)}
+      >
+        <View style={styles.sheetBackdrop}>
+          <Pressable
+            style={{ flex: 1 }}
+            onPress={() => setOverflowOpen(false)}
+            accessibilityLabel="Close options"
+          />
+          <View style={[styles.sheet, { paddingBottom: insets.bottom + 8 }]}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>Options</Text>
+              <Pressable
+                onPress={() => setOverflowOpen(false)}
+                hitSlop={10}
+                accessibilityRole="button"
+                accessibilityLabel="Close options"
               >
-                {postingComment ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Feather name="send" size={16} color="#fff" />
-                )}
+                <Feather name="x" size={20} color="#fff" />
               </Pressable>
             </View>
-          ) : (
-            <View style={{ height: insets.bottom + 8 }} />
-          )}
-        </KeyboardAvoidingView>
+
+            <ScrollView style={styles.sheetScroll}>
+              <SheetAction
+                icon="download"
+                label="Save to device"
+                onPress={() => {
+                  setOverflowOpen(false);
+                  void onDownload();
+                }}
+              />
+              {currentMediaId !== undefined ? (
+                <SheetAction
+                  icon="image"
+                  label="Set as cover photo"
+                  busy={settingCover}
+                  onPress={() => void onSetCover()}
+                />
+              ) : null}
+              <SheetAction
+                icon="trash-2"
+                label="Delete photo"
+                tint="#ef4444"
+                busy={trashLoading}
+                onPress={() => {
+                  setOverflowOpen(false);
+                  void onDelete();
+                }}
+              />
+
+              <Text style={styles.detailsHeader}>Details</Text>
+              {currentPhoto.takenAt ? (
+                <DetailRow
+                  label="Taken"
+                  value={new Date(currentPhoto.takenAt).toLocaleString()}
+                />
+              ) : null}
+              <DetailRow label="Uploaded by" value={uploaderName} />
+              {projectAddress ? (
+                <DetailRow label="Address" value={projectAddress} />
+              ) : null}
+              {currentPhoto.latitude != null &&
+              currentPhoto.longitude != null ? (
+                <DetailRow
+                  label="Coordinates"
+                  value={`${currentPhoto.latitude.toFixed(5)}, ${currentPhoto.longitude.toFixed(5)}`}
+                />
+              ) : null}
+              {currentPhoto.accuracy != null ? (
+                <DetailRow
+                  label="GPS accuracy"
+                  value={`±${Math.round(currentPhoto.accuracy)} m`}
+                />
+              ) : null}
+              {currentPhoto.note ? (
+                <DetailRow label="Caption" value={currentPhoto.note} />
+              ) : null}
+              {currentPhoto.tags && currentPhoto.tags.length > 0 ? (
+                <DetailRow
+                  label="Tags"
+                  value={currentPhoto.tags.join(", ")}
+                />
+              ) : null}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Attach-to-task sheet — existing attachPhotosToTask API. */}
+      <Modal
+        visible={taskSheetOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setTaskSheetOpen(false)}
+      >
+        <View style={styles.sheetBackdrop}>
+          <Pressable
+            style={{ flex: 1 }}
+            onPress={() => setTaskSheetOpen(false)}
+            accessibilityLabel="Close task picker"
+          />
+          <View style={[styles.sheet, { paddingBottom: insets.bottom + 8 }]}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>Attach to task</Text>
+              <Pressable
+                onPress={() => setTaskSheetOpen(false)}
+                hitSlop={10}
+                accessibilityRole="button"
+                accessibilityLabel="Close task picker"
+              >
+                <Feather name="x" size={20} color="#fff" />
+              </Pressable>
+            </View>
+            <ScrollView style={styles.sheetScroll}>
+              {projectTasks.length === 0 ? (
+                <Text style={styles.commentEmpty}>
+                  No tasks in this project yet.
+                </Text>
+              ) : (
+                projectTasks.map((t) => (
+                  <Pressable
+                    key={t.id}
+                    onPress={() => void onAttachToTask(t.id)}
+                    disabled={attachingTaskId !== null}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Attach photo to ${t.title}`}
+                    style={[
+                      styles.taskRow,
+                      {
+                        opacity:
+                          attachingTaskId !== null &&
+                          attachingTaskId !== t.id
+                            ? 0.5
+                            : 1,
+                      },
+                    ]}
+                  >
+                    <Feather
+                      name={t.done ? "check-circle" : "circle"}
+                      size={16}
+                      color={t.done ? "#4ade80" : "rgba(255,255,255,0.6)"}
+                    />
+                    <Text style={styles.taskTitle} numberOfLines={1}>
+                      {t.title}
+                    </Text>
+                    {attachingTaskId === t.id ? (
+                      <ActivityIndicator size="small" color="#f09004" />
+                    ) : null}
+                  </Pressable>
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+function BarIcon({
+  icon,
+  label,
+  onPress,
+  disabled,
+  badge,
+}: {
+  icon: keyof typeof Feather.glyphMap;
+  label: string;
+  onPress: () => void;
+  disabled?: boolean;
+  badge?: number;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      hitSlop={8}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled: !!disabled }}
+      style={[styles.barIconBtn, { opacity: disabled ? 0.35 : 1 }]}
+    >
+      <Feather name={icon} size={20} color="#fff" />
+      {badge !== undefined ? (
+        <View style={styles.barBadge}>
+          <Text style={styles.barBadgeTxt}>{badge > 99 ? "99+" : badge}</Text>
+        </View>
       ) : null}
+    </Pressable>
+  );
+}
+
+function SheetAction({
+  icon,
+  label,
+  onPress,
+  tint,
+  busy,
+}: {
+  icon: keyof typeof Feather.glyphMap;
+  label: string;
+  onPress: () => void;
+  tint?: string;
+  busy?: boolean;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={busy}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled: !!busy, busy: !!busy }}
+      style={styles.sheetActionRow}
+    >
+      <Feather name={icon} size={18} color={tint ?? "#fff"} />
+      <Text style={[styles.sheetActionTxt, tint ? { color: tint } : null]}>
+        {label}
+      </Text>
+      {busy ? (
+        <ActivityIndicator size="small" color={tint ?? "#f09004"} />
+      ) : null}
+    </Pressable>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.detailRow}>
+      <Text style={styles.detailLabel}>{label}</Text>
+      <Text style={styles.detailValue}>{value}</Text>
     </View>
   );
 }
@@ -1034,38 +1420,160 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  // Sized to match ToolButton (30×30) so swapping the trash icon for a
-  // spinner during the references fetch doesn't reflow the toolbar.
-  trashSpinner: {
-    width: 30,
-    height: 30,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  metaWrap: {
+  bottomBar: {
     position: "absolute",
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: "rgba(0,0,0,0.5)",
+    backgroundColor: "rgba(0,0,0,0.55)",
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    gap: 8,
   },
-  // Height cap moved off metaWrap onto the inner scroller so the comment
-  // input row below it is never clipped by the old maxHeight.
-  metaScroll: {
-    maxHeight: 240,
+  metaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
   },
-  commentsBlock: {
-    marginTop: 10,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "rgba(255,255,255,0.25)",
-    paddingTop: 8,
+  uploaderAvatar: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: "#f09004",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  commentsHeader: {
+  uploaderInitials: {
+    color: "#fff",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 12,
+  },
+  uploaderName: {
     color: "#fff",
     fontFamily: "Inter_600SemiBold",
     fontSize: 13,
+  },
+  metaDate: {
+    color: "rgba(255,255,255,0.65)",
+    fontFamily: "Inter_400Regular",
+    fontSize: 12,
+  },
+  metaAddress: {
+    color: "rgba(255,255,255,0.65)",
+    fontFamily: "Inter_400Regular",
+    fontSize: 12,
+    marginTop: 1,
+  },
+  captionLine: {
+    color: "#fff",
+    fontFamily: "Inter_400Regular",
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  actionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 22,
+  },
+  barIconBtn: {
+    paddingVertical: 4,
+  },
+  barBadge: {
+    position: "absolute",
+    top: -2,
+    right: -10,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: "#f09004",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 3,
+  },
+  barBadgeTxt: {
+    color: "#fff",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 10,
+  },
+  sheetBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+  },
+  sheet: {
+    backgroundColor: "#1c1c1e",
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+  sheetHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  sheetTitle: {
+    color: "#fff",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 15,
+  },
+  sheetScroll: {
+    maxHeight: 380,
+  },
+  sheetActionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(255,255,255,0.15)",
+  },
+  sheetActionTxt: {
+    color: "#fff",
+    fontFamily: "Inter_500Medium",
+    fontSize: 14,
+    flex: 1,
+  },
+  detailsHeader: {
+    color: "rgba(255,255,255,0.6)",
+    fontFamily: "Inter_600SemiBold",
+    fontSize: 12,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    marginTop: 16,
     marginBottom: 4,
+  },
+  detailRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    gap: 16,
+    paddingVertical: 6,
+  },
+  detailLabel: {
+    color: "rgba(255,255,255,0.6)",
+    fontFamily: "Inter_400Regular",
+    fontSize: 13,
+  },
+  detailValue: {
+    color: "#fff",
+    fontFamily: "Inter_400Regular",
+    fontSize: 13,
+    flexShrink: 1,
+    textAlign: "right",
+  },
+  taskRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(255,255,255,0.15)",
+  },
+  taskTitle: {
+    color: "#fff",
+    fontFamily: "Inter_500Medium",
+    fontSize: 14,
+    flex: 1,
   },
   commentEmpty: {
     color: "rgba(255,255,255,0.6)",
@@ -1153,16 +1661,5 @@ const styles = StyleSheet.create({
     backgroundColor: "#f09004",
     alignItems: "center",
     justifyContent: "center",
-  },
-  metaCaption: {
-    color: "#fff",
-    fontFamily: "Inter_500Medium",
-    fontSize: 14,
-    marginBottom: 4,
-  },
-  metaSub: {
-    color: "rgba(255,255,255,0.75)",
-    fontFamily: "Inter_400Regular",
-    fontSize: 12,
   },
 });
