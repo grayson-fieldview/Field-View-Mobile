@@ -34,7 +34,10 @@ import { fittedContainRect } from "@/services/annotations";
 import { useData } from "@/contexts/DataContext";
 import { useToast } from "@/contexts/ToastContext";
 import { ApiError, api, buildMediaReferencesMessage } from "@/services/api";
-import type { BackendCommentResponse } from "@/services/api";
+import type {
+  BackendAccountTag,
+  BackendCommentResponse,
+} from "@/services/api";
 import type { Photo, StoredStroke } from "@/services/types";
 
 /**
@@ -148,6 +151,16 @@ export default function PhotoViewerScreen() {
   const [assigneePickerOpen, setAssigneePickerOpen] = useState(false);
   const [creatingTask, setCreatingTask] = useState(false);
   const [settingCover, setSettingCover] = useState(false);
+  // Tag sheet: account photo-tag vocabulary is fetched on first open
+  // (media rows carry tag NAMES only — colors resolve against this
+  // list, case-insensitively, matching web).
+  const [tagSheetOpen, setTagSheetOpen] = useState(false);
+  const [accountTags, setAccountTags] = useState<BackendAccountTag[] | null>(
+    null,
+  );
+  const [accountTagsError, setAccountTagsError] = useState(false);
+  /** Tag name currently being added/removed (single-flight guard). */
+  const [tagMutating, setTagMutating] = useState<string | null>(null);
   const [color, setColor] = useState(COLORS[0]);
   const [size, setSize] = useState(SIZES[1]);
   // Per-photo EDITABLE buffer — the current user's OWN strokes, in canonical
@@ -676,6 +689,65 @@ export default function PhotoViewerScreen() {
   };
 
   /**
+   * Open the tag sheet, fetching the account's photo-tag vocabulary on
+   * first open (retried on demand after an error). Fetch is per-viewer
+   * lifetime — the vocabulary changes rarely.
+   */
+  const openTagSheet = () => {
+    setTagSheetOpen(true);
+    if (accountTags === null || accountTagsError) void loadAccountTags();
+  };
+
+  const loadAccountTags = async () => {
+    setAccountTagsError(false);
+    try {
+      const rows = await api.listTags("photo");
+      setAccountTags(rows);
+    } catch {
+      setAccountTagsError(true);
+    }
+  };
+
+  /** Case-insensitive tag-name → color lookup (web parity). */
+  const tagColorByName = useMemo(() => {
+    const m = new Map<string, string | null>();
+    for (const t of accountTags ?? []) {
+      m.set(t.name.toLowerCase(), t.color ?? null);
+    }
+    return m;
+  }, [accountTags]);
+
+  /**
+   * Add or remove one tag. PATCHes the full replacement array
+   * immediately (web's no-save-button behavior), server-first: local
+   * state (DataContext persist) updates only after the 200 so a failed
+   * PATCH can't leave the row lying about server state.
+   */
+  const onToggleTag = async (name: string, add: boolean) => {
+    const mid = currentPhoto.mediaId;
+    if (mid === undefined || tagMutating) return;
+    const current = currentPhoto.tags ?? [];
+    const next = add
+      ? [...current, name]
+      : current.filter((t) => t.toLowerCase() !== name.toLowerCase());
+    setTagMutating(name);
+    try {
+      const updated = await api.updateMedia(mid, { tags: next });
+      await updatePhoto(currentPhoto.id, { tags: updated.tags ?? [] });
+    } catch (e) {
+      showToast(
+        e instanceof ApiError && e.message
+          ? e.message
+          : add
+            ? "Couldn't add tag"
+            : "Couldn't remove tag",
+      );
+    } finally {
+      setTagMutating(null);
+    }
+  };
+
+  /**
    * Create a new task on this photo's project, then attach the photo to
    * it. Two server calls; if the attach fails the task still exists (it
    * was genuinely created), so the toast says exactly that instead of
@@ -1008,6 +1080,17 @@ export default function PhotoViewerScreen() {
               label="Attach to task"
               disabled={currentMediaId === undefined}
               onPress={() => setTaskSheetOpen(true)}
+            />
+            <BarIcon
+              icon="tag"
+              label="Edit tags"
+              disabled={currentMediaId === undefined}
+              badge={
+                currentPhoto.tags && currentPhoto.tags.length > 0
+                  ? currentPhoto.tags.length
+                  : undefined
+              }
+              onPress={openTagSheet}
             />
             <View style={{ flex: 1 }} />
             <BarIcon
@@ -1399,6 +1482,109 @@ export default function PhotoViewerScreen() {
         </View>
       </Modal>
 
+      {/* Tag sheet — current tags (X to remove) + account photo-type
+          vocabulary to add. Every change PATCHes immediately (no save
+          button, web parity). Colors resolve from the account tag list,
+          case-insensitively; null color = default neutral chip. */}
+      <Modal
+        visible={tagSheetOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setTagSheetOpen(false)}
+      >
+        <View style={styles.sheetBackdrop}>
+          <Pressable
+            style={{ flex: 1 }}
+            onPress={() => setTagSheetOpen(false)}
+            accessibilityLabel="Close tags"
+          />
+          <View style={[styles.sheet, { paddingBottom: insets.bottom + 8 }]}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>Tags</Text>
+              <Pressable
+                onPress={() => setTagSheetOpen(false)}
+                hitSlop={10}
+                accessibilityRole="button"
+                accessibilityLabel="Close tags"
+              >
+                <Feather name="x" size={20} color="#fff" />
+              </Pressable>
+            </View>
+            <ScrollView
+              style={styles.sheetScroll}
+              keyboardShouldPersistTaps="handled"
+            >
+              <Text style={styles.detailsHeader}>On this photo</Text>
+              {(currentPhoto.tags?.length ?? 0) === 0 ? (
+                <Text style={styles.commentEmpty}>No tags yet.</Text>
+              ) : (
+                <View style={styles.tagWrap}>
+                  {(currentPhoto.tags ?? []).map((name) => (
+                    <TagChip
+                      key={name}
+                      name={name}
+                      color={tagColorByName.get(name.toLowerCase()) ?? null}
+                      removable
+                      busy={tagMutating === name}
+                      disabled={tagMutating !== null}
+                      onPress={() => void onToggleTag(name, false)}
+                    />
+                  ))}
+                </View>
+              )}
+
+              <Text style={styles.detailsHeader}>Add tag</Text>
+              {accountTags === null && !accountTagsError ? (
+                <ActivityIndicator
+                  size="small"
+                  color="#f09004"
+                  style={{ alignSelf: "flex-start", marginVertical: 6 }}
+                />
+              ) : accountTagsError ? (
+                <Pressable
+                  onPress={() => void loadAccountTags()}
+                  accessibilityRole="button"
+                  accessibilityLabel="Retry loading tags"
+                >
+                  <Text style={styles.commentEmpty}>
+                    Couldn't load tags. Tap to retry.
+                  </Text>
+                </Pressable>
+              ) : (
+                (() => {
+                  const applied = new Set(
+                    (currentPhoto.tags ?? []).map((t) => t.toLowerCase()),
+                  );
+                  const available = (accountTags ?? []).filter(
+                    (t) => !applied.has(t.name.toLowerCase()),
+                  );
+                  return available.length === 0 ? (
+                    <Text style={styles.commentEmpty}>
+                      {applied.size > 0
+                        ? "All account tags applied."
+                        : "No photo tags in this account yet."}
+                    </Text>
+                  ) : (
+                    <View style={styles.tagWrap}>
+                      {available.map((t) => (
+                        <TagChip
+                          key={String(t.id)}
+                          name={t.name}
+                          color={t.color ?? null}
+                          busy={tagMutating === t.name}
+                          disabled={tagMutating !== null}
+                          onPress={() => void onToggleTag(t.name, true)}
+                        />
+                      ))}
+                    </View>
+                  );
+                })()
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
       {/* Assignee picker for the new-task form. Rendered outside the task
           sheet Modal is not possible on iOS (sibling Modals stack fine). */}
       <AssigneePickerSheet
@@ -1440,6 +1626,73 @@ function BarIcon({
         <View style={styles.barBadge}>
           <Text style={styles.barBadgeTxt}>{badge > 99 ? "99+" : badge}</Text>
         </View>
+      ) : null}
+    </Pressable>
+  );
+}
+
+/**
+ * Tag pill. Web's colored-tag treatment: tinted background, tinted
+ * border, full-strength text in the tag's color. Null color (legacy
+ * account_tags rows) = neutral default. `removable` renders the X.
+ */
+function TagChip({
+  name,
+  color,
+  removable,
+  busy,
+  disabled,
+  onPress,
+}: {
+  name: string;
+  color: string | null;
+  removable?: boolean;
+  busy?: boolean;
+  disabled?: boolean;
+  onPress: () => void;
+}) {
+  const tinted = !!color;
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={removable ? `Remove tag ${name}` : `Add tag ${name}`}
+      accessibilityState={{ disabled: !!disabled, busy: !!busy }}
+      style={[
+        styles.tagChip,
+        tinted
+          ? {
+              // 0x26 ≈ 15% bg tint, 0x80 = 50% border tint; text stays
+              // full-strength (web parity).
+              backgroundColor: `${color}26`,
+              borderColor: `${color}80`,
+            }
+          : null,
+        { opacity: disabled && !busy ? 0.5 : 1 },
+      ]}
+    >
+      {!removable ? (
+        <Feather
+          name="plus"
+          size={12}
+          color={tinted ? color! : "rgba(255,255,255,0.7)"}
+        />
+      ) : null}
+      <Text
+        style={[styles.tagChipTxt, tinted ? { color: color! } : null]}
+        numberOfLines={1}
+      >
+        {name}
+      </Text>
+      {busy ? (
+        <ActivityIndicator size="small" color={tinted ? color! : "#f09004"} />
+      ) : removable ? (
+        <Feather
+          name="x"
+          size={12}
+          color={tinted ? color! : "rgba(255,255,255,0.7)"}
+        />
       ) : null}
     </Pressable>
   );
@@ -1748,6 +2001,30 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_500Medium",
     fontSize: 14,
     flex: 1,
+  },
+  tagWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    paddingVertical: 4,
+  },
+  tagChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderRadius: 100,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.3)",
+    backgroundColor: "rgba(255,255,255,0.08)",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    maxWidth: "100%",
+  },
+  tagChipTxt: {
+    color: "#fff",
+    fontFamily: "Inter_500Medium",
+    fontSize: 13,
+    flexShrink: 1,
   },
   newTaskInput: {
     backgroundColor: "rgba(255,255,255,0.08)",

@@ -776,6 +776,17 @@ export interface BackendProject {
   recentPhotos?: Array<{ id: number; url: string }>;
 }
 
+/**
+ * One row from GET /api/tags (account_tags). `color` was added 2026-08
+ * (fixed 8-color palette, hex string); null on legacy rows.
+ */
+export interface BackendAccountTag {
+  id: number | string;
+  name: string;
+  type?: string | null;
+  color?: string | null;
+}
+
 export interface BackendMedia {
   id: number | string;
   projectId: number | string;
@@ -2181,6 +2192,33 @@ export const api = {
     if (opts?.offset !== undefined) params.set("offset", String(opts.offset));
     return apiFetch<BackendMedia[]>(`/api/media/search?${params.toString()}`);
   },
+
+  /**
+   * Account tag vocabulary. `type` filters server-side ("photo" |
+   * "project"). `color` is one of the fixed 8-palette hexes or null
+   * (legacy rows created before the color column) — null renders with
+   * the default neutral chip styling.
+   *
+   * NOTE: media rows themselves (/api/v1/photos, /api/media/search,
+   * project detail media) carry tag NAMES only — resolve name → color
+   * client-side against this list, case-insensitively (web parity).
+   */
+  listTags: (type?: "photo" | "project") =>
+    apiFetch<BackendAccountTag[]>(
+      type ? `/api/tags?type=${encodeURIComponent(type)}` : "/api/tags",
+    ),
+
+  /**
+   * Patch a media row. Currently only `tags` is consumed by mobile
+   * (full-replacement array — the server validates and 400s on unknown
+   * tag names instead of silently wiping, since 2026-08). Returns the
+   * updated media row.
+   */
+  updateMedia: (mediaId: string | number, patch: { tags?: string[] }) =>
+    apiFetch<BackendMedia>(`/api/media/${mediaId}`, {
+      method: "PATCH",
+      json: patch,
+    }),
 
   deleteMedia: (mediaId: string | number) =>
     apiFetch<{ success: boolean }>(`/api/media/${mediaId}`, {
