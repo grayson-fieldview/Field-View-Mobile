@@ -104,6 +104,14 @@ function SheetDebugOverlay() {
 }
 /* ------------------------------------------------------------------ */
 
+// Module-level snap-point constants: an inline array literal gets a new
+// identity every render, which gorhom treats as a config change while a
+// present animation may be in flight. One frozen instance per sheet.
+const SNAP_COMMENTS = ["75%"];
+const SNAP_TASK = ["60%"];
+const SNAP_TAG = ["50%"];
+const SNAP_OVERFLOW = ["45%"];
+
 /**
  * Full-screen video player for the viewer. Used both inside the gallery
  * (read mode) and in place of the annotate canvas when the open media is a
@@ -172,6 +180,29 @@ export default function PhotoViewerScreen() {
         : [],
     [photos, startPhoto],
   );
+  // Stable-identity gallery data. Every DataContext resync rebuilds the
+  // photos array, so projectPhotos gets a NEW identity even when nothing
+  // the gallery renders has changed — and awesome-gallery re-initializes
+  // (spurious onIndexChange, item remounts) on every data identity change.
+  // Hand the gallery the PREVIOUS array instance unless a render-relevant
+  // fingerprint changed: photo id set/order, source uri, video-ness, or
+  // annotation count. Adds/removes change the id list → new identity, so
+  // the gallery can't go stale on genuine set changes.
+  const galleryDataRef = useRef<{ fp: string; data: Photo[] } | null>(null);
+  const galleryData = useMemo(() => {
+    const fp = projectPhotos
+      .map(
+        (p) =>
+          `${p.id}|${p.uri}|${p.isVideo ? 1 : 0}|${p.annotations?.length ?? 0}`,
+      )
+      .join("\u0000");
+    if (galleryDataRef.current && galleryDataRef.current.fp === fp) {
+      return galleryDataRef.current.data;
+    }
+    galleryDataRef.current = { fp, data: projectPhotos };
+    return projectPhotos;
+  }, [projectPhotos]);
+
   const startIndex = useMemo(() => {
     const i = projectPhotos.findIndex((p) => p.id === id);
     return i < 0 ? 0 : i;
@@ -941,10 +972,15 @@ export default function PhotoViewerScreen() {
         />
       ) : (
         <Gallery
-          data={projectPhotos}
+          data={galleryData}
           keyExtractor={(p: Photo) => p.id}
           initialIndex={currentIndex}
           onIndexChange={(i: number) => {
+            // Guard: awesome-gallery re-emits the CURRENT index when its
+            // data prop re-initializes (identity churn), not just on user
+            // swipes. Only a real index change may reset per-photo
+            // transient UI.
+            if (i === currentIndex) return;
             setCurrentIndex(i);
             // Per-photo transient UI resets on swipe.
             setCaptionExpanded(false);
@@ -1198,7 +1234,7 @@ export default function PhotoViewerScreen() {
         open={commentsOpen}
         onClose={() => setCommentsOpen(false)}
         keyboard
-        snapPoints={["75%"]}
+        snapPoints={SNAP_COMMENTS}
       >
               <View style={styles.sheetHeader}>
                 <Text style={styles.sheetTitle}>Comments</Text>
@@ -1309,7 +1345,7 @@ export default function PhotoViewerScreen() {
       <AppSheet
         open={overflowOpen}
         onClose={() => setOverflowOpen(false)}
-        snapPoints={["45%"]}
+        snapPoints={SNAP_OVERFLOW}
       >
             <View style={styles.sheetHeader}>
               <Text style={styles.sheetTitle}>Options</Text>
@@ -1392,7 +1428,7 @@ export default function PhotoViewerScreen() {
         open={taskSheetOpen}
         onClose={() => setTaskSheetOpen(false)}
         keyboard
-        snapPoints={["60%"]}
+        snapPoints={SNAP_TASK}
       >
             <View style={styles.sheetHeader}>
               <Text style={styles.sheetTitle}>
@@ -1542,7 +1578,7 @@ export default function PhotoViewerScreen() {
       <AppSheet
         open={tagSheetOpen}
         onClose={() => setTagSheetOpen(false)}
-        snapPoints={["50%"]}
+        snapPoints={SNAP_TAG}
       >
             <View style={styles.sheetHeader}>
               <Text style={styles.sheetTitle}>Tags</Text>
