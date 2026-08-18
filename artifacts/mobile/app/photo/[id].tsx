@@ -1117,6 +1117,7 @@ export default function PhotoViewerScreen() {
         open={commentsOpen}
         onClose={() => setCommentsOpen(false)}
         keyboard
+        snapPoints={["75%"]}
       >
               <View style={styles.sheetHeader}>
                 <Text style={styles.sheetTitle}>Comments</Text>
@@ -1224,7 +1225,11 @@ export default function PhotoViewerScreen() {
       {/* Overflow sheet — actions + full details (incl. raw coordinates).
           "Move to project" has no existing implementation (no API), so it
           is intentionally absent rather than stubbed. */}
-      <AppSheet open={overflowOpen} onClose={() => setOverflowOpen(false)}>
+      <AppSheet
+        open={overflowOpen}
+        onClose={() => setOverflowOpen(false)}
+        snapPoints={["45%"]}
+      >
             <View style={styles.sheetHeader}>
               <Text style={styles.sheetTitle}>Options</Text>
               <Pressable
@@ -1306,6 +1311,7 @@ export default function PhotoViewerScreen() {
         open={taskSheetOpen}
         onClose={() => setTaskSheetOpen(false)}
         keyboard
+        snapPoints={["60%"]}
       >
             <View style={styles.sheetHeader}>
               <Text style={styles.sheetTitle}>
@@ -1452,7 +1458,11 @@ export default function PhotoViewerScreen() {
           vocabulary to add. Every change PATCHes immediately (no save
           button, web parity). Colors resolve from the account tag list,
           case-insensitively; null color = default neutral chip. */}
-      <AppSheet open={tagSheetOpen} onClose={() => setTagSheetOpen(false)}>
+      <AppSheet
+        open={tagSheetOpen}
+        onClose={() => setTagSheetOpen(false)}
+        snapPoints={["50%"]}
+      >
             <View style={styles.sheetHeader}>
               <Text style={styles.sheetTitle}>Tags</Text>
               <Pressable
@@ -1582,11 +1592,13 @@ function AppSheet({
   open,
   onClose,
   keyboard,
+  snapPoints,
   children,
 }: {
   open: boolean;
   onClose: () => void;
   keyboard?: boolean;
+  snapPoints: string[];
   children: React.ReactNode;
 }) {
   const ref = useRef<BottomSheetModal>(null);
@@ -1600,6 +1612,8 @@ function AppSheet({
       ref={ref}
       onDismiss={onClose}
       enablePanDownToClose
+      snapPoints={snapPoints}
+      enableDynamicSizing={false}
       backgroundStyle={styles.sheetBg}
       handleIndicatorStyle={styles.sheetHandle}
       backdropComponent={ClearBackdrop}
