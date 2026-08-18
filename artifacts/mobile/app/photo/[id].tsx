@@ -698,7 +698,14 @@ export default function PhotoViewerScreen() {
    * first open (retried on demand after an error). Fetch is per-viewer
    * lifetime — the vocabulary changes rarely.
    */
+  // TEMP [SHEET-DEBUG] — confirm the sheets' host component mounts at all.
+  useEffect(() => {
+    console.log("[SHEET-DEBUG] PhotoViewerScreen mounted (sheet host)");
+    return () => console.log("[SHEET-DEBUG] PhotoViewerScreen unmounted");
+  }, []);
+
   const openTagSheet = () => {
+    console.log("[SHEET-DEBUG] tag icon pressed → setTagSheetOpen(true)"); // TEMP
     setTagSheetOpen(true);
     if (accountTags === null || accountTagsError) void loadAccountTags();
   };
@@ -1075,7 +1082,12 @@ export default function PhotoViewerScreen() {
               label="Comments"
               disabled={currentMediaId === undefined}
               badge={commentCount > 0 ? commentCount : undefined}
-              onPress={() => setCommentsOpen(true)}
+              onPress={() => {
+                console.log(
+                  "[SHEET-DEBUG] comment icon pressed → setCommentsOpen(true)",
+                ); // TEMP
+                setCommentsOpen(true);
+              }}
             />
             <BarIcon
               icon="edit-2"
@@ -1087,7 +1099,12 @@ export default function PhotoViewerScreen() {
               icon="check-square"
               label="Attach to task"
               disabled={currentMediaId === undefined}
-              onPress={() => setTaskSheetOpen(true)}
+              onPress={() => {
+                console.log(
+                  "[SHEET-DEBUG] task icon pressed → setTaskSheetOpen(true)",
+                ); // TEMP
+                setTaskSheetOpen(true);
+              }}
             />
             <BarIcon
               icon="tag"
@@ -1104,7 +1121,12 @@ export default function PhotoViewerScreen() {
             <BarIcon
               icon="more-horizontal"
               label="More options"
-              onPress={() => setOverflowOpen(true)}
+              onPress={() => {
+                console.log(
+                  "[SHEET-DEBUG] overflow icon pressed → setOverflowOpen(true)",
+                ); // TEMP
+                setOverflowOpen(true);
+              }}
             />
           </View>
         </View>
@@ -1604,6 +1626,12 @@ function AppSheet({
   const ref = useRef<BottomSheetModal>(null);
   const insets = useSafeAreaInsets();
   useEffect(() => {
+    // TEMP [SHEET-DEBUG] instrumentation
+    console.log(
+      `[SHEET-DEBUG] AppSheet effect: open=${open} refNonNull=${
+        ref.current !== null
+      } branch=${open ? "present" : "dismiss"}`,
+    );
     if (open) ref.current?.present();
     else ref.current?.dismiss();
   }, [open]);
@@ -1611,6 +1639,9 @@ function AppSheet({
     <BottomSheetModal
       ref={ref}
       onDismiss={onClose}
+      onChange={(index) => {
+        console.log(`[SHEET-DEBUG] BottomSheetModal onChange index=${index}`); // TEMP
+      }}
       enablePanDownToClose
       snapPoints={snapPoints}
       enableDynamicSizing={false}
