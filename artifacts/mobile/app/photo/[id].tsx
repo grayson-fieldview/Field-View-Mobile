@@ -2099,13 +2099,13 @@ const styles = StyleSheet.create({
   },
   timestampOverlayText: {
     color: "#fff",
-    fontSize: 11,
-    lineHeight: 15,
+    fontSize: 22,
+    lineHeight: 30,
     fontWeight: "300",
     textAlign: "right",
     textShadowColor: "rgba(0,0,0,0.75)",
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 6,
   },
   sheetBg: {
     backgroundColor: "#1c1c1e",
