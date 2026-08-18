@@ -142,10 +142,18 @@ export function AssigneePickerSheet({
 
   // Present/dismiss follows the `visible` prop so callers keep their
   // existing boolean-state API; drag-to-dismiss syncs back via onDismiss.
+  // Never call dismiss() before the modal has been presented at least once:
+  // gorhom's dismiss() does not early-exit from MODAL_STATUS.INITIAL and
+  // wedges a virgin modal in DISMISSING, permanently blocking present().
   const sheetRef = useRef<BottomSheetModal>(null);
+  const hasPresentedRef = useRef(false);
   useEffect(() => {
-    if (visible) sheetRef.current?.present();
-    else sheetRef.current?.dismiss();
+    if (visible) {
+      hasPresentedRef.current = true;
+      sheetRef.current?.present();
+    } else if (hasPresentedRef.current) {
+      sheetRef.current?.dismiss();
+    }
   }, [visible]);
 
   return (

@@ -1719,16 +1719,26 @@ function AppSheet({
   children: React.ReactNode;
 }) {
   const ref = useRef<BottomSheetModal>(null);
+  // Never call dismiss() before the modal has been presented at least once:
+  // gorhom's dismiss() does not early-exit from MODAL_STATUS.INITIAL and
+  // wedges a virgin modal in DISMISSING, permanently blocking present().
+  const hasPresentedRef = useRef(false);
   const insets = useSafeAreaInsets();
   useEffect(() => {
     // TEMP [SHEET-DEBUG] instrumentation
     sheetDebug(
       `AppSheet effect: open=${open} refNonNull=${
         ref.current !== null
-      } branch=${open ? "present" : "dismiss"}`,
+      } branch=${
+        open ? "present" : hasPresentedRef.current ? "dismiss" : "skip-dismiss"
+      }`,
     );
-    if (open) ref.current?.present();
-    else ref.current?.dismiss();
+    if (open) {
+      hasPresentedRef.current = true;
+      ref.current?.present();
+    } else if (hasPresentedRef.current) {
+      ref.current?.dismiss();
+    }
   }, [open]);
   return (
     <BottomSheetModal
