@@ -1,11 +1,15 @@
 import { Feather } from "@expo/vector-icons";
+import {
+  BottomSheetBackdrop,
+  type BottomSheetBackdropProps,
+  BottomSheetModal,
+  BottomSheetScrollView,
+} from "@gorhom/bottom-sheet";
 import { Image } from "expo-image";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Modal,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -136,19 +140,41 @@ export function AssigneePickerSheet({
     onClose();
   };
 
+  // Present/dismiss follows the `visible` prop so callers keep their
+  // existing boolean-state API; drag-to-dismiss syncs back via onDismiss.
+  const sheetRef = useRef<BottomSheetModal>(null);
+  useEffect(() => {
+    if (visible) sheetRef.current?.present();
+    else sheetRef.current?.dismiss();
+  }, [visible]);
+
   return (
-    <Modal
-      visible={visible}
-      animationType="slide"
-      onRequestClose={onClose}
-      presentationStyle="pageSheet"
+    <BottomSheetModal
+      ref={sheetRef}
+      onDismiss={onClose}
+      enablePanDownToClose
+      snapPoints={["75%"]}
+      enableDynamicSizing={false}
+      backgroundStyle={{
+        backgroundColor: colors.background,
+        borderTopLeftRadius: 16,
+        borderTopRightRadius: 16,
+      }}
+      handleIndicatorStyle={{
+        backgroundColor: colors.mutedForeground,
+        width: 36,
+      }}
+      backdropComponent={ClearBackdrop}
+      keyboardBehavior="extend"
+      keyboardBlurBehavior="restore"
+      android_keyboardInputMode="adjustResize"
     >
-      <View style={{ flex: 1, backgroundColor: colors.background }}>
+      <View style={{ flex: 1 }}>
         <View
           style={[
             styles.header,
             {
-              paddingTop: insets.top + 8,
+              paddingTop: 4,
               borderBottomColor: colors.border,
             },
           ]}
@@ -199,7 +225,7 @@ export function AssigneePickerSheet({
             </Text>
           </View>
         ) : (
-          <ScrollView
+          <BottomSheetScrollView
             contentContainerStyle={{
               padding: 20,
               paddingBottom: insets.bottom + 40,
@@ -381,10 +407,26 @@ export function AssigneePickerSheet({
                 );
               })
             )}
-          </ScrollView>
+          </BottomSheetScrollView>
         )}
       </View>
-    </Modal>
+    </BottomSheetModal>
+  );
+}
+
+/**
+ * Transparent-but-tappable backdrop — no dim over the screen behind,
+ * tap outside still dismisses (matches the photo-viewer sheets).
+ */
+function ClearBackdrop(props: BottomSheetBackdropProps) {
+  return (
+    <BottomSheetBackdrop
+      {...props}
+      appearsOnIndex={0}
+      disappearsOnIndex={-1}
+      opacity={0}
+      pressBehavior="close"
+    />
   );
 }
 

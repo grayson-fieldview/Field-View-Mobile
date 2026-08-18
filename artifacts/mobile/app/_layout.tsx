@@ -18,6 +18,7 @@ import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, useColorScheme } from "react-native";
+import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -571,6 +572,11 @@ export default function RootLayout() {
       >
         <QueryClientProvider client={queryClient}>
           <GestureHandlerRootView>
+            {/* Bottom-sheet modals (photo viewer sheets, assignee picker)
+                present through this provider. Render-only for screens
+                that never call useBottomSheetModal — no behavior change
+                elsewhere. Must sit inside GestureHandlerRootView. */}
+            <BottomSheetModalProvider>
             <KeyboardProvider>
               <AuthProvider>
                 <DataProvider>
@@ -585,6 +591,7 @@ export default function RootLayout() {
                 </DataProvider>
               </AuthProvider>
             </KeyboardProvider>
+            </BottomSheetModalProvider>
           </GestureHandlerRootView>
         </QueryClientProvider>
       </ErrorBoundary>

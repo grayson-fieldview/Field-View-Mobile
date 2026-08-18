@@ -66,6 +66,7 @@
     "zod-validation-error": "^3.4.0"
   },
   "dependencies": {
+    "@gorhom/bottom-sheet": "^5.2.14",
     "@react-native-community/netinfo": "11.4.1",
     "@react-native-google-signin/google-signin": "^16.1.4",
     "@react-navigation/native": "7.2.2",

@@ -1,4 +1,11 @@
 import { Feather } from "@expo/vector-icons";
+import {
+  BottomSheetBackdrop,
+  type BottomSheetBackdropProps,
+  BottomSheetModal,
+  BottomSheetTextInput,
+  BottomSheetView,
+} from "@gorhom/bottom-sheet";
 import { Image } from "expo-image";
 import * as MediaLibrary from "expo-media-library";
 import { VideoView, useVideoPlayer } from "expo-video";
@@ -7,8 +14,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ActivityIndicator,
   Alert,
-  KeyboardAvoidingView,
-  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -801,10 +806,13 @@ export default function PhotoViewerScreen() {
       {chromeVisible || editing ? (
       <View style={[styles.topBar, { paddingTop: insets.top + 6 }]}>
         <Pressable
-          onPress={() => router.back()}
+          // While annotating, X exits annotate mode back to the photo —
+          // NOT the whole viewer (that was a bug: it popped to the
+          // project screen mid-annotation).
+          onPress={() => (editing ? setEditing(false) : router.back())}
           hitSlop={12}
           accessibilityRole="button"
-          accessibilityLabel="Close photo"
+          accessibilityLabel={editing ? "Exit annotation" : "Close photo"}
           style={styles.iconBtn}
         >
           <Feather name="x" size={20} color="#fff" />
@@ -1105,22 +1113,11 @@ export default function PhotoViewerScreen() {
       {/* Comments sheet — thread + AI caption + composer, behind the
           comment icon. Never rendered for local-only photos (no media
           row to comment on; the icon is disabled). */}
-      <Modal
-        visible={commentsOpen}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setCommentsOpen(false)}
+      <AppSheet
+        open={commentsOpen}
+        onClose={() => setCommentsOpen(false)}
+        keyboard
       >
-        <View style={styles.sheetBackdrop}>
-          <Pressable
-            style={{ flex: 1 }}
-            onPress={() => setCommentsOpen(false)}
-            accessibilityLabel="Close comments"
-          />
-          <KeyboardAvoidingView
-            behavior={Platform.OS === "ios" ? "padding" : undefined}
-          >
-            <View style={[styles.sheet, { paddingBottom: insets.bottom + 8 }]}>
               <View style={styles.sheetHeader}>
                 <Text style={styles.sheetTitle}>Comments</Text>
                 <Pressable
@@ -1182,7 +1179,7 @@ export default function PhotoViewerScreen() {
 
               {currentMediaId !== undefined ? (
                 <View style={styles.commentInputRow}>
-                  <TextInput
+                  <BottomSheetTextInput
                     value={commentDraft}
                     onChangeText={setCommentDraft}
                     placeholder="Add Comment"
@@ -1222,27 +1219,12 @@ export default function PhotoViewerScreen() {
                   </Pressable>
                 </View>
               ) : null}
-            </View>
-          </KeyboardAvoidingView>
-        </View>
-      </Modal>
+      </AppSheet>
 
       {/* Overflow sheet — actions + full details (incl. raw coordinates).
           "Move to project" has no existing implementation (no API), so it
           is intentionally absent rather than stubbed. */}
-      <Modal
-        visible={overflowOpen}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setOverflowOpen(false)}
-      >
-        <View style={styles.sheetBackdrop}>
-          <Pressable
-            style={{ flex: 1 }}
-            onPress={() => setOverflowOpen(false)}
-            accessibilityLabel="Close options"
-          />
-          <View style={[styles.sheet, { paddingBottom: insets.bottom + 8 }]}>
+      <AppSheet open={overflowOpen} onClose={() => setOverflowOpen(false)}>
             <View style={styles.sheetHeader}>
               <Text style={styles.sheetTitle}>Options</Text>
               <Pressable
@@ -1317,27 +1299,14 @@ export default function PhotoViewerScreen() {
                 />
               ) : null}
             </ScrollView>
-          </View>
-        </View>
-      </Modal>
+      </AppSheet>
 
       {/* Attach-to-task sheet — existing attachPhotosToTask API. */}
-      <Modal
-        visible={taskSheetOpen}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setTaskSheetOpen(false)}
+      <AppSheet
+        open={taskSheetOpen}
+        onClose={() => setTaskSheetOpen(false)}
+        keyboard
       >
-        <View style={styles.sheetBackdrop}>
-          <Pressable
-            style={{ flex: 1 }}
-            onPress={() => setTaskSheetOpen(false)}
-            accessibilityLabel="Close task picker"
-          />
-          <KeyboardAvoidingView
-            behavior={Platform.OS === "ios" ? "padding" : undefined}
-          >
-          <View style={[styles.sheet, { paddingBottom: insets.bottom + 8 }]}>
             <View style={styles.sheetHeader}>
               <Text style={styles.sheetTitle}>
                 {creatingTaskOpen ? "New task from photo" : "Add to task"}
@@ -1353,7 +1322,7 @@ export default function PhotoViewerScreen() {
             </View>
             {creatingTaskOpen ? (
               <View style={{ gap: 10, paddingBottom: 4 }}>
-                <TextInput
+                <BottomSheetTextInput
                   value={newTaskTitle}
                   onChangeText={setNewTaskTitle}
                   placeholder="Task title"
@@ -1477,28 +1446,13 @@ export default function PhotoViewerScreen() {
               )}
             </ScrollView>
             )}
-          </View>
-          </KeyboardAvoidingView>
-        </View>
-      </Modal>
+      </AppSheet>
 
       {/* Tag sheet — current tags (X to remove) + account photo-type
           vocabulary to add. Every change PATCHes immediately (no save
           button, web parity). Colors resolve from the account tag list,
           case-insensitively; null color = default neutral chip. */}
-      <Modal
-        visible={tagSheetOpen}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setTagSheetOpen(false)}
-      >
-        <View style={styles.sheetBackdrop}>
-          <Pressable
-            style={{ flex: 1 }}
-            onPress={() => setTagSheetOpen(false)}
-            accessibilityLabel="Close tags"
-          />
-          <View style={[styles.sheet, { paddingBottom: insets.bottom + 8 }]}>
+      <AppSheet open={tagSheetOpen} onClose={() => setTagSheetOpen(false)}>
             <View style={styles.sheetHeader}>
               <Text style={styles.sheetTitle}>Tags</Text>
               <Pressable
@@ -1581,12 +1535,9 @@ export default function PhotoViewerScreen() {
                 })()
               )}
             </ScrollView>
-          </View>
-        </View>
-      </Modal>
+      </AppSheet>
 
-      {/* Assignee picker for the new-task form. Rendered outside the task
-          sheet Modal is not possible on iOS (sibling Modals stack fine). */}
+      {/* Assignee picker for the new-task form (sibling sheet). */}
       <AssigneePickerSheet
         visible={assigneePickerOpen}
         projectId={currentPhoto.projectId}
@@ -1595,6 +1546,73 @@ export default function PhotoViewerScreen() {
         onSelect={setNewTaskAssignee}
       />
     </View>
+  );
+}
+
+/**
+ * Zero-dim backdrop: fully transparent (the photo stays undimmed) but
+ * still tappable, preserving the tap-outside-to-dismiss behavior the
+ * old Modal backdrops had.
+ */
+function ClearBackdrop(props: BottomSheetBackdropProps) {
+  return (
+    <BottomSheetBackdrop
+      {...props}
+      appearsOnIndex={0}
+      disappearsOnIndex={-1}
+      opacity={0}
+      pressBehavior="close"
+    />
+  );
+}
+
+/**
+ * Shared presentation wrapper for every sheet in this screen —
+ * @gorhom/bottom-sheet modal: spring physics, grab handle,
+ * drag-to-dismiss, dynamic content sizing, no backdrop dim.
+ *
+ * `open` stays the single source of truth in the parent; drag/backdrop
+ * dismissals sync back through onDismiss.
+ *
+ * `keyboard` enables interactive keyboard handling for sheets with a
+ * composer (must pair with BottomSheetTextInput inside) — this replaces
+ * the KeyboardAvoidingView the old Modals used.
+ */
+function AppSheet({
+  open,
+  onClose,
+  keyboard,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  keyboard?: boolean;
+  children: React.ReactNode;
+}) {
+  const ref = useRef<BottomSheetModal>(null);
+  const insets = useSafeAreaInsets();
+  useEffect(() => {
+    if (open) ref.current?.present();
+    else ref.current?.dismiss();
+  }, [open]);
+  return (
+    <BottomSheetModal
+      ref={ref}
+      onDismiss={onClose}
+      enablePanDownToClose
+      backgroundStyle={styles.sheetBg}
+      handleIndicatorStyle={styles.sheetHandle}
+      backdropComponent={ClearBackdrop}
+      keyboardBehavior={keyboard ? "interactive" : "extend"}
+      keyboardBlurBehavior="restore"
+      android_keyboardInputMode="adjustResize"
+    >
+      <BottomSheetView
+        style={[styles.sheetBody, { paddingBottom: insets.bottom + 8 }]}
+      >
+        {children}
+      </BottomSheetView>
+    </BottomSheetModal>
   );
 }
 
@@ -1963,16 +1981,20 @@ const styles = StyleSheet.create({
     fontFamily: "Inter_600SemiBold",
     fontSize: 10,
   },
-  sheetBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.5)",
-  },
-  sheet: {
+  // Sheet chrome lives on the BottomSheetModal itself (bg + handle);
+  // sheetBody is the content container inside it.
+  sheetBg: {
     backgroundColor: "#1c1c1e",
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
+  },
+  sheetHandle: {
+    backgroundColor: "rgba(255,255,255,0.35)",
+    width: 36,
+  },
+  sheetBody: {
     paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingTop: 2,
   },
   sheetHeader: {
     flexDirection: "row",
