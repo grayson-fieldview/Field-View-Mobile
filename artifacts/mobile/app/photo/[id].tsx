@@ -1022,21 +1022,33 @@ export default function PhotoViewerScreen() {
                           chrome: rendered inside the fitted image rect
                           (and the gallery's zoom transform), so it stays
                           visible when chrome is hidden and stays pinned
-                          to the photo's bottom edge while pinching. Pure
-                          View overlay; upload pixels are untouched. */}
+                          to the photo's top-right corner while pinching.
+                          Procore-style: thin white text, no background,
+                          shadow for legibility. Pure View overlay; upload
+                          pixels are untouched. */}
                       {overlayEnabled ? (
-                        <View style={styles.timestampOverlay}>
+                        <View
+                          style={styles.timestampOverlay}
+                          pointerEvents="none"
+                        >
                           <Text style={styles.timestampOverlayText}>
                             {formatCommentDate(item.takenAt)}
                           </Text>
-                          {projectAddress ? (
+                          {(projectAddress
+                            ? projectAddress
+                                .split(",")
+                                .map((part) => part.trim())
+                                .filter((part) => part.length > 0)
+                            : []
+                          ).map((line, idx) => (
                             <Text
+                              key={idx}
                               style={styles.timestampOverlayText}
                               numberOfLines={1}
                             >
-                              {projectAddress}
+                              {line}
                             </Text>
-                          ) : null}
+                          ))}
                         </View>
                       ) : null}
                     </View>
@@ -2079,17 +2091,21 @@ const styles = StyleSheet.create({
   // sheetBody is the content container inside it.
   timestampOverlay: {
     position: "absolute",
-    left: 0,
+    top: 0,
     right: 0,
-    bottom: 0,
-    backgroundColor: "rgba(0,0,0,0.55)",
     paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingVertical: 8,
+    alignItems: "flex-end",
   },
   timestampOverlayText: {
     color: "#fff",
-    fontSize: 12,
-    lineHeight: 16,
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: "300",
+    textAlign: "right",
+    textShadowColor: "rgba(0,0,0,0.75)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
   sheetBg: {
     backgroundColor: "#1c1c1e",
