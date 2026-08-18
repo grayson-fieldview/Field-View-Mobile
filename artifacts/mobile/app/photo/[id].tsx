@@ -36,6 +36,7 @@ import {
   type AssigneeSelection,
 } from "@/components/AssigneePickerSheet";
 import { fittedContainRect } from "@/services/annotations";
+import { useAuth } from "@/contexts/AuthContext";
 import { useData } from "@/contexts/DataContext";
 import { useToast } from "@/contexts/ToastContext";
 import { ApiError, api, buildMediaReferencesMessage } from "@/services/api";
@@ -106,6 +107,7 @@ export default function PhotoViewerScreen() {
     saveAnnotations,
   } = useData();
   const { showToast } = useToast();
+  const { accountSettings } = useAuth();
   // True while we're fetching references for the trash button — drives
   // the inline spinner replacement of the trash icon. The actual
   // Alert.alert isn't a "loading" surface, so the spinner only shows
@@ -664,6 +666,12 @@ export default function PhotoViewerScreen() {
   // ----- Bottom-bar / sheet derived data -----
   const project = projects.find((p) => p.id === currentPhoto.projectId);
   const projectAddress = project?.address?.trim() || null;
+  // Timestamp-overlay resolution: project override wins when non-null,
+  // else the account-wide default; false when neither is known.
+  const overlayEnabled =
+    project?.photoOverlayEnabled ??
+    accountSettings?.photoOverlayEnabled ??
+    false;
   const uploaderName = currentPhoto.uploader
     ? [currentPhoto.uploader.firstName, currentPhoto.uploader.lastName]
         .filter(Boolean)
@@ -1010,6 +1018,27 @@ export default function PhotoViewerScreen() {
                         width={rect.w}
                         height={rect.h}
                       />
+                      {/* Timestamp overlay — part of the PHOTO, not the
+                          chrome: rendered inside the fitted image rect
+                          (and the gallery's zoom transform), so it stays
+                          visible when chrome is hidden and stays pinned
+                          to the photo's bottom edge while pinching. Pure
+                          View overlay; upload pixels are untouched. */}
+                      {overlayEnabled ? (
+                        <View style={styles.timestampOverlay}>
+                          <Text style={styles.timestampOverlayText}>
+                            {formatCommentDate(item.takenAt)}
+                          </Text>
+                          {projectAddress ? (
+                            <Text
+                              style={styles.timestampOverlayText}
+                              numberOfLines={1}
+                            >
+                              {projectAddress}
+                            </Text>
+                          ) : null}
+                        </View>
+                      ) : null}
                     </View>
                   );
                 })()}
@@ -2048,6 +2077,20 @@ const styles = StyleSheet.create({
   },
   // Sheet chrome lives on the BottomSheetModal itself (bg + handle);
   // sheetBody is the content container inside it.
+  timestampOverlay: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  timestampOverlayText: {
+    color: "#fff",
+    fontSize: 12,
+    lineHeight: 16,
+  },
   sheetBg: {
     backgroundColor: "#1c1c1e",
     borderTopLeftRadius: 16,

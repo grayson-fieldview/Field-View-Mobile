@@ -46,6 +46,9 @@ import {
  */
 export interface AccountSettings {
   defaultPhotoAspectRatio: PhotoAspectRatio;
+  /** Account-wide default for the in-photo timestamp overlay. Absent on
+   *  pre-rollout server payloads → false. */
+  photoOverlayEnabled: boolean;
 }
 
 export interface AuthUser {
@@ -483,6 +486,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       setAccountSettings({
         defaultPhotoAspectRatio: raw.defaultPhotoAspectRatio,
+        photoOverlayEnabled: raw.photoOverlayEnabled === true,
       });
     } catch (err) {
       // Default fallback path — capture stays at "4:3". Logged for
@@ -891,6 +895,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           input.defaultPhotoAspectRatio ??
           prev?.defaultPhotoAspectRatio ??
           DEFAULT_PHOTO_ASPECT_RATIO,
+        // Not settable from mobile; carry the last known value through
+        // the optimistic merge.
+        photoOverlayEnabled: prev?.photoOverlayEnabled ?? false,
       };
       setAccountSettings(optimistic);
 
@@ -912,6 +919,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         setAccountSettings({
           defaultPhotoAspectRatio: updated.defaultPhotoAspectRatio,
+          // Not settable from mobile; keep the last known value rather
+          // than depending on the PATCH echo carrying the field.
+          photoOverlayEnabled: prev?.photoOverlayEnabled ?? false,
         });
       } catch (err) {
         // Roll back. Re-throw so the caller (settings UI) can

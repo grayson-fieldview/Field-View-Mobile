@@ -22,6 +22,11 @@ export interface Project {
   latitude?: number;
   longitude?: number;
   coverPhotoUrl?: string;
+  /**
+   * Per-project timestamp-overlay override. true/false override the
+   * account default; null/undefined inherits it.
+   */
+  photoOverlayEnabled?: boolean | null;
   /** True when this record originated from the backend (not a local draft). */
   remote?: boolean;
 }

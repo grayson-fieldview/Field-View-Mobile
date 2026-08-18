@@ -44,6 +44,9 @@ export function mapBackendProject(b: BackendProject): Project {
     latitude: b.latitude ?? undefined,
     longitude: b.longitude ?? undefined,
     coverPhotoUrl: b.recentPhotos?.[0]?.url,
+    // Tri-state passthrough: absent on old payloads normalizes to null
+    // (= inherit account default), never to false.
+    photoOverlayEnabled: b.photoOverlayEnabled ?? null,
     remote: true,
   };
 }

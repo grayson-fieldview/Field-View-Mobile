@@ -768,6 +768,12 @@ export interface BackendProject {
   color?: string | null;
   tags?: string[] | null;
   coverPhotoId?: number | null;
+  /**
+   * Per-project timestamp-overlay override (2026-08). Tri-state:
+   * true/false override the account setting, null (or absent on older
+   * payloads) inherits accounts.photo_overlay_enabled.
+   */
+  photoOverlayEnabled?: boolean | null;
   accountId?: string;
   createdById?: string;
   createdAt: string;
@@ -1695,7 +1701,12 @@ export const api = {
    * propagating an unknown ratio to the cropper.
    */
   getAccountSettings: () =>
-    apiFetch<{ defaultPhotoAspectRatio: string }>("/api/account/settings"),
+    apiFetch<{
+      defaultPhotoAspectRatio: string;
+      /** Account-wide timestamp-overlay default (2026-08). Optional so
+       *  pre-rollout payloads parse; absence is treated as false. */
+      photoOverlayEnabled?: boolean;
+    }>("/api/account/settings"),
 
   /**
    * Read-only billing summary. Admin-only — server returns 403 for
