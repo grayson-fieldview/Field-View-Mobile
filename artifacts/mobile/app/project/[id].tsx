@@ -2543,7 +2543,12 @@ export default function ProjectDetailScreen() {
       {!selectMode ? (
         <View
           pointerEvents="box-none"
-          style={[styles.fabCluster, { bottom: insets.bottom + 16 }]}
+          // Safe-area inset clears the home indicator; this adds only 8pt
+          // of intentional visual breathing room below the card-colored pill.
+          style={[
+            styles.fabCluster,
+            { bottom: insets.bottom + 8, backgroundColor: colors.card },
+          ]}
         >
           <Pressable
             onPress={() => setMessagesSheetOpen(true)}
@@ -2552,7 +2557,7 @@ export default function ProjectDetailScreen() {
             style={({ pressed }) => [
               styles.fabSide,
               {
-                backgroundColor: colors.primary,
+                backgroundColor: "#171717",
                 opacity: pressed ? 0.9 : 1,
               },
             ]}
@@ -2560,7 +2565,7 @@ export default function ProjectDetailScreen() {
             <Feather
               name="message-circle"
               size={22}
-              color={colors.primaryForeground}
+              color="#FFFFFF"
             />
             {messagesUnread > 0 ? (
               <View
@@ -2610,12 +2615,12 @@ export default function ProjectDetailScreen() {
             style={({ pressed }) => [
               styles.fabSide,
               {
-                backgroundColor: colors.primary,
+                backgroundColor: "#171717",
                 opacity: pressed ? 0.9 : 1,
               },
             ]}
           >
-            <Feather name="zap" size={22} color={colors.primaryForeground} />
+            <Feather name="zap" size={22} color="#FFFFFF" />
           </Pressable>
         </View>
       ) : null}
@@ -4175,26 +4180,29 @@ const styles = StyleSheet.create({
   },
   fabCluster: {
     position: "absolute",
-    left: 0,
-    right: 0,
+    left: "50%",
+    width: 200,
+    marginLeft: -100,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: 12,
+    padding: 8,
+    borderRadius: 40,
+    shadowColor: "#000",
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 10,
   },
-  // Same treatment as fabCamera (primary fill, circular, same shadow
-  // weight scaled down) at smaller proportions — CompanyCam pattern.
+  // The card-colored pill is applied at render so it follows dark mode.
+  // These secondary actions are deliberately black, not primary orange.
   fabSide: {
     width: 48,
     height: 48,
     borderRadius: 24,
     alignItems: "center",
     justifyContent: "center",
-    shadowColor: "#000",
-    shadowOpacity: 0.4,
-    shadowRadius: 9,
-    shadowOffset: { width: 0, height: 5 },
-    elevation: 10,
   },
   fabBadge: {
     position: "absolute",
