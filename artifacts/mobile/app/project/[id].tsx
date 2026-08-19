@@ -45,7 +45,8 @@ import { ReportListItem } from "@/components/ReportListItem";
 import { TemplatePickerModal } from "@/components/TemplatePickerModal";
 import { ChecklistGenerateSheet } from "@/components/ChecklistGenerateSheet";
 import { ProjectContactsSection } from "@/components/ProjectContactsSection";
-import { ProjectMessagesTab } from "@/components/ProjectMessagesTab";
+import { AiActionsSheet } from "@/components/AiActionsSheet";
+import { ProjectMessagesSheet } from "@/components/ProjectMessagesSheet";
 import { GenerateReportSheet } from "@/components/GenerateReportSheet";
 import { TitlePromptModal } from "@/components/TitlePromptModal";
 import * as DocumentPicker from "expo-document-picker";
@@ -87,7 +88,6 @@ type TabKey =
   | "tasks"
   | "checklists"
   | "reports"
-  | "messages"
   | "files"
   | "team";
 
@@ -253,14 +253,19 @@ export default function ProjectDetailScreen() {
     tabParam === "tasks" ||
     tabParam === "checklists" ||
     tabParam === "reports" ||
-    tabParam === "messages" ||
     tabParam === "files" ||
     tabParam === "team"
       ? tabParam
       : "photos",
   );
-  // Unread message count for the Messages tab badge. Loaded once on
-  // mount; zeroed when the tab marks the thread read.
+  // Messages moved from a tab pill to a slide-up sheet; ?tab=messages
+  // (mention deep links) now seeds the sheet open instead.
+  const [messagesSheetOpen, setMessagesSheetOpen] = useState(
+    tabParam === "messages",
+  );
+  const [aiSheetOpen, setAiSheetOpen] = useState(false);
+  // Unread message count for the cluster's messages badge. Loaded once
+  // on mount; zeroed when the sheet marks the thread read.
   const [messagesUnread, setMessagesUnread] = useState(0);
   useEffect(() => {
     let cancelled = false;
@@ -517,7 +522,7 @@ export default function ProjectDetailScreen() {
   // (memory fix part A). Date-section headers span the full width, so
   // instead of FlashList numColumns (which cannot mix full-width rows
   // with tile rows) each item is either a header or an explicit row of
-  // up to FOUR photos — 4-up layout, one list item per row.
+  // up to THREE photos — 3-up layout, one list item per row.
   type GridRowItem =
     | { kind: "header"; key: string; label: string; ids: string[] }
     | { kind: "row"; key: string; photos: typeof projectPhotos }
@@ -537,11 +542,11 @@ export default function ProjectDetailScreen() {
         label: g.label,
         ids: g.ids,
       });
-      for (let i = 0; i < g.photos.length; i += 4) {
+      for (let i = 0; i < g.photos.length; i += 3) {
         items.push({
           kind: "row",
           key: `r-${g.photos[i].id}`,
-          photos: g.photos.slice(i, i + 4),
+          photos: g.photos.slice(i, i + 3),
         });
       }
     }
@@ -1322,10 +1327,9 @@ export default function ProjectDetailScreen() {
                 label: "Reports",
                 count: projectReports.length,
               },
-              // NOTE: web places Messages after Daily Log; mobile has no
-              // Daily Log tab, so it sits after Reports (closest analogue).
-              // Its count is the UNREAD badge, not a total.
-              { key: "messages", label: "Messages", count: messagesUnread },
+              // NOTE: Messages is deliberately NOT a tab — the thread
+              // lives in a slide-up sheet opened from the floating
+              // cluster (unread badge sits on that icon).
               { key: "files", label: "Files", count: projectFiles.length },
               { key: "team", label: "Team", count: assignments.length },
             ] as { key: TabKey; label: string; count: number }[]
@@ -1381,7 +1385,9 @@ export default function ProjectDetailScreen() {
   const photosListHeader = (
     <>
       {sharedHeader}
-          <View style={styles.body}>
+          {/* paddingBottom 0: the 12pt toolbar → date-header gap is
+              owned by gridHeaderRow's paddingTop (single source). */}
+          <View style={[styles.body, { paddingBottom: 0 }]}>
             {/* Search now lives in the row the Take Photo button used to
                 occupy (capture moved to the floating action cluster). */}
             <View style={styles.photosToolbar}>
@@ -1577,7 +1583,6 @@ export default function ProjectDetailScreen() {
             key={ph.id}
             photo={ph}
             borderColor={colors.border}
-            widthPercent="23.5%"
             selectMode={selectMode}
             selected={selected.has(ph.id)}
             primary={colors.primary}
@@ -1588,10 +1593,10 @@ export default function ProjectDetailScreen() {
             onRemoveLocal={() => void deletePhoto(ph.id)}
           />
         ))}
-        {/* Fillers keep space-between from stretching short rows. */}
-        {item.photos.length < 4
-          ? Array.from({ length: 4 - item.photos.length }).map((_, i) => (
-              <View key={`f-${i}`} style={{ width: "23.5%" }} />
+        {/* Flex fillers keep short rows from stretching their tiles. */}
+        {item.photos.length < 3
+          ? Array.from({ length: 3 - item.photos.length }).map((_, i) => (
+              <View key={`f-${i}`} style={{ flex: 1 }} />
             ))
           : null}
       </View>
@@ -1631,14 +1636,6 @@ export default function ProjectDetailScreen() {
             colors={colors}
           />
         </>
-      ) : tab === "messages" ? (
-        // Messages own their layout: thread scroll + composer pinned at
-        // the bottom (keyboard-aware inside the component).
-        <ProjectMessagesTab
-          projectId={project.id}
-          header={sharedHeader}
-          onReadMarked={() => setMessagesUnread(0)}
-        />
       ) : (
       <ScrollView
         // +88 clears the floating action cluster (visible on these tabs).
@@ -2540,32 +2537,48 @@ export default function ProjectDetailScreen() {
         }}
       />
       {/* Floating action cluster (CompanyCam pattern): camera center,
-          messages left, AI walkthrough right. Hidden on the Messages tab
-          (composer owns the bottom edge) and in select mode (the floating
-          selection bar owns it there). */}
-      {tab !== "messages" && !selectMode ? (
+          messages left, AI right — each in a primary-filled circle (same
+          treatment as the camera FAB, smaller proportions). Hidden in
+          select mode (the floating selection bar owns the bottom edge). */}
+      {!selectMode ? (
         <View
           pointerEvents="box-none"
           style={[styles.fabCluster, { bottom: insets.bottom + 16 }]}
         >
           <Pressable
-            onPress={() => setTab("messages")}
+            onPress={() => setMessagesSheetOpen(true)}
             accessibilityRole="button"
             accessibilityLabel="Open project messages"
             style={({ pressed }) => [
               styles.fabSide,
               {
-                backgroundColor: colors.card,
-                borderColor: colors.border,
-                opacity: pressed ? 0.85 : 1,
+                backgroundColor: colors.primary,
+                opacity: pressed ? 0.9 : 1,
               },
             ]}
           >
             <Feather
               name="message-circle"
               size={22}
-              color={colors.foreground}
+              color={colors.primaryForeground}
             />
+            {messagesUnread > 0 ? (
+              <View
+                style={[
+                  styles.fabBadge,
+                  {
+                    backgroundColor: colors.card,
+                    borderColor: colors.border,
+                  },
+                ]}
+              >
+                <Text
+                  style={[styles.fabBadgeText, { color: colors.foreground }]}
+                >
+                  {messagesUnread > 99 ? "99+" : messagesUnread}
+                </Text>
+              </View>
+            ) : null}
           </Pressable>
           <Pressable
             onPress={() =>
@@ -2591,27 +2604,42 @@ export default function ProjectDetailScreen() {
             />
           </Pressable>
           <Pressable
-            onPress={() =>
-              router.push({
-                pathname: "/capture",
-                params: { projectId: project.id, mode: "walkthru" },
-              })
-            }
+            onPress={() => setAiSheetOpen(true)}
             accessibilityRole="button"
-            accessibilityLabel="Start AI walkthrough"
+            accessibilityLabel="Open AI actions"
             style={({ pressed }) => [
               styles.fabSide,
               {
-                backgroundColor: colors.card,
-                borderColor: colors.border,
-                opacity: pressed ? 0.85 : 1,
+                backgroundColor: colors.primary,
+                opacity: pressed ? 0.9 : 1,
               },
             ]}
           >
-            <Feather name="zap" size={22} color={colors.foreground} />
+            <Feather name="zap" size={22} color={colors.primaryForeground} />
           </Pressable>
         </View>
       ) : null}
+      <ProjectMessagesSheet
+        visible={messagesSheetOpen}
+        projectId={project.id}
+        onClose={() => setMessagesSheetOpen(false)}
+        onReadMarked={() => setMessagesUnread(0)}
+      />
+      <AiActionsSheet
+        visible={aiSheetOpen}
+        onClose={() => setAiSheetOpen(false)}
+        onWalkthrough={() => {
+          setAiSheetOpen(false);
+          router.push({
+            pathname: "/capture",
+            params: { projectId: project.id, mode: "walkthru" },
+          });
+        }}
+        onGenerateReport={() => {
+          setAiSheetOpen(false);
+          setShowReportGenerateSheet(true);
+        }}
+      />
       {/* Floating selection bar: pinned above the bottom safe area (this
           screen is a stack route — FloatingTabBar only renders inside the
           (tabs) layout, so there's no tab bar to stack above here). Shown
@@ -2964,7 +2992,6 @@ function showFailedUploadActionSheet(
 function PhotoTile({
   photo,
   borderColor,
-  widthPercent,
   selectMode,
   selected,
   primary,
@@ -2976,7 +3003,6 @@ function PhotoTile({
 }: {
   photo: import("@/services/types").Photo;
   borderColor: string;
-  widthPercent: import("react-native").DimensionValue;
   selectMode: boolean;
   selected: boolean;
   primary: string;
@@ -3088,7 +3114,9 @@ function PhotoTile({
         {
           borderColor: selectMode && selected ? primary : borderColor,
           borderWidth: selectMode && selected ? 3 : 1,
-          width: widthPercent,
+          // Rows own sizing: flex tiles + a fixed `gap` give identical
+          // 12pt gutters at every screen width (no percentage rounding).
+          flex: 1,
         },
       ]}
     >
@@ -4072,8 +4100,8 @@ const styles = StyleSheet.create({
   },
   pillTabsRow: {
     paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 4,
+    paddingTop: 12,
+    paddingBottom: 0,
     gap: 8,
   },
   pillTab: {
@@ -4098,10 +4126,10 @@ const styles = StyleSheet.create({
     borderBottomColor: "transparent",
   },
   tabLabel: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
-  body: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 20 },
+  body: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 12 },
   // Virtualized grid rows carry the horizontal padding styles.body used
   // to provide (the grid is no longer nested inside a body View).
-  gridHeaderRow: { paddingHorizontal: 20, paddingTop: 18 },
+  gridHeaderRow: { paddingHorizontal: 20, paddingTop: 12 },
   photoSearchWrap: {
     flex: 1,
     flexDirection: "row",
@@ -4141,9 +4169,9 @@ const styles = StyleSheet.create({
   },
   gridPairRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
+    gap: 12,
     paddingHorizontal: 20,
-    marginTop: 8,
+    marginTop: 12,
   },
   fabCluster: {
     position: "absolute",
@@ -4152,21 +4180,35 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 20,
+    gap: 12,
   },
+  // Same treatment as fabCamera (primary fill, circular, same shadow
+  // weight scaled down) at smaller proportions — CompanyCam pattern.
   fabSide: {
     width: 48,
     height: 48,
     borderRadius: 24,
-    borderWidth: StyleSheet.hairlineWidth,
     alignItems: "center",
     justifyContent: "center",
     shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 8,
+    shadowOpacity: 0.4,
+    shadowRadius: 9,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 10,
   },
+  fabBadge: {
+    position: "absolute",
+    top: -2,
+    right: -2,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 4,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  fabBadgeText: { fontFamily: "Inter_700Bold", fontSize: 10 },
   // Matches the Projects tab bar QuickCaptureFAB (64px orange circle,
   // camera 28, same shadow weight).
   fabCamera: {

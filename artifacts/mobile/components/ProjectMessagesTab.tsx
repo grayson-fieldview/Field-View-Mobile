@@ -71,7 +71,8 @@ export function ProjectMessagesTab({
   onReadMarked,
 }: {
   projectId: string;
-  header: React.ReactNode;
+  /** Optional — omitted when rendered inside the messages sheet. */
+  header?: React.ReactNode;
   /** Fired after a successful mark-read POST so the parent can zero
    *  the tab badge without refetching. */
   onReadMarked?: () => void;
