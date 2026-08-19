@@ -516,8 +516,8 @@ export default function ProjectDetailScreen() {
   // Flattened, virtualization-friendly item list for the photos grid
   // (memory fix part A). Date-section headers span the full width, so
   // instead of FlashList numColumns (which cannot mix full-width rows
-  // with 2-up tiles) each item is either a header or an explicit PAIR
-  // of photos — same visual 2-up layout, one list item per row.
+  // with tile rows) each item is either a header or an explicit row of
+  // up to FOUR photos — 4-up layout, one list item per row.
   type GridRowItem =
     | { kind: "header"; key: string; label: string; ids: string[] }
     | { kind: "row"; key: string; photos: typeof projectPhotos }
@@ -537,11 +537,11 @@ export default function ProjectDetailScreen() {
         label: g.label,
         ids: g.ids,
       });
-      for (let i = 0; i < g.photos.length; i += 2) {
+      for (let i = 0; i < g.photos.length; i += 4) {
         items.push({
           kind: "row",
           key: `r-${g.photos[i].id}`,
-          photos: g.photos.slice(i, i + 2),
+          photos: g.photos.slice(i, i + 4),
         });
       }
     }
@@ -1382,58 +1382,68 @@ export default function ProjectDetailScreen() {
     <>
       {sharedHeader}
           <View style={styles.body}>
-            <PhotosToolbar
-              selectMode={selectMode}
-              onToggleSelect={() => {
-                if (selectMode) exitSelectMode();
-                else setSelectArmed(true);
-              }}
-              filterActive={filterActive}
-              onOpenFilter={() => setFilterSheetOpen(true)}
-              addingFromLibrary={addingFromLibrary}
-              onAddFromLibrary={() => void onAddFromLibrary()}
-              onTakePhoto={() =>
-                router.push({
-                  pathname: "/capture",
-                  params: { projectId: project.id },
-                })
-              }
-              colors={colors}
-            />
-
-            <View
-              style={[
-                styles.photoSearchWrap,
-                { backgroundColor: colors.muted, borderColor: colors.border },
-              ]}
-            >
-              <Feather name="search" size={16} color={colors.mutedForeground} />
-              <TextInput
-                value={photoQuery}
-                onChangeText={setPhotoQuery}
-                placeholder="Search photos…"
-                placeholderTextColor={colors.mutedForeground}
-                style={[styles.photoSearchInput, { color: colors.foreground }]}
-                autoCorrect={false}
-                autoCapitalize="none"
-                returnKeyType="search"
-              />
-              {photoSearching ? (
-                <ActivityIndicator size="small" color={colors.mutedForeground} />
-              ) : photoQuery ? (
-                <Pressable
-                  onPress={() => setPhotoQuery("")}
-                  hitSlop={8}
-                  accessibilityRole="button"
-                  accessibilityLabel="Clear photo search"
-                >
-                  <Feather
-                    name="x-circle"
-                    size={16}
+            {/* Search now lives in the row the Take Photo button used to
+                occupy (capture moved to the floating action cluster). */}
+            <View style={styles.photosToolbar}>
+              <View
+                style={[
+                  styles.photoSearchWrap,
+                  {
+                    backgroundColor: colors.muted,
+                    borderColor: colors.border,
+                  },
+                ]}
+              >
+                <Feather
+                  name="search"
+                  size={16}
+                  color={colors.mutedForeground}
+                />
+                <TextInput
+                  value={photoQuery}
+                  onChangeText={setPhotoQuery}
+                  placeholder="Search photos…"
+                  placeholderTextColor={colors.mutedForeground}
+                  style={[
+                    styles.photoSearchInput,
+                    { color: colors.foreground },
+                  ]}
+                  autoCorrect={false}
+                  autoCapitalize="none"
+                  returnKeyType="search"
+                />
+                {photoSearching ? (
+                  <ActivityIndicator
+                    size="small"
                     color={colors.mutedForeground}
                   />
-                </Pressable>
-              ) : null}
+                ) : photoQuery ? (
+                  <Pressable
+                    onPress={() => setPhotoQuery("")}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Clear photo search"
+                  >
+                    <Feather
+                      name="x-circle"
+                      size={16}
+                      color={colors.mutedForeground}
+                    />
+                  </Pressable>
+                ) : null}
+              </View>
+              <PhotosToolbar
+                selectMode={selectMode}
+                onToggleSelect={() => {
+                  if (selectMode) exitSelectMode();
+                  else setSelectArmed(true);
+                }}
+                filterActive={filterActive}
+                onOpenFilter={() => setFilterSheetOpen(true)}
+                addingFromLibrary={addingFromLibrary}
+                onAddFromLibrary={() => void onAddFromLibrary()}
+                colors={colors}
+              />
             </View>
 
             {photoSearchActive ? (
@@ -1461,7 +1471,7 @@ export default function ProjectDetailScreen() {
                 <EmptyState
                   icon="camera"
                   title="No photos yet"
-                  description="Tap Take Photo to capture burst-mode photos with GPS tagging."
+                  description="Tap the camera button below to capture burst-mode photos with GPS tagging."
                 />
               </View>
             ) : filteredPhotos.length === 0 ? (
@@ -1567,7 +1577,7 @@ export default function ProjectDetailScreen() {
             key={ph.id}
             photo={ph}
             borderColor={colors.border}
-            widthPercent="48.5%"
+            widthPercent="23.5%"
             selectMode={selectMode}
             selected={selected.has(ph.id)}
             primary={colors.primary}
@@ -1578,9 +1588,12 @@ export default function ProjectDetailScreen() {
             onRemoveLocal={() => void deletePhoto(ph.id)}
           />
         ))}
-        {item.photos.length === 1 ? (
-          <View style={{ width: "48.5%" }} />
-        ) : null}
+        {/* Fillers keep space-between from stretching short rows. */}
+        {item.photos.length < 4
+          ? Array.from({ length: 4 - item.photos.length }).map((_, i) => (
+              <View key={`f-${i}`} style={{ width: "23.5%" }} />
+            ))
+          : null}
       </View>
     );
   };
@@ -1601,9 +1614,11 @@ export default function ProjectDetailScreen() {
             extraData={{ selectMode, selected }}
             ListHeaderComponent={photosListHeader}
             contentContainerStyle={{
-              // Extra bottom padding while the floating selection bar is
-              // up so the last row isn't hidden behind it (≈56px + margin).
-              paddingBottom: insets.bottom + 24 + (selectMode ? 72 : 0),
+              // Extra bottom padding for the floating action cluster
+              // (≈88px incl. margin) so it never covers the last photo
+              // row, plus the floating selection bar when it's up.
+              paddingBottom:
+                insets.bottom + 24 + 88 + (selectMode ? 72 : 0),
             }}
           />
           <FilterSheet
@@ -1626,7 +1641,8 @@ export default function ProjectDetailScreen() {
         />
       ) : (
       <ScrollView
-        contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
+        // +88 clears the floating action cluster (visible on these tabs).
+        contentContainerStyle={{ paddingBottom: insets.bottom + 24 + 88 }}
       >
         {sharedHeader}
 
@@ -2523,6 +2539,79 @@ export default function ProjectDetailScreen() {
           void refreshAssignments();
         }}
       />
+      {/* Floating action cluster (CompanyCam pattern): camera center,
+          messages left, AI walkthrough right. Hidden on the Messages tab
+          (composer owns the bottom edge) and in select mode (the floating
+          selection bar owns it there). */}
+      {tab !== "messages" && !selectMode ? (
+        <View
+          pointerEvents="box-none"
+          style={[styles.fabCluster, { bottom: insets.bottom + 16 }]}
+        >
+          <Pressable
+            onPress={() => setTab("messages")}
+            accessibilityRole="button"
+            accessibilityLabel="Open project messages"
+            style={({ pressed }) => [
+              styles.fabSide,
+              {
+                backgroundColor: colors.card,
+                borderColor: colors.border,
+                opacity: pressed ? 0.85 : 1,
+              },
+            ]}
+          >
+            <Feather
+              name="message-circle"
+              size={22}
+              color={colors.foreground}
+            />
+          </Pressable>
+          <Pressable
+            onPress={() =>
+              router.push({
+                pathname: "/capture",
+                params: { projectId: project.id },
+              })
+            }
+            accessibilityRole="button"
+            accessibilityLabel="Take photo"
+            style={({ pressed }) => [
+              styles.fabCamera,
+              {
+                backgroundColor: colors.primary,
+                opacity: pressed ? 0.9 : 1,
+              },
+            ]}
+          >
+            <Feather
+              name="camera"
+              size={28}
+              color={colors.primaryForeground}
+            />
+          </Pressable>
+          <Pressable
+            onPress={() =>
+              router.push({
+                pathname: "/capture",
+                params: { projectId: project.id, mode: "walkthru" },
+              })
+            }
+            accessibilityRole="button"
+            accessibilityLabel="Start AI walkthrough"
+            style={({ pressed }) => [
+              styles.fabSide,
+              {
+                backgroundColor: colors.card,
+                borderColor: colors.border,
+                opacity: pressed ? 0.85 : 1,
+              },
+            ]}
+          >
+            <Feather name="zap" size={22} color={colors.foreground} />
+          </Pressable>
+        </View>
+      ) : null}
       {/* Floating selection bar: pinned above the bottom safe area (this
           screen is a stack route — FloatingTabBar only renders inside the
           (tabs) layout, so there's no tab bar to stack above here). Shown
@@ -3140,7 +3229,6 @@ function PhotosToolbar({
   onOpenFilter,
   addingFromLibrary,
   onAddFromLibrary,
-  onTakePhoto,
   colors,
 }: {
   selectMode: boolean;
@@ -3149,11 +3237,9 @@ function PhotosToolbar({
   onOpenFilter: () => void;
   addingFromLibrary: boolean;
   onAddFromLibrary: () => void;
-  onTakePhoto: () => void;
   colors: ReturnType<typeof useColors>;
 }) {
   return (
-    <View style={styles.photosToolbar}>
       <View
         style={[
           styles.gridSegment,
@@ -3217,31 +3303,6 @@ function PhotosToolbar({
           )}
         </Pressable>
       </View>
-
-      <Pressable
-        onPress={onTakePhoto}
-        accessibilityRole="button"
-        accessibilityLabel="Take photo"
-        style={({ pressed }) => [
-          styles.toolbarBtnPrimary,
-          {
-            backgroundColor: colors.primary,
-            opacity: pressed ? 0.9 : 1,
-          },
-        ]}
-      >
-        <Feather name="camera" size={14} color={colors.primaryForeground} />
-        <Text
-          style={[
-            styles.toolbarBtnText,
-            { color: colors.primaryForeground },
-          ]}
-          numberOfLines={1}
-        >
-          Take Photo
-        </Text>
-      </Pressable>
-    </View>
   );
 }
 
@@ -3853,7 +3914,7 @@ const styles = StyleSheet.create({
   wrap: { flex: 1 },
   heroWrap: {
     width: "100%",
-    height: 220,
+    height: 176,
     backgroundColor: "#000",
   },
   heroScrim: {
@@ -3891,12 +3952,12 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.45)",
   },
   summaryCard: {
-    marginTop: -28,
+    marginTop: -24,
     marginHorizontal: 16,
     borderRadius: 16,
     borderWidth: 1,
-    padding: 16,
-    gap: 10,
+    padding: 12,
+    gap: 8,
     shadowColor: "#000",
     shadowOpacity: 0.08,
     shadowRadius: 12,
@@ -3944,8 +4005,8 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: 12,
-    marginTop: 4,
+    paddingTop: 8,
+    marginTop: 2,
   },
   statCol: { flex: 1, alignItems: "center" },
   statNum: {
@@ -4011,8 +4072,8 @@ const styles = StyleSheet.create({
   },
   pillTabsRow: {
     paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 6,
+    paddingTop: 8,
+    paddingBottom: 4,
     gap: 8,
   },
   pillTab: {
@@ -4037,11 +4098,12 @@ const styles = StyleSheet.create({
     borderBottomColor: "transparent",
   },
   tabLabel: { fontSize: 13, fontFamily: "Inter_600SemiBold" },
-  body: { padding: 20 },
+  body: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 20 },
   // Virtualized grid rows carry the horizontal padding styles.body used
   // to provide (the grid is no longer nested inside a body View).
   gridHeaderRow: { paddingHorizontal: 20, paddingTop: 18 },
   photoSearchWrap: {
+    flex: 1,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
@@ -4049,7 +4111,6 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    marginTop: 12,
   },
   photoSearchInput: {
     flex: 1,
@@ -4082,7 +4143,43 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     paddingHorizontal: 20,
-    marginTop: 10,
+    marginTop: 8,
+  },
+  fabCluster: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 20,
+  },
+  fabSide: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
+  },
+  // Matches the Projects tab bar QuickCaptureFAB (64px orange circle,
+  // camera 28, same shadow weight).
+  fabCamera: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 12,
   },
   photoGrid: {
     flexDirection: "row",

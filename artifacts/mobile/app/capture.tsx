@@ -139,8 +139,15 @@ export default function CaptureScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { projectId, checklistItemId, taskId } = useLocalSearchParams<{
-    projectId: string;
+  const { projectId, checklistItemId, taskId, mode: modeParam } =
+    useLocalSearchParams<{
+      projectId: string;
+      /**
+       * Optional initial mode. "walkthru" opens the AI walkthrough flow
+       * directly (project screen's floating AI button); honors the same
+       * first-time explainer path as tapping the mode switch.
+       */
+      mode?: string;
     /**
      * Optional. When set, every photo captured (single shot OR burst) in
      * this session is auto-attached to the named checklist item once it
@@ -992,6 +999,17 @@ export default function CaptureScreen() {
       if (!seen && modeRef.current === "walkthru") setWtIntroVisible(true);
     });
   };
+
+  // ?mode=walkthru (project screen's floating AI button) seeds the
+  // walkthrough flow once on mount — same explainer gating as the
+  // manual mode switch. Deliberately mount-only.
+  const seededWalkthruRef = useRef(false);
+  useEffect(() => {
+    if (seededWalkthruRef.current) return;
+    seededWalkthruRef.current = true;
+    if (modeParam === "walkthru") enterWalkthruMode();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Differentiate tap vs. hold for the shutter.
   const onShutterPressIn = () => {
