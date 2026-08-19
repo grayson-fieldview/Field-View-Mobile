@@ -1398,16 +1398,23 @@ export type NotificationType = "project_mention" | "task_assigned";
  * unread (there is no boolean `read` field). `id` doubles as the
  * `?before` pagination cursor.
  */
-/**
- * One per-feature row from GET /api/ai/usage (current month). CONTRACT
- * GUESS: field shape taken from spec ("{ feature, used, limit, remaining }
- * per feature"); exact feature key strings unconfirmed.
- */
+/** One per-feature row from GET /api/ai/usage (confirmed contract). */
 export interface AiUsageEntry {
-  feature: string;
+  feature:
+    | "report_generation"
+    | "checklist_generation"
+    | "walkthrough_generation"
+    | "transcription_minutes"
+    | (string & {});
   used: number;
   limit: number;
   remaining: number;
+}
+
+/** Confirmed envelope for GET /api/ai/usage. */
+export interface AiUsageResponse {
+  periodMonth: string;
+  features: AiUsageEntry[];
 }
 
 export interface BackendNotification {
@@ -1921,28 +1928,8 @@ export const api = {
       allowEmptyBody: true,
     }),
 
-  /**
-   * Per-feature AI usage for the current month (new endpoint). CONTRACT
-   * GUESS: see AiUsageEntry.
-   * GUESS: response assumed to be either a bare array of entries or
-   * { usage: [...] } — both shapes are accepted; exact feature keys
-   * unconfirmed (callers match fuzzily).
-   */
-  getAiUsage: async (): Promise<AiUsageEntry[]> => {
-    const r = await apiFetch<unknown>("/api/ai/usage");
-    const rows = Array.isArray(r)
-      ? r
-      : r && typeof r === "object" && Array.isArray((r as any).usage)
-        ? (r as any).usage
-        : [];
-    return rows.filter(
-      (u: any): u is AiUsageEntry =>
-        u &&
-        typeof u.feature === "string" &&
-        typeof u.remaining === "number" &&
-        typeof u.limit === "number",
-    );
-  },
+  /** Per-feature AI usage for the current month (confirmed contract). */
+  getAiUsage: () => apiFetch<AiUsageResponse>("/api/ai/usage"),
 
   /** Revoke the current public share token. Server returns 204. */
   unshareProject: (projectId: string | number) =>

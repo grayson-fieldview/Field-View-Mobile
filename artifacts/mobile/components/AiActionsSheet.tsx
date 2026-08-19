@@ -48,8 +48,8 @@ export function AiActionsSheet({
       setUsage(null);
       api
         .getAiUsage()
-        .then((rows) => {
-          if (!cancelled) setUsage(rows);
+        .then((r) => {
+          if (!cancelled) setUsage(r.features);
         })
         .catch(() => {
           /* badge stays hidden — non-fatal */
@@ -75,13 +75,11 @@ export function AiActionsSheet({
     [],
   );
 
-  // Feature-key matching is deliberately fuzzy: the endpoint is new and
-  // exact keys are unconfirmed (see report). Unlimited/absent → no badge.
-  const remainingFor = (needle: string): number | null => {
+  // Exact feature keys (confirmed contract). Unlimited (limit <= 0) or
+  // absent → no badge; fetch failure fails open (actions never blocked).
+  const remainingFor = (feature: string): number | null => {
     if (!usage) return null;
-    const row = usage.find((u) =>
-      u.feature.toLowerCase().includes(needle),
-    );
+    const row = usage.find((u) => u.feature === feature);
     if (!row || !(row.limit > 0)) return null;
     return Math.max(0, row.remaining);
   };
@@ -99,7 +97,7 @@ export function AiActionsSheet({
       icon: "mic",
       title: "Walkthrough",
       desc: "Talk and capture — get an AI-written report",
-      remaining: remainingFor("walk"),
+      remaining: remainingFor("walkthrough_generation"),
       onPress: onWalkthrough,
     },
     {
@@ -107,7 +105,7 @@ export function AiActionsSheet({
       icon: "file-text",
       title: "Generate Report",
       desc: "Pick photos, add a note, get a report",
-      remaining: remainingFor("report"),
+      remaining: remainingFor("report_generation"),
       onPress: onGenerateReport,
     },
   ];
