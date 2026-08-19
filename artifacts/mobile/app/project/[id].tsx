@@ -2557,7 +2557,7 @@ export default function ProjectDetailScreen() {
             style={({ pressed }) => [
               styles.fabSide,
               {
-                backgroundColor: "#171717",
+                backgroundColor: colors.foreground,
                 opacity: pressed ? 0.9 : 1,
               },
             ]}
@@ -2565,7 +2565,7 @@ export default function ProjectDetailScreen() {
             <Feather
               name="message-circle"
               size={22}
-              color="#FFFFFF"
+              color={colors.background}
             />
             {messagesUnread > 0 ? (
               <View
@@ -2615,12 +2615,12 @@ export default function ProjectDetailScreen() {
             style={({ pressed }) => [
               styles.fabSide,
               {
-                backgroundColor: "#171717",
+                backgroundColor: colors.foreground,
                 opacity: pressed ? 0.9 : 1,
               },
             ]}
           >
-            <Feather name="zap" size={22} color="#FFFFFF" />
+            <Feather name="zap" size={22} color={colors.background} />
           </Pressable>
         </View>
       ) : null}
