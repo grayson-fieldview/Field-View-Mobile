@@ -324,7 +324,7 @@ export function ProjectContactsSection({ projectId }: { projectId: string }) {
 /**
  * Add-contact sheet: searches the account's existing contacts and
  * falls back to creating one inline. Attaching requires picking a
- * contact type (defaults to "other").
+ * contact type (defaults to "owner").
  */
 function AddContactSheet({
   visible,
@@ -345,7 +345,7 @@ function AddContactSheet({
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<BackendContact | null>(null);
   const [creating, setCreating] = useState(false);
-  const [type, setType] = useState<ContactType>("other");
+  const [type, setType] = useState<ContactType>("owner");
   const [busy, setBusy] = useState(false);
 
   // Inline-create fields
@@ -362,7 +362,7 @@ function AddContactSheet({
       setQuery("");
       setSelected(null);
       setCreating(false);
-      setType("other");
+      setType("owner");
       setBusy(false);
       setFirstName("");
       setLastName("");
