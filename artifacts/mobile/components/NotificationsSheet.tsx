@@ -6,7 +6,13 @@ import {
 } from "@gorhom/bottom-sheet";
 import { Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -16,11 +22,13 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { useData } from "@/contexts/DataContext";
 import { useColors } from "@/hooks/useColors";
 import {
   api,
   ApiError,
   type BackendNotification,
+  type BackendUser,
 } from "@/services/api";
 
 const SNAP_NOTIFICATIONS = ["75%"];
@@ -51,30 +59,20 @@ function relativeTime(iso: string): string {
   });
 }
 
+// Web-confirmed: readAt === null means unread; there is no boolean.
 function isUnread(n: BackendNotification): boolean {
-  // Shape-tolerant: `read` boolean wins; else readAt null/absent = unread.
-  if (typeof n.read === "boolean") return !n.read;
-  return n.readAt === null || n.readAt === undefined;
+  return n.readAt === null;
 }
 
-function actorLabel(n: BackendNotification): string {
-  if (n.actor) {
-    const name =
-      `${n.actor.firstName ?? ""} ${n.actor.lastName ?? ""}`.trim();
-    if (name) return name;
-  }
-  return n.actorName?.trim() || "Someone";
-}
-
-function whatHappened(n: BackendNotification): string {
-  switch (n.type) {
+function whatHappened(type: string): string {
+  switch (type) {
     case "project_mention":
       return "mentioned you";
     case "task_assigned":
       return "assigned you a task";
     default:
       // Open set — render unknown types generically, never crash.
-      return n.body ?? n.message ?? "sent a notification";
+      return "sent a notification";
   }
 }
 
@@ -82,6 +80,9 @@ function whatHappened(n: BackendNotification): string {
  * Notification bell sheet (gorhom BottomSheetModal, presentedRef
  * pattern — dismiss() is NEVER called unless present() ran first, per
  * the INITIAL→DISMISSING wedge).
+ *
+ * Rows carry no denormalized names (web-confirmed): actorUserId is
+ * resolved via /api/users and projectId via the cached projects list.
  */
 export function NotificationsSheet({
   visible,
@@ -96,10 +97,12 @@ export function NotificationsSheet({
   const colors = useColors();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { projects } = useData();
   const sheetRef = useRef<BottomSheetModal>(null);
   const presentedRef = useRef(false);
 
   const [items, setItems] = useState<BackendNotification[] | null>(null);
+  const [users, setUsers] = useState<BackendUser[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -115,6 +118,24 @@ export function NotificationsSheet({
     }
   }, [visible]);
 
+  const actorNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const u of users) {
+      const name =
+        `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim() ||
+        u.name ||
+        u.email;
+      m.set(String(u.id), name);
+    }
+    return m;
+  }, [users]);
+
+  const projectNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of projects) m.set(String(p.id), p.name);
+    return m;
+  }, [projects]);
+
   const reportUnread = useCallback(
     (list: BackendNotification[]) => {
       onUnreadChanged?.(list.filter(isUnread).length);
@@ -122,18 +143,22 @@ export function NotificationsSheet({
     [onUnreadChanged],
   );
 
-  // (Re)load first page each open.
+  // (Re)load first page + the account user list each open. The user
+  // list is the actor-name resolver (web does the same via /api/users).
   useEffect(() => {
     if (!visible) return;
     let cancelled = false;
     setItems(null);
     setLoadError(null);
-    api
-      .listNotifications({ limit: 50 })
-      .then((res) => {
+    Promise.all([
+      api.listNotifications({ limit: 50 }),
+      api.listUsers().catch(() => [] as BackendUser[]),
+    ])
+      .then(([res, userList]) => {
         if (cancelled) return;
         setItems(res.notifications);
         setHasMore(res.hasMore);
+        setUsers(userList);
         reportUnread(res.notifications);
       })
       .catch((e) => {
@@ -153,6 +178,7 @@ export function NotificationsSheet({
     if (loadingMore || !items || items.length === 0) return;
     setLoadingMore(true);
     try {
+      // `id` is the ?before cursor (web-confirmed).
       const res = await api.listNotifications({
         limit: 50,
         before: items[items.length - 1].id,
@@ -164,7 +190,7 @@ export function NotificationsSheet({
       });
       setHasMore(res.hasMore);
     } catch {
-      /* keep current page; row remains tappable to retry via reopen */
+      /* keep current page; reopen retries */
     } finally {
       setLoadingMore(false);
     }
@@ -176,11 +202,10 @@ export function NotificationsSheet({
     try {
       await api.markAllNotificationsRead();
       setItems((prev) => {
-        const next = (prev ?? []).map((n) => ({
-          ...n,
-          read: true,
-          readAt: n.readAt ?? new Date().toISOString(),
-        }));
+        const now = new Date().toISOString();
+        const next = (prev ?? []).map((n) =>
+          n.readAt === null ? { ...n, readAt: now } : n,
+        );
         onUnreadChanged?.(0);
         return next;
       });
@@ -192,32 +217,29 @@ export function NotificationsSheet({
   };
 
   const openItem = (n: BackendNotification) => {
-    // Server-first not needed here: read-marking a notification is
-    // fire-and-forget; navigation shouldn't wait on it.
+    // Read-marking is fire-and-forget; navigation shouldn't wait on it.
     if (isUnread(n)) {
       void api.markNotificationRead(n.id).catch(() => {});
       setItems((prev) => {
         const next = (prev ?? []).map((x) =>
-          x.id === n.id
-            ? { ...x, read: true, readAt: new Date().toISOString() }
-            : x,
+          x.id === n.id ? { ...x, readAt: new Date().toISOString() } : x,
         );
         reportUnread(next);
         return next;
       });
     }
     onClose();
-    if (n.type === "project_mention" && n.projectId != null) {
+    if (n.type === "project_mention" && n.projectId !== null) {
       router.push({
         pathname: "/project/[id]",
         params: { id: String(n.projectId), tab: "messages" },
       });
-    } else if (n.type === "task_assigned" && n.taskId != null) {
+    } else if (n.type === "task_assigned" && n.taskId !== null) {
       router.push({
         pathname: "/task/[id]",
         params: { id: String(n.taskId) },
       });
-    } else if (n.projectId != null) {
+    } else if (n.projectId !== null) {
       router.push({
         pathname: "/project/[id]",
         params: { id: String(n.projectId) },
@@ -292,6 +314,14 @@ export function NotificationsSheet({
         ) : (
           items.map((n) => {
             const unread = isUnread(n);
+            const actor =
+              (n.actorUserId !== null
+                ? actorNameById.get(n.actorUserId)
+                : undefined) ?? "Someone";
+            const projectName =
+              n.projectId !== null
+                ? projectNameById.get(String(n.projectId))
+                : undefined;
             return (
               <Pressable
                 key={String(n.id)}
@@ -327,13 +357,13 @@ export function NotificationsSheet({
                         : "Inter_400Regular",
                     }}
                   >
-                    {actorLabel(n)} {whatHappened(n)}
+                    {actor} {whatHappened(n.type)}
                   </Text>
                   <Text
                     style={{ color: colors.mutedForeground, fontSize: 11 }}
                     numberOfLines={1}
                   >
-                    {[n.projectName, relativeTime(n.createdAt)]
+                    {[projectName, relativeTime(n.createdAt)]
                       .filter(Boolean)
                       .join(" · ")}
                   </Text>

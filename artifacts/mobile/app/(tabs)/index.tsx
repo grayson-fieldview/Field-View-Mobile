@@ -111,12 +111,9 @@ export default function ProjectsScreen() {
         .listNotifications({ limit: 50 })
         .then((r) => {
           if (!cancelled) {
+            // Web-confirmed: readAt === null means unread (no boolean).
             setNotifUnread(
-              r.notifications.filter((n) =>
-                typeof n.read === "boolean"
-                  ? !n.read
-                  : n.readAt === null || n.readAt === undefined,
-              ).length,
+              r.notifications.filter((n) => n.readAt === null).length,
             );
           }
         })

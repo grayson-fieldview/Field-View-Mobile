@@ -28,17 +28,13 @@ import {
 } from "@/services/api";
 
 /**
- * MENTION WIRE FORMAT (react-mentions markup): outgoing content embeds
- * mentions as `@[Name](userId)` and the ids also travel in the
- * `mentions` array. Rendering resolves the id to the CURRENT name from
- * the candidate list (never trusts the stored name); the embedded name
- * is only a fallback for ids that are no longer candidates.
- * FLAGGED ASSUMPTION: the exact markup convention wasn't verifiable
- * from mobile — if web uses a different token format, only
- * `MENTION_RE` + `buildOutgoingContent` need to change.
+ * MENTION WIRE FORMAT (web-confirmed): content is PLAIN TEXT — the
+ * literal composed text with "@FirstName LastName" left as-is, no
+ * inline markup. Mentioned ids travel ONLY in the `mentions` array.
+ * Rendering shows the body verbatim plus a chip row underneath that
+ * maps `msg.mentions` ids to CURRENT names from the candidate list
+ * (unresolvable ids get a generic fallback), matching web exactly.
  */
-const MENTION_RE = /@\[([^\]]*)\]\((\d+)\)/g;
-
 function userDisplayName(u: {
   firstName?: string | null;
   lastName?: string | null;
@@ -62,24 +58,6 @@ function relativeTime(iso: string): string {
     day: "numeric",
     year: "numeric",
   });
-}
-
-/** Split content into text/mention runs for rendering. */
-function splitContent(
-  content: string,
-): { kind: "text" | "mention"; text: string; userId?: string }[] {
-  const out: { kind: "text" | "mention"; text: string; userId?: string }[] =
-    [];
-  let last = 0;
-  for (const m of content.matchAll(MENTION_RE)) {
-    const idx = m.index ?? 0;
-    if (idx > last) out.push({ kind: "text", text: content.slice(last, idx) });
-    out.push({ kind: "mention", text: m[1], userId: m[2] });
-    last = idx + m[0].length;
-  }
-  if (last < content.length)
-    out.push({ kind: "text", text: content.slice(last) });
-  return out;
 }
 
 interface StagedMention {
@@ -224,30 +202,21 @@ export function ProjectMessagesTab({
     );
   };
 
-  /** Convert display text (@Name) to wire markup (@[Name](id)) for
-   *  every staged mention whose name still appears in the text. */
-  const buildOutgoing = (): { content: string; mentions: number[] } => {
-    let content = text.trim();
-    const mentions: number[] = [];
-    for (const s of staged) {
-      const token = `@${s.name}`;
-      if (content.includes(token)) {
-        content = content.split(token).join(`@[${s.name}](${s.id})`);
-        mentions.push(s.id);
-      }
-    }
-    return { content, mentions };
-  };
-
   const send = async () => {
     const trimmed = text.trim();
     if (!trimmed || sending) return;
     if (trimmed.length > 5000) return; // maxLength guards this already
     setSending(true);
     try {
-      const { content, mentions } = buildOutgoing();
+      // Web-confirmed wire shape: content is the LITERAL composed text
+      // (plain "@First Last" stays as typed); ids go in `mentions`.
+      // Staged ids whose "@Name" token was deleted from the text are
+      // pruned so editing away a mention doesn't still notify.
+      const mentions = staged
+        .filter((s) => trimmed.includes(`@${s.name}`))
+        .map((s) => s.id);
       const msg = await api.postProjectMessage(projectId, {
-        content,
+        content: trimmed,
         mentions,
       });
       if (!mountedRef.current) return;
@@ -394,6 +363,8 @@ export function ProjectMessagesTab({
                           {relativeTime(m.createdAt)}
                         </Text>
                       </View>
+                      {/* Body renders VERBATIM (web-confirmed: plain
+                          text, no inline markup to parse). */}
                       <Text
                         style={{
                           color: colors.foreground,
@@ -401,27 +372,36 @@ export function ProjectMessagesTab({
                           lineHeight: 20,
                         }}
                       >
-                        {splitContent(m.content).map((run, i) =>
-                          run.kind === "mention" ? (
-                            <Text
-                              key={i}
-                              style={{
-                                color: colors.primary,
-                                fontFamily: "Inter_600SemiBold",
-                              }}
-                            >
-                              @
-                              {run.userId
-                                ? // CURRENT name wins; embedded name is
-                                  // only the fallback for ex-members.
-                                  (nameById.get(run.userId) ?? run.text)
-                                : run.text}
-                            </Text>
-                          ) : (
-                            <Text key={i}>{run.text}</Text>
-                          ),
-                        )}
+                        {m.content}
                       </Text>
+                      {/* Mention chips below the body, ids resolved to
+                          CURRENT names; unresolvable ids fall back to a
+                          generic label — matching web. */}
+                      {m.mentions && m.mentions.length > 0 ? (
+                        <View style={styles.chipRow}>
+                          {m.mentions.map((uid) => (
+                            <View
+                              key={String(uid)}
+                              style={[
+                                styles.chip,
+                                { backgroundColor: colors.muted },
+                              ]}
+                            >
+                              <Text
+                                style={{
+                                  color: colors.primary,
+                                  fontFamily: "Inter_600SemiBold",
+                                  fontSize: 11,
+                                }}
+                              >
+                                @
+                                {nameById.get(String(uid)) ??
+                                  "Unknown user"}
+                              </Text>
+                            </View>
+                          ))}
+                        </View>
+                      ) : null}
                     </View>
                   </View>
                 );
@@ -506,6 +486,17 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
+  },
+  chipRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 4,
+  },
+  chip: {
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
   },
   typeahead: {
     borderTopWidth: StyleSheet.hairlineWidth,

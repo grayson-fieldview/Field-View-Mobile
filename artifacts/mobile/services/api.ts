@@ -1365,8 +1365,12 @@ export interface BackendMessageAuthor {
 export interface BackendProjectMessage {
   id: number | string;
   projectId?: number | string;
+  /** PLAIN TEXT — web stores the literal textarea text, no inline
+   *  mention markup. Render verbatim; mentions live in `mentions`. */
   content: string;
-  /** Mentioned user ids (server drops invalid ones silently). */
+  /** Mentioned user ids (server drops invalid ones silently). Resolved
+   *  to CURRENT names client-side and rendered as a chip row below the
+   *  body, matching web. */
   mentions?: (number | string)[] | null;
   createdAt: string;
   author?: BackendMessageAuthor | null;
@@ -1388,27 +1392,25 @@ export interface BackendUnreadCountsResponse {
 export type NotificationType = "project_mention" | "task_assigned";
 
 /**
- * A notification row. Shape-tolerant: the exact field set wasn't
- * verifiable from mobile, so actor/read/target fields cover the
- * plausible spellings and the UI degrades gracefully when absent.
+ * A notification row — EXACT web-confirmed shape. Nothing is
+ * denormalized: `actorUserId` resolves via /api/users and `projectId`
+ * via the cached projects list, client-side. `readAt === null` means
+ * unread (there is no boolean `read` field). `id` doubles as the
+ * `?before` pagination cursor.
  */
 export interface BackendNotification {
-  id: number | string;
-  /** "project_mention" | "task_assigned" (open set — render unknown
-   *  types generically rather than crashing). */
+  id: number;
+  userId: string;
+  accountId: number;
+  /** "project_mention" | "task_assigned" (render unknown types
+   *  generically rather than crashing). */
   type: string;
-  read?: boolean | null;
-  readAt?: string | null;
+  projectId: number | null;
+  messageId: number | null;
+  taskId: number | null;
+  actorUserId: string | null;
+  readAt: string | null;
   createdAt: string;
-  projectId?: number | string | null;
-  projectName?: string | null;
-  taskId?: number | string | null;
-  messageId?: number | string | null;
-  actor?: BackendMessageAuthor | null;
-  actorName?: string | null;
-  /** Optional server-rendered body/preview text. */
-  body?: string | null;
-  message?: string | null;
 }
 
 export interface BackendNotificationsResponse {
