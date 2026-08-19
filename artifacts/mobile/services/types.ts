@@ -375,4 +375,21 @@ export interface Task {
 // useProjectChecklists hook; their shape lives in services/api.ts as
 // BackendChecklist + BackendChecklistSection + BackendChecklistItem.
 
+/**
+ * A contact attached to a project (account contact + join-row
+ * contactType), normalized from BackendProjectContact. Admin/manager
+ * only — non-privileged roles never load these.
+ */
+export interface ProjectContact {
+  /** Contact id (string-normalized) — the :contactId in PATCH/DELETE paths. */
+  contactId: string;
+  contactType: import("./api").ContactType;
+  firstName: string;
+  lastName?: string;
+  email?: string;
+  phone?: string;
+  address?: string;
+  notes?: string;
+}
+
 export type Id = string;

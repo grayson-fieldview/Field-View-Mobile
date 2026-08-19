@@ -44,6 +44,7 @@ import { ApplyReportTemplateModal } from "@/components/ApplyReportTemplateModal"
 import { ReportListItem } from "@/components/ReportListItem";
 import { TemplatePickerModal } from "@/components/TemplatePickerModal";
 import { ChecklistGenerateSheet } from "@/components/ChecklistGenerateSheet";
+import { ProjectContactsSection } from "@/components/ProjectContactsSection";
 import { GenerateReportSheet } from "@/components/GenerateReportSheet";
 import { TitlePromptModal } from "@/components/TitlePromptModal";
 import * as DocumentPicker from "expo-document-picker";
@@ -618,8 +619,21 @@ export default function ProjectDetailScreen() {
   // share is in flight. Disables the hero share button so a
   // double-tap can't mint two gallery tokens.
   const [sharingSelection, setSharingSelection] = useState(false);
+  // Snapshot vs Live choice modal for the gallery share link.
+  // Snapshot (default) freezes the selected photos; Live tracks all
+  // project photos over time. isLive is chosen inside the modal and
+  // passed straight to the POST.
+  const [shareChoiceVisible, setShareChoiceVisible] = useState(false);
+  const [shareIsLive, setShareIsLive] = useState(false);
 
-  const onShareSelected = async () => {
+  const openShareChoice = () => {
+    if (sharingSelection) return;
+    if (selected.size === 0) return;
+    setShareIsLive(false); // default Snapshot on every open
+    setShareChoiceVisible(true);
+  };
+
+  const onShareSelected = async (isLive: boolean) => {
     if (!project) return;
     if (sharingSelection) return;
     if (selected.size === 0) return;
@@ -642,6 +656,10 @@ export default function ProjectDetailScreen() {
       const res = await api.createSharedGallery({
         projectId: Number(project.id),
         mediaIds,
+        // Snapshot omits the flag entirely (pre-isLive server payload
+        // parity); Live sends it explicitly. mediaIds are sent either
+        // way — the server ignores them for live galleries.
+        ...(isLive ? { isLive: true } : {}),
       });
       token = res.token;
     } catch (e) {
@@ -2310,6 +2328,9 @@ export default function ProjectDetailScreen() {
                 ) : null}
               </View>
             )}
+            {/* Contacts — component self-gates to admin/manager (renders
+                nothing and fires no request otherwise). */}
+            <ProjectContactsSection projectId={project.id} />
           </View>
         ) : null}
       </ScrollView>
@@ -2498,7 +2519,7 @@ export default function ProjectDetailScreen() {
             {selected.size} selected
           </Text>
           <Pressable
-            onPress={onShareSelected}
+            onPress={openShareChoice}
             hitSlop={6}
             disabled={sharingSelection || selected.size === 0}
             accessibilityRole="button"
@@ -2541,6 +2562,102 @@ export default function ProjectDetailScreen() {
           </Pressable>
         </View>
       ) : null}
+
+      {/* Snapshot vs Live gallery share choice. Defaults to Snapshot;
+          Create link fires the POST with the chosen mode. */}
+      <Modal
+        visible={shareChoiceVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShareChoiceVisible(false)}
+      >
+        <Pressable
+          style={styles.shareChoiceBackdrop}
+          onPress={() => setShareChoiceVisible(false)}
+        >
+          <Pressable
+            style={[
+              styles.shareChoiceSheet,
+              { backgroundColor: colors.card, borderColor: colors.border },
+            ]}
+            onPress={() => {}}
+          >
+            <Text
+              style={{
+                color: colors.foreground,
+                fontFamily: "Inter_700Bold",
+                fontSize: 16,
+              }}
+            >
+              Share gallery link
+            </Text>
+            {(
+              [
+                {
+                  live: false,
+                  title: "Snapshot",
+                  desc: "Just the selected photos, frozen as they are now.",
+                },
+                {
+                  live: true,
+                  title: "Live",
+                  desc: "All project photos, newest first — the link updates as photos are added.",
+                },
+              ] as const
+            ).map((opt) => {
+              const active = shareIsLive === opt.live;
+              return (
+                <Pressable
+                  key={opt.title}
+                  onPress={() => setShareIsLive(opt.live)}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: active }}
+                  style={[
+                    styles.shareChoiceOption,
+                    {
+                      borderColor: active ? colors.primary : colors.border,
+                      backgroundColor: colors.background,
+                    },
+                  ]}
+                >
+                  <Feather
+                    name={active ? "check-circle" : "circle"}
+                    size={18}
+                    color={active ? colors.primary : colors.mutedForeground}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={{
+                        color: colors.foreground,
+                        fontFamily: "Inter_600SemiBold",
+                        fontSize: 14,
+                      }}
+                    >
+                      {opt.title}
+                    </Text>
+                    <Text
+                      style={{
+                        color: colors.mutedForeground,
+                        fontSize: 12,
+                        lineHeight: 16,
+                      }}
+                    >
+                      {opt.desc}
+                    </Text>
+                  </View>
+                </Pressable>
+              );
+            })}
+            <Button
+              title="Create link"
+              onPress={() => {
+                setShareChoiceVisible(false);
+                void onShareSelected(shareIsLive);
+              }}
+            />
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Top-right kebab overflow menu. Lightweight Modal-as-popover
           (matches the rest of this screen's modal patterns). */}
@@ -3804,6 +3921,26 @@ const styles = StyleSheet.create({
   },
   statDivider: { width: StyleSheet.hairlineWidth, height: 32 },
   // Kebab popover (top-right overflow menu).
+  shareChoiceBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.4)",
+    justifyContent: "center",
+    padding: 24,
+  },
+  shareChoiceSheet: {
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: 16,
+    gap: 12,
+  },
+  shareChoiceOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+  },
   menuBackdrop: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.25)",

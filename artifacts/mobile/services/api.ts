@@ -1301,6 +1301,55 @@ export interface BackendSharedGalleryResponse {
   createdAt?: string;
 }
 
+// ----- Contacts (admin/manager only on the server) -----
+
+/**
+ * Join-row contact type for a contact attached to a project
+ * (projects_contacts.contact_type). Closed enum on the server.
+ */
+export type ContactType =
+  | "owner"
+  | "renter"
+  | "property_manager"
+  | "gc"
+  | "other";
+
+/**
+ * An account-level contact row from GET/POST /api/contacts.
+ * Only firstName is required by the server; everything else nullable.
+ */
+export interface BackendContact {
+  id: number | string;
+  firstName: string;
+  lastName?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  address?: string | null;
+  notes?: string | null;
+  createdAt?: string;
+}
+
+/**
+ * A project-contact join row from GET /api/projects/:id/contacts.
+ * Shape tolerance: the join row may nest the contact under `contact`
+ * or flatten its fields onto the row itself — the mapper handles
+ * both. `contactId` identifies the contact for PATCH/DELETE on
+ * /api/projects/:id/contacts/:contactId.
+ */
+export interface BackendProjectContact {
+  id?: number | string;
+  contactId?: number | string;
+  contactType?: string | null;
+  contact?: BackendContact;
+  // Flattened variant:
+  firstName?: string;
+  lastName?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  address?: string | null;
+  notes?: string | null;
+}
+
 /**
  * A media comment row from GET/POST /api/media/:id/comments.
  * `user` is optional: the list join omits it for deleted authors, and
@@ -1625,10 +1674,93 @@ export const api = {
     mediaIds: number[];
     includeMetadata?: boolean;
     includeDescriptions?: boolean;
+    /**
+     * false/absent (default) = SNAPSHOT: the given mediaIds, frozen.
+     * true = LIVE: the gallery tracks ALL project photos, newest
+     * first, updating as photos are added. mediaIds are still sent
+     * for live galleries (server ignores them) so the request shape
+     * stays valid for pre-isLive servers.
+     */
+    isLive?: boolean;
   }) =>
     apiFetch<BackendSharedGalleryResponse>("/api/galleries", {
       method: "POST",
       json: payload,
+    }),
+
+  // ----- Contacts (server enforces admin/manager; 403 otherwise) -----
+
+  /** List all account-level contacts. */
+  listContacts: () => apiFetch<BackendContact[]>("/api/contacts"),
+
+  /** Create an account-level contact. Only firstName is required. */
+  createContact: (input: {
+    firstName: string;
+    lastName?: string;
+    email?: string;
+    phone?: string;
+    address?: string;
+    notes?: string;
+  }) =>
+    apiFetch<BackendContact>("/api/contacts", { method: "POST", json: input }),
+
+  /** Patch an account-level contact. */
+  updateContact: (
+    contactId: string | number,
+    patch: Partial<{
+      firstName: string;
+      lastName: string;
+      email: string;
+      phone: string;
+      address: string;
+      notes: string;
+    }>,
+  ) =>
+    apiFetch<BackendContact>(`/api/contacts/${contactId}`, {
+      method: "PATCH",
+      json: patch,
+    }),
+
+  /** Delete an account-level contact (detaches from all projects). */
+  deleteContact: (contactId: string | number) =>
+    apiFetch<void>(`/api/contacts/${contactId}`, {
+      method: "DELETE",
+      allowEmptyBody: true,
+    }),
+
+  /** List contacts attached to a project (join rows with contactType). */
+  listProjectContacts: (projectId: string | number) =>
+    apiFetch<BackendProjectContact[]>(`/api/projects/${projectId}/contacts`),
+
+  /** Attach an existing contact to a project with a contactType. */
+  attachContactToProject: (
+    projectId: string | number,
+    input: { contactId: number; contactType: ContactType },
+  ) =>
+    apiFetch<BackendProjectContact>(`/api/projects/${projectId}/contacts`, {
+      method: "POST",
+      json: input,
+    }),
+
+  /** Change the contactType on an existing project-contact join row. */
+  updateProjectContact: (
+    projectId: string | number,
+    contactId: string | number,
+    patch: { contactType: ContactType },
+  ) =>
+    apiFetch<BackendProjectContact>(
+      `/api/projects/${projectId}/contacts/${contactId}`,
+      { method: "PATCH", json: patch },
+    ),
+
+  /** Detach a contact from a project (contact row itself survives). */
+  detachContactFromProject: (
+    projectId: string | number,
+    contactId: string | number,
+  ) =>
+    apiFetch<void>(`/api/projects/${projectId}/contacts/${contactId}`, {
+      method: "DELETE",
+      allowEmptyBody: true,
     }),
 
   /** Revoke the current public share token. Server returns 204. */

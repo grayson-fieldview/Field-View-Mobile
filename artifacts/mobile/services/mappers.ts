@@ -1,12 +1,59 @@
 import type {
   BackendMedia,
   BackendProject,
+  BackendProjectContact,
   BackendTask,
+  ContactType,
 } from "./api";
-import type { Photo, Project, Task, TaskPriority, TaskStatus } from "./types";
+import type {
+  Photo,
+  Project,
+  ProjectContact,
+  Task,
+  TaskPriority,
+  TaskStatus,
+} from "./types";
 
 const VALID_STATUS = new Set<TaskStatus>(["todo", "in_progress", "done"]);
 const VALID_PRIORITY = new Set<TaskPriority>(["low", "medium", "high"]);
+const VALID_CONTACT_TYPE = new Set<ContactType>([
+  "owner",
+  "renter",
+  "property_manager",
+  "gc",
+  "other",
+]);
+
+/**
+ * Normalize a project-contact join row. Tolerates both wire shapes
+ * (nested `contact` object or flattened fields). Rows with no usable
+ * contact id are dropped by the caller (returns null) — without the
+ * id we can't PATCH/DELETE the join row.
+ */
+export function mapBackendProjectContact(
+  r: BackendProjectContact,
+): ProjectContact | null {
+  const c = r.contact;
+  const rawId = r.contactId ?? c?.id;
+  if (rawId === undefined || rawId === null) return null;
+  const contactType: ContactType = VALID_CONTACT_TYPE.has(
+    r.contactType as ContactType,
+  )
+    ? (r.contactType as ContactType)
+    : "other";
+  const pick = (a?: string | null, b?: string | null) =>
+    (a ?? b ?? undefined) || undefined;
+  return {
+    contactId: String(rawId),
+    contactType,
+    firstName: pick(c?.firstName, r.firstName) ?? "",
+    lastName: pick(c?.lastName, r.lastName),
+    email: pick(c?.email, r.email),
+    phone: pick(c?.phone, r.phone),
+    address: pick(c?.address, r.address),
+    notes: pick(c?.notes, r.notes),
+  };
+}
 
 /**
  * GET /api/projects serializes photoCount from a SQL COUNT — depending
