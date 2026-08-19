@@ -25,6 +25,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "@/components/Button";
+import { NotificationsSheet } from "@/components/NotificationsSheet";
 import { EmptyState } from "@/components/EmptyState";
 import { LoadingScreen } from "@/components/LoadingScreen";
 import { useData } from "@/contexts/DataContext";
@@ -84,6 +85,48 @@ export default function ProjectsScreen() {
     useCallback(() => {
       refresh();
     }, [refresh]),
+  );
+
+  // Per-project unread MESSAGE counts — ONE call for the whole list
+  // (never per-project). Zero-unread projects are omitted from the
+  // response, so a missing key means 0. Notification unread count for
+  // the bell badge comes from the first notifications page.
+  const [msgCounts, setMsgCounts] = useState<Record<string, number>>({});
+  const [notifUnread, setNotifUnread] = useState(0);
+  const [notifOpen, setNotifOpen] = useState(false);
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      api
+        .unreadCounts()
+        .then((r) => {
+          if (!cancelled && r && typeof r.counts === "object") {
+            setMsgCounts(r.counts ?? {});
+          }
+        })
+        .catch(() => {
+          /* keep last known badges — non-fatal */
+        });
+      api
+        .listNotifications({ limit: 50 })
+        .then((r) => {
+          if (!cancelled) {
+            setNotifUnread(
+              r.notifications.filter((n) =>
+                typeof n.read === "boolean"
+                  ? !n.read
+                  : n.readAt === null || n.readAt === undefined,
+              ).length,
+            );
+          }
+        })
+        .catch(() => {
+          /* bell badge keeps last value */
+        });
+      return () => {
+        cancelled = true;
+      };
+    }, []),
   );
 
   const [sortMode, setSortMode] = useState<SortMode>("nearby");
@@ -348,19 +391,53 @@ export default function ProjectsScreen() {
             Projects
           </Text>
         </View>
-        <Pressable
-          accessibilityLabel="New project"
-          onPress={() => router.push("/project/new")}
-          style={({ pressed }) => [
-            styles.plus,
-            {
-              backgroundColor: colors.primary,
-              opacity: pressed ? 0.85 : 1,
-            },
-          ]}
-        >
-          <Feather name="plus" size={22} color={colors.primaryForeground} />
-        </Pressable>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+          <Pressable
+            accessibilityLabel={
+              notifUnread > 0
+                ? `Notifications, ${notifUnread} unread`
+                : "Notifications"
+            }
+            onPress={() => setNotifOpen(true)}
+            style={({ pressed }) => [
+              styles.plus,
+              {
+                backgroundColor: colors.muted,
+                opacity: pressed ? 0.85 : 1,
+              },
+            ]}
+          >
+            <Feather name="bell" size={20} color={colors.foreground} />
+            {notifUnread > 0 ? (
+              <View
+                style={[styles.bellBadge, { backgroundColor: colors.primary }]}
+              >
+                <Text
+                  style={{
+                    color: colors.primaryForeground,
+                    fontSize: 10,
+                    fontFamily: "Inter_700Bold",
+                  }}
+                >
+                  {notifUnread > 99 ? "99+" : notifUnread}
+                </Text>
+              </View>
+            ) : null}
+          </Pressable>
+          <Pressable
+            accessibilityLabel="New project"
+            onPress={() => router.push("/project/new")}
+            style={({ pressed }) => [
+              styles.plus,
+              {
+                backgroundColor: colors.primary,
+                opacity: pressed ? 0.85 : 1,
+              },
+            ]}
+          >
+            <Feather name="plus" size={22} color={colors.primaryForeground} />
+          </Pressable>
+        </View>
       </View>
 
       <View style={styles.toggleRow}>
@@ -475,6 +552,7 @@ export default function ProjectsScreen() {
             cover={coverFor.get(item.id)}
             photoCount={stats.get(item.id)?.photos ?? 0}
             openTaskCount={stats.get(item.id)?.openTasks ?? 0}
+            unreadMessages={msgCounts[item.id] ?? 0}
             distanceLabel={distanceLabelFor(item)}
             onPress={() => router.push(`/project/${item.id}`)}
           />
@@ -625,6 +703,11 @@ export default function ProjectsScreen() {
           )
         }
       />
+      <NotificationsSheet
+        visible={notifOpen}
+        onClose={() => setNotifOpen(false)}
+        onUnreadChanged={setNotifUnread}
+      />
     </View>
   );
 }
@@ -676,6 +759,7 @@ function ProjectCard({
   cover,
   photoCount,
   openTaskCount,
+  unreadMessages,
   distanceLabel,
   onPress,
 }: {
@@ -683,6 +767,7 @@ function ProjectCard({
   cover?: string;
   photoCount: number;
   openTaskCount: number;
+  unreadMessages: number;
   distanceLabel: string | null;
   onPress: () => void;
 }) {
@@ -754,6 +839,27 @@ function ProjectCard({
       </View>
 
       <View style={styles.cardRight}>
+        {unreadMessages > 0 ? (
+          <View
+            style={[styles.msgBadge, { backgroundColor: colors.primary }]}
+            accessibilityLabel={`${unreadMessages} unread messages`}
+          >
+            <Feather
+              name="message-circle"
+              size={10}
+              color={colors.primaryForeground}
+            />
+            <Text
+              style={{
+                color: colors.primaryForeground,
+                fontSize: 10,
+                fontFamily: "Inter_700Bold",
+              }}
+            >
+              {unreadMessages > 99 ? "99+" : unreadMessages}
+            </Text>
+          </View>
+        ) : null}
         <RightStat
           icon="camera"
           value={photoCount}
@@ -827,6 +933,25 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     alignItems: "center",
     justifyContent: "center",
+  },
+  bellBadge: {
+    position: "absolute",
+    top: -2,
+    right: -2,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 4,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  msgBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
   },
   toggleRow: {
     flexDirection: "row",

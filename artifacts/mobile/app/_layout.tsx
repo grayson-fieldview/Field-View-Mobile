@@ -340,6 +340,7 @@ function subscribeAuthGateRouted(cb: (v: boolean) => void): () => void {
  */
 type PendingDeepLink =
   | { kind: "project"; projectId: number }
+  | { kind: "project_mention"; projectId: number; messageId?: number }
   | { kind: "report"; reportId: number; projectId?: number };
 
 // Deep-link parsing:
@@ -360,6 +361,15 @@ function parseDeepLink(data: unknown): PendingDeepLink | null {
     };
   }
   if (typeof d.projectId !== "number") return null;
+  // Mention pushes open the project's Messages tab directly (checked
+  // BEFORE the generic projectId fallback, which would swallow it).
+  if (d.type === "project_mention") {
+    return {
+      kind: "project_mention",
+      projectId: d.projectId,
+      messageId: typeof d.messageId === "number" ? d.messageId : undefined,
+    };
+  }
   return { kind: "project", projectId: d.projectId };
 }
 
@@ -420,6 +430,17 @@ function NotificationDeepLinkHandler() {
           id: String(pending.reportId),
           ...(pending.projectId !== undefined
             ? { projectId: String(pending.projectId) }
+            : {}),
+        },
+      });
+    } else if (pending.kind === "project_mention") {
+      router.push({
+        pathname: "/project/[id]",
+        params: {
+          id: String(pending.projectId),
+          tab: "messages",
+          ...(pending.messageId !== undefined
+            ? { messageId: String(pending.messageId) }
             : {}),
         },
       });

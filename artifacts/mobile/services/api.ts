@@ -1350,6 +1350,72 @@ export interface BackendProjectContact {
   notes?: string | null;
 }
 
+// ----- Project messages + notifications -----
+
+/** Author join on a project message row. Names may be stale server-side
+ *  renders — mobile resolves mention display names from the CURRENT
+ *  candidate list, never from stored content. */
+export interface BackendMessageAuthor {
+  id: number | string;
+  firstName?: string | null;
+  lastName?: string | null;
+  profileImageUrl?: string | null;
+}
+
+export interface BackendProjectMessage {
+  id: number | string;
+  projectId?: number | string;
+  content: string;
+  /** Mentioned user ids (server drops invalid ones silently). */
+  mentions?: (number | string)[] | null;
+  createdAt: string;
+  author?: BackendMessageAuthor | null;
+}
+
+export interface BackendMessagesResponse {
+  /** Ordered oldest→newest. */
+  messages: BackendProjectMessage[];
+  hasMore: boolean;
+}
+
+/** GET /api/messages/unread-counts. Zero-unread projects are OMITTED
+ *  from `counts` — absence means 0, never undefined-as-error. */
+export interface BackendUnreadCountsResponse {
+  counts: Record<string, number>;
+  total: number;
+}
+
+export type NotificationType = "project_mention" | "task_assigned";
+
+/**
+ * A notification row. Shape-tolerant: the exact field set wasn't
+ * verifiable from mobile, so actor/read/target fields cover the
+ * plausible spellings and the UI degrades gracefully when absent.
+ */
+export interface BackendNotification {
+  id: number | string;
+  /** "project_mention" | "task_assigned" (open set — render unknown
+   *  types generically rather than crashing). */
+  type: string;
+  read?: boolean | null;
+  readAt?: string | null;
+  createdAt: string;
+  projectId?: number | string | null;
+  projectName?: string | null;
+  taskId?: number | string | null;
+  messageId?: number | string | null;
+  actor?: BackendMessageAuthor | null;
+  actorName?: string | null;
+  /** Optional server-rendered body/preview text. */
+  body?: string | null;
+  message?: string | null;
+}
+
+export interface BackendNotificationsResponse {
+  notifications: BackendNotification[];
+  hasMore: boolean;
+}
+
 /**
  * A media comment row from GET/POST /api/media/:id/comments.
  * `user` is optional: the list join omits it for deleted authors, and
@@ -1760,6 +1826,84 @@ export const api = {
   ) =>
     apiFetch<void>(`/api/projects/${projectId}/contacts/${contactId}`, {
       method: "DELETE",
+      allowEmptyBody: true,
+    }),
+
+  // ----- Project messages -----
+
+  /**
+   * Page of project messages, ordered oldest→newest. `before` is a
+   * message-id cursor for loading OLDER pages; limit 1-100 (default 50).
+   */
+  listProjectMessages: (
+    projectId: string | number,
+    opts?: { limit?: number; before?: string | number },
+  ) => {
+    const params = new URLSearchParams();
+    if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+    if (opts?.before !== undefined) params.set("before", String(opts.before));
+    const qs = params.toString();
+    return apiFetch<BackendMessagesResponse>(
+      `/api/projects/${projectId}/messages${qs ? `?${qs}` : ""}`,
+    );
+  },
+
+  /** Post a message. content 1-5000 chars; invalid mention ids are
+   *  silently dropped server-side. */
+  postProjectMessage: (
+    projectId: string | number,
+    input: { content: string; mentions: number[] },
+  ) =>
+    apiFetch<BackendProjectMessage>(`/api/projects/${projectId}/messages`, {
+      method: "POST",
+      json: input,
+    }),
+
+  /** Upsert the caller's last-read marker for the project thread. 204. */
+  markProjectMessagesRead: (projectId: string | number) =>
+    apiFetch<void>(`/api/projects/${projectId}/messages/read`, {
+      method: "POST",
+      allowEmptyBody: true,
+    }),
+
+  /** Unread message count for one project. */
+  projectUnreadCount: (projectId: string | number) =>
+    apiFetch<{ unread: number }>(
+      `/api/projects/${projectId}/messages/unread-count`,
+    ),
+
+  /**
+   * Unread message counts across ALL projects in one call (the project
+   * list must use this, not N per-project calls). Zero-unread projects
+   * are omitted from `counts`.
+   */
+  unreadCounts: () =>
+    apiFetch<BackendUnreadCountsResponse>("/api/messages/unread-counts"),
+
+  // ----- Notifications -----
+
+  listNotifications: (opts?: {
+    limit?: number;
+    before?: string | number;
+  }) => {
+    const params = new URLSearchParams();
+    if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+    if (opts?.before !== undefined) params.set("before", String(opts.before));
+    const qs = params.toString();
+    return apiFetch<BackendNotificationsResponse>(
+      `/api/notifications${qs ? `?${qs}` : ""}`,
+    );
+  },
+
+  markNotificationRead: (notificationId: string | number) =>
+    apiFetch<unknown>(`/api/notifications/${notificationId}/read`, {
+      method: "POST",
+      allowEmptyBody: true,
+    }),
+
+  markAllNotificationsRead: () =>
+    apiFetch<unknown>("/api/notifications/read-all", {
+      method: "POST",
       allowEmptyBody: true,
     }),
 

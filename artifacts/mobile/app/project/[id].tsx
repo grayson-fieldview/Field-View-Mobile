@@ -45,6 +45,7 @@ import { ReportListItem } from "@/components/ReportListItem";
 import { TemplatePickerModal } from "@/components/TemplatePickerModal";
 import { ChecklistGenerateSheet } from "@/components/ChecklistGenerateSheet";
 import { ProjectContactsSection } from "@/components/ProjectContactsSection";
+import { ProjectMessagesTab } from "@/components/ProjectMessagesTab";
 import { GenerateReportSheet } from "@/components/GenerateReportSheet";
 import { TitlePromptModal } from "@/components/TitlePromptModal";
 import * as DocumentPicker from "expo-document-picker";
@@ -81,7 +82,14 @@ import {
   type QueuedUpload,
 } from "@/services/uploadQueue";
 
-type TabKey = "photos" | "tasks" | "checklists" | "reports" | "files" | "team";
+type TabKey =
+  | "photos"
+  | "tasks"
+  | "checklists"
+  | "reports"
+  | "messages"
+  | "files"
+  | "team";
 
 // ---------------------------------------------------------------------------
 // Gallery filters (Photos tab). Client-side only — the project detail load
@@ -245,11 +253,31 @@ export default function ProjectDetailScreen() {
     tabParam === "tasks" ||
     tabParam === "checklists" ||
     tabParam === "reports" ||
+    tabParam === "messages" ||
     tabParam === "files" ||
     tabParam === "team"
       ? tabParam
       : "photos",
   );
+  // Unread message count for the Messages tab badge. Loaded once on
+  // mount; zeroed when the tab marks the thread read.
+  const [messagesUnread, setMessagesUnread] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .projectUnreadCount(id)
+      .then((r) => {
+        if (!cancelled && typeof r?.unread === "number") {
+          setMessagesUnread(r.unread);
+        }
+      })
+      .catch(() => {
+        /* badge stays 0 — non-fatal */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
   const [showTaskModal, setShowTaskModal] = useState(false);
   // Long-press suppression for task rows (same pattern as PhotoTile's
   // longPressed ref): RN Web fires onPress after onLongPress on release,
@@ -1294,6 +1322,10 @@ export default function ProjectDetailScreen() {
                 label: "Reports",
                 count: projectReports.length,
               },
+              // NOTE: web places Messages after Daily Log; mobile has no
+              // Daily Log tab, so it sits after Reports (closest analogue).
+              // Its count is the UNREAD badge, not a total.
+              { key: "messages", label: "Messages", count: messagesUnread },
               { key: "files", label: "Files", count: projectFiles.length },
               { key: "team", label: "Team", count: assignments.length },
             ] as { key: TabKey; label: string; count: number }[]
@@ -1584,6 +1616,14 @@ export default function ProjectDetailScreen() {
             colors={colors}
           />
         </>
+      ) : tab === "messages" ? (
+        // Messages own their layout: thread scroll + composer pinned at
+        // the bottom (keyboard-aware inside the component).
+        <ProjectMessagesTab
+          projectId={project.id}
+          header={sharedHeader}
+          onReadMarked={() => setMessagesUnread(0)}
+        />
       ) : (
       <ScrollView
         contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
