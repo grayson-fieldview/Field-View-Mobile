@@ -7,6 +7,7 @@ import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
 import * as MediaLibrary from "expo-media-library";
 import { Image } from "expo-image";
+import { useIsFocused } from "@react-navigation/native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -145,6 +146,7 @@ export default function CaptureScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const isFocused = useIsFocused();
   const { projectId, checklistItemId, taskId, mode: modeParam } =
     useLocalSearchParams<{
       projectId: string;
@@ -519,7 +521,43 @@ export default function CaptureScreen() {
     );
   }
 
-  if (!permission) return null;
+  // useCameraPermissions briefly resolves to null on a fresh route mount.
+  // Keep the same black camera shell visible during that read so navigation
+  // never lands on an empty screen.
+  if (!permission) {
+    return (
+      <View style={styles.wrap}>
+        <View style={[styles.topBar, { paddingTop: insets.top + 10 }]}>
+          <View style={styles.topSideCluster}>
+            <Pressable
+              onPress={() => router.back()}
+              hitSlop={12}
+              style={styles.glassBtn}
+              accessibilityLabel="Close camera"
+            >
+              <Feather name="x" size={20} color="#fff" />
+            </Pressable>
+          </View>
+          <View style={styles.projectBadge}>
+            <Text style={styles.projectName} numberOfLines={1}>
+              {project.name}
+            </Text>
+            <Text style={styles.projectMeta} numberOfLines={1}>
+              Starting camera…
+            </Text>
+          </View>
+          <View style={[styles.topSideCluster, styles.topSideClusterRight]} />
+        </View>
+        <View style={styles.previewArea}>
+          <View style={styles.previewFrame} />
+          <View style={styles.previewPillSession}>
+            <ActivityIndicator size="small" color="#111" />
+            <Text style={styles.sessionPillText}>Starting camera…</Text>
+          </View>
+        </View>
+      </View>
+    );
+  }
 
   if (!permission.granted) {
     return (
@@ -1170,6 +1208,7 @@ export default function CaptureScreen() {
           <CameraView
             ref={cameraRef}
             style={StyleSheet.absoluteFill}
+            active={isFocused}
             facing={facing}
             flash={flash}
             zoom={zoomValue}
