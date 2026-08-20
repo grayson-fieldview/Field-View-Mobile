@@ -45,7 +45,7 @@ export function AiActionsSheet({
   const sheetRef = useRef<BottomSheetModal>(null);
   const presentedRef = useRef(false);
   const { credits, refresh } = useAiCredits();
-  const [checkingCredits, setCheckingCredits] = useState(false);
+  const [checkingAction, setCheckingAction] = useState(false);
   const [creditMessage, setCreditMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -54,7 +54,6 @@ export function AiActionsSheet({
       sheetRef.current?.present();
       let cancelled = false;
       setCreditMessage(null);
-      setCheckingCredits(true);
       refresh()
         .then((latest) => {
           if (!cancelled && totalAiCredits(latest) <= 0) {
@@ -67,9 +66,6 @@ export function AiActionsSheet({
               "Couldn't check available credits. Try again before starting an AI action.",
             );
           }
-        })
-        .finally(() => {
-          if (!cancelled) setCheckingCredits(false);
         });
       return () => {
         cancelled = true;
@@ -93,9 +89,9 @@ export function AiActionsSheet({
   );
 
   const startBillableAction = async (action: () => void) => {
-    if (checkingCredits) return;
+    if (checkingAction) return;
     setCreditMessage(null);
-    setCheckingCredits(true);
+    setCheckingAction(true);
     try {
       // Always revalidate just before entering the action. For a
       // walkthrough this happens before capture requests microphone access,
@@ -113,7 +109,7 @@ export function AiActionsSheet({
           : "Couldn't check available credits. Try again before starting an AI action.",
       );
     } finally {
-      setCheckingCredits(false);
+      setCheckingAction(false);
     }
   };
 
@@ -139,7 +135,6 @@ export function AiActionsSheet({
       onPress: () => void startBillableAction(onGenerateReport),
     },
   ];
-  const noCredits = credits ? totalAiCredits(credits) <= 0 : false;
 
   return (
     <BottomSheetModal
@@ -176,7 +171,7 @@ export function AiActionsSheet({
           <Pressable
             key={r.key}
             onPress={r.onPress}
-            disabled={checkingCredits || noCredits}
+            disabled={checkingAction}
             accessibilityRole="button"
             accessibilityLabel={r.title}
             style={({ pressed }) => [
@@ -184,7 +179,7 @@ export function AiActionsSheet({
               {
                 backgroundColor: colors.muted,
                 opacity:
-                  checkingCredits || noCredits ? 0.5 : pressed ? 0.85 : 1,
+                  checkingAction ? 0.5 : pressed ? 0.85 : 1,
               },
             ]}
           >
