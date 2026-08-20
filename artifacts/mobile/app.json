@@ -56,7 +56,8 @@
         "googleMaps": {
           "apiKey": "AIzaSyDXRU2jGyuGU2RDAcdjis_ySI0sDjSoZ-A"
         }
-      }
+      },
+      "googleServicesFile": "./google-services.json"
     },
     "web": {
       "favicon": "./assets/images/favicon.png"
