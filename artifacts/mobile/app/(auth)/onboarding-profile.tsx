@@ -27,7 +27,7 @@ export default function OnboardingProfileScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user, signOut } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const isOwner = user?.isOwner === true;
 
   // Prefill first/last from the current user (OAuth-provided when
   // available). Company name deliberately prefills EMPTY — never the
@@ -44,6 +44,7 @@ export default function OnboardingProfileScreen() {
     firstName.trim().length > 0 &&
     lastName.trim().length > 0 &&
     phoneOk &&
+    (!isOwner || companyName.trim().length > 0) &&
     termsAccepted;
 
   const onSignOut = () => {
@@ -63,7 +64,7 @@ export default function OnboardingProfileScreen() {
       params: {
         firstName: firstName.trim(),
         lastName: lastName.trim(),
-        companyName: isAdmin ? companyName.trim() : "",
+        companyName: isOwner ? companyName.trim() : "",
         phone: phone.trim(),
         tcpaAccepted: tcpaAccepted ? "1" : "0",
       },
@@ -129,7 +130,7 @@ export default function OnboardingProfileScreen() {
           />
         </View>
 
-        {isAdmin ? (
+        {isOwner ? (
           <>
             <FieldLabel style={{ marginTop: 14 }}>Company Name</FieldLabel>
             <View

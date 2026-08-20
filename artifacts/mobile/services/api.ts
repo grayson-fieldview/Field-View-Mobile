@@ -672,6 +672,8 @@ export type UserRole = "admin" | "manager" | "standard" | "restricted";
 
 export interface BackendUser {
   id: string | number;
+  /** Account identifier supplied by current-user and auth responses. */
+  accountId?: string | number | null;
   email: string;
   firstName?: string;
   lastName?: string;
@@ -732,6 +734,30 @@ export interface BackendUser {
   deletedAt?: string | null;
   [key: string]: unknown;
 }
+
+/**
+ * Required fields for mobile's one-time onboarding submission. This is
+ * intentionally separate from updateMe(), which also powers ordinary
+ * profile edits where only name and phone are required.
+ */
+export type OnboardingUpdateInput =
+  | {
+      firstName: string;
+      lastName: string;
+      phone: string;
+      tcpaAccepted: boolean;
+      jobRole: string;
+    }
+  | {
+      firstName: string;
+      lastName: string;
+      phone: string;
+      tcpaAccepted: boolean;
+      jobRole: string;
+      companySize: string;
+      industry: string;
+      heardAboutUs: string;
+    };
 
 /**
  * Read-only account billing summary (GET /api/account/billing-summary,
@@ -2097,6 +2123,13 @@ export const api = {
     companySize?: string;
     heardAboutUs?: string;
   }) =>
+    apiFetch<BackendUser | { user: BackendUser } | null>("/api/auth/me", {
+      method: "PATCH",
+      json: input,
+    }),
+
+  /** Required onboarding submission. Kept separate from profile edits. */
+  completeOnboarding: (input: OnboardingUpdateInput) =>
     apiFetch<BackendUser | { user: BackendUser } | null>("/api/auth/me", {
       method: "PATCH",
       json: input,

@@ -17,7 +17,7 @@ import { Button } from "@/components/Button";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { useAuth } from "@/contexts/AuthContext";
 import { useColors } from "@/hooks/useColors";
-import { api } from "@/services/api";
+import { api, type OnboardingUpdateInput } from "@/services/api";
 
 // EXACT wire strings — do not reword. Labels per spec.
 const JOB_ROLE_OPTIONS = [
@@ -55,8 +55,6 @@ const INDUSTRY_OPTIONS = [
   { value: "other", label: "Other" },
 ];
 
-// Admin-gated server-side (like industry/companySize) — only admin
-// selections are written, so the UI only shows it to admins.
 const HEARD_ABOUT_US_OPTIONS = [
   { value: "google_search", label: "Google Search" },
   { value: "social_media", label: "Social Media" },
@@ -69,17 +67,13 @@ const HEARD_ABOUT_US_OPTIONS = [
 ];
 
 /**
- * Onboarding screen 2 of 2 — optional profiling fields + submit.
- * All fields optional; Continue is ALWAYS enabled (no Skip button —
- * optionality IS the skip). Back chevron pops to screen 1, which
- * keeps its entered values (it stays mounted under the push).
+ * Onboarding screen 2 of 2 — required role fields plus account-owner
+ * profiling. Back chevron pops to screen 1, which keeps its entered
+ * values (it stays mounted under the push).
  *
  * Submit order (screen 1 values arrive via router params):
- *   1. admin + company name entered → PATCH /api/account/name; on
- *      failure STOP with inline error (the one field with no second
- *      chance).
- *   2. PATCH /api/auth/me with required fields + selected optionals
- *      (unselected optionals OMITTED — never null/"").
+ *   1. owner → PATCH /api/account/name; on failure STOP with inline error.
+ *   2. PATCH /api/auth/me with required onboarding fields.
  *   3. Apply the PATCH response via applyUpdatedUser (it returns the
  *      full updated user with profileCompletedAt stamped — no
  *      follow-up me() needed or wanted), THEN router.replace("/(tabs)").
@@ -89,7 +83,7 @@ export default function OnboardingDetailsScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { user, applyUpdatedUser } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const isOwner = user?.isOwner === true;
 
   const rawParams = useLocalSearchParams<{
     firstName?: string;
@@ -123,17 +117,21 @@ export default function OnboardingDetailsScreen() {
     INDUSTRY_OPTIONS.find((o) => o.value === industry)?.label ?? null;
   const heardAboutUsLabel =
     HEARD_ABOUT_US_OPTIONS.find((o) => o.value === heardAboutUs)?.label ?? null;
+  const canContinue =
+    jobRole !== null &&
+    (!isOwner ||
+      (companySize !== null && industry !== null && heardAboutUs !== null));
 
   const handleContinue = async () => {
-    if (submitting) return;
+    if (submitting || !canContinue) return;
     setError(null);
     setSubmitting(true);
     try {
       const companyName = (params.companyName ?? "").trim();
 
-      // 1. Account rename first — admin only, and only if a name was
-      // entered. Failure stops the whole submit.
-      if (isAdmin && companyName.length > 0) {
+      // 1. Account rename first — owners must provide a company name on
+      // screen 1, so this is always part of their completion path.
+      if (isOwner) {
         try {
           await api.updateAccountName({ name: companyName });
         } catch {
@@ -145,20 +143,24 @@ export default function OnboardingDetailsScreen() {
         }
       }
 
-      // 2. Profile PATCH. Unselected optional fields are OMITTED
-      // entirely — the server must not receive nulls or empty strings.
-      const body: Parameters<typeof api.updateMe>[0] = {
+      // 2. Required onboarding PATCH. Edit Profile retains its looser
+      // updateMe() contract and is deliberately not used here.
+      const base: OnboardingUpdateInput = {
         firstName: (params.firstName ?? "").trim(),
         lastName: (params.lastName ?? "").trim(),
         phone: (params.phone ?? "").trim(),
         tcpaAccepted: params.tcpaAccepted === "1",
+        jobRole,
       };
-      if (jobRole) body.jobRole = jobRole;
-      if (isAdmin && industry) body.industry = industry;
-      if (isAdmin && companySize) body.companySize = companySize;
-      // Admin-gated server-side — non-admin selections are silently dropped.
-      if (isAdmin && heardAboutUs) body.heardAboutUs = heardAboutUs;
-      const updated = await api.updateMe(body);
+      const body: OnboardingUpdateInput = isOwner
+        ? {
+            ...base,
+            companySize: companySize!,
+            industry: industry!,
+            heardAboutUs: heardAboutUs!,
+          }
+        : base;
+      const updated = await api.completeOnboarding(body);
 
       // 3. Apply the PATCH response directly — it IS the updated user
       // (profileCompletedAt now stamped), PATCH /api/auth/me does not
@@ -203,7 +205,7 @@ export default function OnboardingDetailsScreen() {
           Let&apos;s tailor your experience
         </Text>
         <Text style={[shared.subtitle, { color: colors.mutedForeground }]}>
-          Optional — helps us set things up for you.
+          A few final details to set up your account.
         </Text>
 
         <FieldLabel>What&apos;s your role?</FieldLabel>
@@ -213,7 +215,7 @@ export default function OnboardingDetailsScreen() {
           onSelect={setJobRole}
         />
 
-        {isAdmin ? (
+        {isOwner ? (
           <>
             <FieldLabel style={{ marginTop: 18 }}>
               How many employees?
@@ -306,7 +308,7 @@ export default function OnboardingDetailsScreen() {
           title="Continue"
           onPress={() => void handleContinue()}
           loading={submitting}
-          disabled={submitting}
+          disabled={submitting || !canContinue}
           size="lg"
           style={{ marginTop: 20, backgroundColor: BRAND_ORANGE }}
         />

@@ -57,8 +57,13 @@ export interface AuthUser {
   firstName?: string;
   lastName?: string;
   name: string;
+  /**
+   * Account identifier for account-level analytics grouping. Absent on
+   * legacy snapshots and pre-rollout auth responses.
+   */
+  accountId?: string;
   /** True when this user owns their account (can delete the whole account). */
-  isOwner: boolean;
+  isOwner?: boolean;
   /**
    * Account role from the web backend. `null` when the server didn't
    * return a role (legacy user rows pre-Team-rework). All admin-only
@@ -198,11 +203,17 @@ function toAuthUser(raw: BackendUser | null): AuthUser | null {
       : null;
   return {
     id: String(raw.id),
+    accountId:
+      (typeof raw.accountId === "string" && raw.accountId.length > 0) ||
+      typeof raw.accountId === "number"
+        ? String(raw.accountId)
+        : undefined,
     email: String(raw.email),
     firstName: raw.firstName,
     lastName: raw.lastName,
     name: raw.name ? String(raw.name) : combined || String(raw.email),
-    isOwner: raw.isOwner === true,
+    isOwner:
+      typeof raw.isOwner === "boolean" ? raw.isOwner : undefined,
     role,
     // SERVER default: null OR missing ⇒ needs onboarding — mirrors
     // web's falsy check on the same field (client/src/App.tsx). This
@@ -283,11 +294,16 @@ async function loadUserSnapshot(): Promise<AuthUser | null> {
     }
     return {
       id: parsed.id,
+      accountId:
+        typeof parsed.accountId === "string" && parsed.accountId.length > 0
+          ? parsed.accountId
+          : undefined,
       email: parsed.email,
       firstName: parsed.firstName,
       lastName: parsed.lastName,
       name: typeof parsed.name === "string" ? parsed.name : parsed.email,
-      isOwner: parsed.isOwner === true,
+      isOwner:
+        typeof parsed.isOwner === "boolean" ? parsed.isOwner : undefined,
       role: parsed.role ?? null,
       // SNAPSHOT default: field ABSENT ⇒ treat as COMPLETED. Older
       // snapshots (written before this release) have no
