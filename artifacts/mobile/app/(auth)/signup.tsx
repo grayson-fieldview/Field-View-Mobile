@@ -2,7 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import * as AppleAuthentication from "expo-apple-authentication";
 import * as Linking from "expo-linking";
 import { useRouter } from "expo-router";
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Pressable,
   StyleSheet,
@@ -27,6 +27,7 @@ import { Button } from "@/components/Button";
 import { KeyboardAwareScrollViewCompat } from "@/components/KeyboardAwareScrollViewCompat";
 import { useAuth } from "@/contexts/AuthContext";
 import { useColors } from "@/hooks/useColors";
+import { capturePostHogEvent } from "@/services/posthog";
 
 /** Live password rules shown under the password field. */
 const PASSWORD_RULES: { label: string; test: (pw: string) => boolean }[] = [
@@ -59,6 +60,10 @@ export default function SignupScreen() {
   // press time). Released only on email failure — success keeps it
   // held, same permanent lockout as the state guards.
   const submitLockRef = useRef(false);
+
+  useEffect(() => {
+    capturePostHogEvent("signup_started");
+  }, []);
 
   const { oauthLoading, signedIn, handleOAuth } = useOAuthSignIn({
     setError,

@@ -35,6 +35,10 @@ import {
   subscribeToPushTokenRotation,
   unregisterPushTokenWithServer,
 } from "@/services/pushNotifications";
+import {
+  identifyPostHogUser,
+  resetPostHog,
+} from "@/services/posthog";
 
 /**
  * Account-level settings shared by every user on the team. Mirrors
@@ -527,6 +531,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const applyVerifiedUser = useCallback(
     (next: AuthUser, trigger: string) => {
       setUser(next);
+      identifyPostHogUser(next.id, next.accountId);
       if (authStateRef.current !== "verified") {
         setAuthState("verified");
       }
@@ -555,6 +560,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
     await clearSession().catch(() => {});
     await clearUserSnapshot();
+    resetPostHog();
     setUser(null);
     setAuthState("verified");
     setAccountSettings(null);
@@ -720,6 +726,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       setUser(next);
+      identifyPostHogUser(next.id, next.accountId);
       if (authStateRef.current !== "verified") {
         setAuthState("verified");
       }
@@ -963,6 +970,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         throw new Error("Sign-in succeeded but we couldn't load your account.");
       const next = toAuthUser(me);
       setUser(next);
+      if (next) identifyPostHogUser(next.id, next.accountId);
       setAuthState("verified");
       // Persist the snapshot so a future cold start that can't reach
       // the server can restore this user instead of showing login.
@@ -994,6 +1002,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         throw new Error("Sign-in succeeded but we couldn't load your account.");
       const next = toAuthUser(me);
       setUser(next);
+      if (next) identifyPostHogUser(next.id, next.accountId);
       setAuthState("verified");
       // Persist the snapshot so a future cold start that can't reach
       // the server can restore this user instead of showing login.
@@ -1058,6 +1067,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await api.logout().catch(() => null);
     await clearSession();
     await clearUserSnapshot();
+    resetPostHog();
     breadcrumbAuthState("signed-out", "explicit-sign-out");
     setUser(null);
     setAuthState("verified");

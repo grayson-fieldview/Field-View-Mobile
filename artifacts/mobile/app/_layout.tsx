@@ -1,5 +1,7 @@
 import { initSentry, Sentry } from "../services/sentry";
 initSentry();
+import { initPostHog } from "../services/posthog";
+initPostHog();
 
 import {
   Inter_400Regular,
@@ -14,7 +16,7 @@ import {
   ThemeProvider,
 } from "@react-navigation/native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Stack, useRouter, useSegments } from "expo-router";
+import { Stack, usePathname, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -39,6 +41,7 @@ import { UploadStatusProvider } from "@/contexts/UploadStatusContext";
 import { useColors } from "@/hooks/useColors";
 import { hasSkippedPlanThisSession } from "@/services/appleIap";
 import { cleanupLegacyBackgroundTasks } from "@/services/legacyTaskCleanup";
+import { capturePostHogScreen } from "@/services/posthog";
 import {
   configureNotificationHandler,
   getLastNotificationResponseData,
@@ -314,6 +317,19 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       ) : null}
     </>
   );
+}
+
+function PostHogScreenTracker() {
+  const pathname = usePathname();
+  const previousPathnameRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!pathname || previousPathnameRef.current === pathname) return;
+    previousPathnameRef.current = pathname;
+    capturePostHogScreen(pathname);
+  }, [pathname]);
+
+  return null;
 }
 
 function AuthReverificationOverlay({
@@ -731,6 +747,7 @@ export default function RootLayout() {
             <BottomSheetModalProvider>
             <KeyboardProvider>
               <AuthProvider>
+                <PostHogScreenTracker />
                 <DataProvider>
                   <ToastProvider>
                     <UploadStatusProvider>

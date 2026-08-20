@@ -119,7 +119,8 @@
         {
           "microphonePermission": "Field View records audio for voice notes and with your project videos so the captured footage matches what you said on site."
         }
-      ]
+      ],
+      "expo-localization"
     ],
     "experiments": {
       "typedRoutes": true,
