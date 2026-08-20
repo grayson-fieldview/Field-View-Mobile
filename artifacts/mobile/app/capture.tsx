@@ -95,10 +95,7 @@ const MAX_RECORDING_BYTES = 450 * 1024 * 1024;
 const WT_MAX_MS = 15 * 60 * 1000;
 // Narration turns warning-colored near the cap.
 const WT_WARN_MS = 13 * 60 * 1000;
-// First-run explainer seen-flag. Follows the repo's `@fv/` AsyncStorage
-// key convention (see services/storage.ts KEYS and
-// services/legacyTaskCleanup.ts CLEANUP_FLAG).
-const WT_INTRO_FLAG = "@fv/walkthrough/intro_seen_v1";
+const WT_EXPLAINER_COMPLETION_TARGET = 5;
 
 type ZoomPreset = { label: string; value: number };
 // No anchor above 4x, so pinch never zooms past the top preset's value.
@@ -170,7 +167,7 @@ export default function CaptureScreen() {
     taskId?: string;
   }>();
   const { projects, photos, addPhoto, addPhotosBatch } = useData();
-  const { accountSettings } = useAuth();
+  const { accountSettings, user } = useAuth();
   const project = projects.find((p) => p.id === projectId);
 
   // Account-wide default capture aspect ratio (S3y, admin-managed
@@ -1034,15 +1031,22 @@ export default function CaptureScreen() {
     setWtPhotoCount(0);
   };
 
-  // Entering WALKTHRU for the first time ever shows the explainer once
-  // (AsyncStorage-flagged), after which Start begins immediately.
+  // Show the explainer until this signed-in user has completed five
+  // walkthroughs. The count is device-local and user-scoped, so crew
+  // members sharing a device do not suppress one another's guidance.
   const enterWalkthruMode = () => {
     setMode("walkthru");
     modeRef.current = "walkthru";
-    void storage.getFlag(WT_INTRO_FLAG).then((seen) => {
+    if (!user) return;
+    void storage.getWalkthroughCompletionCount(user.id).then((count) => {
       // Stale-read guard: the user may have switched away before the
       // flag resolved — never surface the intro outside WALKTHRU.
-      if (!seen && modeRef.current === "walkthru") setWtIntroVisible(true);
+      if (
+        count < WT_EXPLAINER_COMPLETION_TARGET &&
+        modeRef.current === "walkthru"
+      ) {
+        setWtIntroVisible(true);
+      }
     });
   };
 
@@ -1604,7 +1608,6 @@ export default function CaptureScreen() {
             <Button
               title="Start walkthrough"
               onPress={() => {
-                void storage.setFlag(WT_INTRO_FLAG, true);
                 setWtIntroVisible(false);
                 void wtStart();
               }}

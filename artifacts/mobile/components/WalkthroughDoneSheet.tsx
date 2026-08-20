@@ -10,6 +10,7 @@ import {
 } from "react-native";
 
 import { Button } from "@/components/Button";
+import { useAuth } from "@/contexts/AuthContext";
 import { useData } from "@/contexts/DataContext";
 import { useColors } from "@/hooks/useColors";
 import {
@@ -23,6 +24,7 @@ import {
   subscribe as subscribeToQueue,
   type QueuedUpload,
 } from "@/services/uploadQueue";
+import { storage } from "@/services/storage";
 
 /**
  * Walkthrough Done pipeline, presented as a Modal over the camera.
@@ -103,6 +105,7 @@ export function WalkthroughDoneSheet({
   onExit,
 }: Props) {
   const colors = useColors();
+  const { user } = useAuth();
   const { photos } = useData();
   const [phase, setPhase] = useState<Phase>("checking");
   const [uploadedCount, setUploadedCount] = useState(0);
@@ -246,6 +249,14 @@ export function WalkthroughDoneSheet({
             mediaIds,
             photoOffsets: photoOffsets.length > 0 ? photoOffsets : undefined,
           });
+          // An accepted generation request is the completion boundary.
+          // Local storage failure is advisory and must never make the
+          // accepted report look like an error.
+          if (user) {
+            await storage
+              .incrementWalkthroughCompletionCount(user.id)
+              .catch(() => undefined);
+          }
           // Refresh the shared query after the billable generation was
           // accepted. Failure to refresh must not undo the successful 202.
           await refreshAiCredits().catch(() => undefined);

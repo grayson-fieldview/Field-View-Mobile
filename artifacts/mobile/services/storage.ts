@@ -17,6 +17,9 @@ const KEYS = {
   photos: "@fv/photos",
 } as const;
 
+const walkthroughCompletionCountKey = (userId: string) =>
+  `@fv/walkthrough/completed_count/v1/${encodeURIComponent(userId)}`;
+
 // Orphaned cache keys to remove on every app start. `@fv/shares` is the
 // dropped fake-share-link cache from the pre-real-invites era;
 // `@fv/checklists` is the dropped local-only AsyncStorage checklist cache
@@ -96,5 +99,33 @@ export const storage = {
     } catch {
       /* ignore */
     }
+  },
+
+  /**
+   * Device-local walkthrough completions for one signed-in user. The count is
+   * capped at the explainer target, so it remains a small, stable value even
+   * after many completed walkthroughs.
+   */
+  getWalkthroughCompletionCount: async (userId: string): Promise<number> => {
+    const count = await readJson<number>(
+      walkthroughCompletionCountKey(userId),
+      0,
+    );
+    return Number.isInteger(count) && count > 0 ? Math.min(count, 5) : 0;
+  },
+  incrementWalkthroughCompletionCount: async (
+    userId: string,
+  ): Promise<number> => {
+    const current = await storage.getWalkthroughCompletionCount(userId);
+    const next = Math.min(current + 1, 5);
+    try {
+      await AsyncStorage.setItem(
+        walkthroughCompletionCountKey(userId),
+        JSON.stringify(next),
+      );
+    } catch {
+      /* completion storage is advisory and must never fail generation */
+    }
+    return next;
   },
 };

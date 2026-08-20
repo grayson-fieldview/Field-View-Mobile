@@ -2536,10 +2536,10 @@ export default function ProjectDetailScreen() {
           void refreshAssignments();
         }}
       />
-      {/* Floating action cluster (CompanyCam pattern): camera center,
-          messages left, AI right — each in a primary-filled circle (same
-          treatment as the camera FAB, smaller proportions). Hidden in
-          select mode (the floating selection bar owns the bottom edge). */}
+      {/* Floating action cluster: the orange camera stadium is the single
+          primary action; messages and AI remain quieter secondary actions.
+          Hidden in select mode (the floating selection bar owns the bottom
+          edge). */}
       {!selectMode ? (
         <View
           pointerEvents="box-none"
@@ -2557,7 +2557,7 @@ export default function ProjectDetailScreen() {
             style={({ pressed }) => [
               styles.fabSide,
               {
-                backgroundColor: colors.foreground,
+                backgroundColor: colors.muted,
                 opacity: pressed ? 0.9 : 1,
               },
             ]}
@@ -2565,7 +2565,7 @@ export default function ProjectDetailScreen() {
             <Feather
               name="message-circle"
               size={22}
-              color={colors.background}
+              color={colors.mutedForeground}
             />
             {messagesUnread > 0 ? (
               <View
@@ -2615,12 +2615,12 @@ export default function ProjectDetailScreen() {
             style={({ pressed }) => [
               styles.fabSide,
               {
-                backgroundColor: colors.foreground,
+                backgroundColor: colors.muted,
                 opacity: pressed ? 0.9 : 1,
               },
             ]}
           >
-            <Feather name="zap" size={22} color={colors.background} />
+            <Feather name="zap" size={22} color={colors.mutedForeground} />
           </Pressable>
         </View>
       ) : null}
@@ -4196,7 +4196,7 @@ const styles = StyleSheet.create({
     elevation: 10,
   },
   // The card-colored pill is applied at render so it follows dark mode.
-  // These secondary actions are deliberately black, not primary orange.
+  // Secondary actions use muted tokens; camera is the sole primary action.
   fabSide: {
     width: 48,
     height: 48,
@@ -4217,12 +4217,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   fabBadgeText: { fontFamily: "Inter_700Bold", fontSize: 10 },
-  // Matches the Projects tab bar QuickCaptureFAB (64px orange circle,
-  // camera 28, same shadow weight).
+  // Orange primary action: 64×48 stadium keeps the existing 12pt cluster
+  // spacing while giving the camera a distinct, wider silhouette.
   fabCamera: {
     width: 64,
-    height: 64,
-    borderRadius: 32,
+    height: 48,
+    borderRadius: 24,
     alignItems: "center",
     justifyContent: "center",
     shadowColor: "#000",
