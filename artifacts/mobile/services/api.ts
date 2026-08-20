@@ -754,6 +754,7 @@ export type OnboardingUpdateInput =
       phone: string;
       tcpaAccepted: boolean;
       jobRole: string;
+      companyName: string;
       companySize: string;
       industry: string;
       heardAboutUs: string;

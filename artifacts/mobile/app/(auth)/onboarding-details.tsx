@@ -117,18 +117,20 @@ export default function OnboardingDetailsScreen() {
     INDUSTRY_OPTIONS.find((o) => o.value === industry)?.label ?? null;
   const heardAboutUsLabel =
     HEARD_ABOUT_US_OPTIONS.find((o) => o.value === heardAboutUs)?.label ?? null;
+  const companyName = params.companyName.trim();
   const canContinue =
     jobRole !== null &&
     (!isOwner ||
-      (companySize !== null && industry !== null && heardAboutUs !== null));
+      (companyName.length > 0 &&
+        companySize !== null &&
+        industry !== null &&
+        heardAboutUs !== null));
 
   const handleContinue = async () => {
     if (submitting || !canContinue) return;
     setError(null);
     setSubmitting(true);
     try {
-      const companyName = (params.companyName ?? "").trim();
-
       // 1. Account rename first — owners must provide a company name on
       // screen 1, so this is always part of their completion path.
       if (isOwner) {
@@ -155,6 +157,7 @@ export default function OnboardingDetailsScreen() {
       const body: OnboardingUpdateInput = isOwner
         ? {
             ...base,
+            companyName,
             companySize: companySize!,
             industry: industry!,
             heardAboutUs: heardAboutUs!,
