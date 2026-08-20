@@ -42,8 +42,15 @@ import { useColors } from "@/hooks/useColors";
 import {
   api,
   ApiError,
+  isInsufficientAiCredits,
   type BackendCommentResponse,
 } from "@/services/api";
+import {
+  outOfCreditsMessage,
+  outOfCreditsMessageFromBody,
+  refreshAiCredits,
+  totalAiCredits,
+} from "@/services/aiCredits";
 import { useUploadStatus } from "@/contexts/UploadStatusContext";
 import {
   cropToAspectRatio,
@@ -894,6 +901,32 @@ export default function CaptureScreen() {
         if (msg) setWtError(msg);
       }
     };
+    // Preflight the REAL credit gate before asking for microphone access
+    // or starting the recorder. This protects the expensive user journey:
+    // no narration/site walk begins when the server already reports zero
+    // report-generation credits.
+    try {
+      const credits = await refreshAiCredits();
+      if (disposed()) {
+        bail(null);
+        return;
+      }
+      if (totalAiCredits(credits) <= 0) {
+        bail(outOfCreditsMessage(credits.next_reset_at));
+        return;
+      }
+    } catch (e) {
+      if (disposed()) {
+        bail(null);
+        return;
+      }
+      bail(
+        isInsufficientAiCredits(e)
+          ? outOfCreditsMessageFromBody(e.body)
+          : "Couldn't check available AI credits. Try again before starting.",
+      );
+      return;
+    }
     let granted: boolean;
     try {
       granted = await requestWtMicPermission();

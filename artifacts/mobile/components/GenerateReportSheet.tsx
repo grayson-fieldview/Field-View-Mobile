@@ -22,9 +22,14 @@ import { VoiceNoteButton } from "@/components/VoiceNoteButton";
 import { useData } from "@/contexts/DataContext";
 import { useColors } from "@/hooks/useColors";
 import {
+  outOfCreditsMessageFromBody,
+  refreshAiCredits,
+} from "@/services/aiCredits";
+import {
   ApiError,
   REPORT_TYPES,
   REPORT_TYPE_LABELS,
+  isInsufficientAiCredits,
   type ReportType,
   api,
 } from "@/services/api";
@@ -73,6 +78,7 @@ export function GenerateReportSheet({
   const [generating, setGenerating] = useState(false);
   const [voiceBusy, setVoiceBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [outOfCredits, setOutOfCredits] = useState<string | null>(null);
 
   // Reset per open.
   useEffect(() => {
@@ -83,6 +89,7 @@ export function GenerateReportSheet({
       setGenerating(false);
       setVoiceBusy(false);
       setError(null);
+      setOutOfCredits(null);
     }
   }, [visible]);
 
@@ -113,7 +120,8 @@ export function GenerateReportSheet({
   // reportType always holds a valid value now (defaulted, non-null).
   // voiceBusy: a recording/transcription in flight must block submit —
   // otherwise the note could be sent without the pending transcript.
-  const canGenerate = selected.size > 0 && !generating && !voiceBusy;
+  const canGenerate =
+    selected.size > 0 && !generating && !voiceBusy && !outOfCredits;
 
   const generate = async () => {
     if (!canGenerate) return;
@@ -125,9 +133,17 @@ export function GenerateReportSheet({
         note,
         reportType,
       });
+      // Publish the new balance to every mounted credits consumer. A
+      // refresh failure must not turn a successfully created report into
+      // a client-visible generation failure.
+      await refreshAiCredits().catch(() => undefined);
       onCreated(res.reportId, res.excludedCount);
     } catch (e) {
-      if (e instanceof ApiError && e.status === 429) {
+      if (isInsufficientAiCredits(e)) {
+        // Use the reset timestamp carried by THIS 402 response. Do not
+        // depend on a second GET succeeding after the generation failed.
+        setOutOfCredits(outOfCreditsMessageFromBody(e.body));
+      } else if (e instanceof ApiError && e.status === 429) {
         setError(
           e.message && e.message.length < 200
             ? e.message
@@ -335,6 +351,26 @@ export function GenerateReportSheet({
               {error}
             </Text>
           ) : null}
+          {outOfCredits ? (
+            <View
+              style={[
+                styles.creditError,
+                {
+                  backgroundColor: colors.muted,
+                  borderColor: colors.destructive,
+                },
+              ]}
+            >
+              <Feather
+                name="alert-circle"
+                size={18}
+                color={colors.destructive}
+              />
+              <Text style={[styles.error, { color: colors.destructive }]}>
+                {outOfCredits}
+              </Text>
+            </View>
+          ) : null}
 
           {generating ? (
             <View style={styles.progressRow}>
@@ -424,6 +460,14 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
   },
   error: { fontSize: 13, fontFamily: "Inter_500Medium", lineHeight: 18 },
+  creditError: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 10,
+    padding: 10,
+  },
   progressRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   progressText: {
     flex: 1,

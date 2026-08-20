@@ -351,6 +351,31 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * The AI-credit exhaustion response carried by a 402 from a billable
+ * generation endpoint. This is distinct from the account billing 402
+ * handled by AuthContext — the user can keep using the app, but must wait
+ * for their credit cycle to reset before generating another report.
+ */
+export interface InsufficientAiCreditsBody {
+  code: "INSUFFICIENT_AI_CREDITS";
+  next_reset_at: string;
+}
+
+/** Narrow an ApiError to the confirmed AI-credit 402 response contract. */
+export function isInsufficientAiCredits(
+  e: unknown,
+): e is ApiError & { body: InsufficientAiCreditsBody } {
+  if (!(e instanceof ApiError) || e.status !== 402) return false;
+  const body = e.body;
+  return (
+    !!body &&
+    typeof body === "object" &&
+    (body as { code?: unknown }).code === "INSUFFICIENT_AI_CREDITS" &&
+    typeof (body as { next_reset_at?: unknown }).next_reset_at === "string"
+  );
+}
+
 interface FetchOpts {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   json?: unknown;
@@ -596,14 +621,26 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
       /* ignore */
     }
     if (res.status === 402) {
+      const isAiCreditExhaustion =
+        !!parsed &&
+        typeof parsed === "object" &&
+        (parsed as { code?: unknown }).code === "INSUFFICIENT_AI_CREDITS";
       // Readable fallback when the server body carried no message —
       // never the bare "Request failed (402)".
-      if (message === `Request failed (${res.status})`) {
+      if (
+        !isAiCreditExhaustion &&
+        message === `Request failed (${res.status})`
+      ) {
         message =
           "Your account is read-only. An admin needs to update billing to make changes.";
       }
-      // Notify BEFORE throwing; throw semantics below are unchanged.
-      notifyPaymentRequired(path, message);
+      // AI-credit exhaustion is a product state handled close to the
+      // generation flow, not an account-billing lock. Do not trigger
+      // AuthContext's generic, debounced Payment Required banner for it.
+      if (!isAiCreditExhaustion) {
+        // Notify BEFORE throwing; throw semantics below are unchanged.
+        notifyPaymentRequired(path, message);
+      }
     }
     breadcrumbApiError(opts.method ?? "GET", path, res.status);
     throw new ApiError(res.status, message, parsed);
@@ -1417,6 +1454,14 @@ export interface AiUsageResponse {
   features: AiUsageEntry[];
 }
 
+/** Confirmed GET /api/credits response. */
+export interface CreditsResponse {
+  monthly_remaining: number;
+  purchased_remaining: number;
+  cycle_start: string;
+  next_reset_at: string;
+}
+
 export interface BackendNotification {
   id: number;
   userId: string;
@@ -1930,6 +1975,9 @@ export const api = {
 
   /** Per-feature AI usage for the current month (confirmed contract). */
   getAiUsage: () => apiFetch<AiUsageResponse>("/api/ai/usage"),
+
+  /** Billable AI credits remaining across the monthly and purchased pools. */
+  getCredits: () => apiFetch<CreditsResponse>("/api/credits"),
 
   /** Revoke the current public share token. Server returns 204. */
   unshareProject: (projectId: string | number) =>

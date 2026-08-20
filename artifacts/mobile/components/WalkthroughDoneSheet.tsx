@@ -12,7 +12,11 @@ import {
 import { Button } from "@/components/Button";
 import { useData } from "@/contexts/DataContext";
 import { useColors } from "@/hooks/useColors";
-import { api } from "@/services/api";
+import {
+  outOfCreditsMessageFromBody,
+  refreshAiCredits,
+} from "@/services/aiCredits";
+import { api, isInsufficientAiCredits } from "@/services/api";
 import {
   getQueue,
   retryItem,
@@ -70,6 +74,7 @@ type Phase =
   | "transcribing"
   | "generating" // POST /walkthrough in flight
   | "done" // 202 accepted — report building
+  | "out_of_credits" // terminal 402; server reset timestamp displayed
   | "error"; // terminal failure; photos are saved
 
 /** Resolve a session photo to its server media id, if known yet. */
@@ -241,10 +246,18 @@ export function WalkthroughDoneSheet({
             mediaIds,
             photoOffsets: photoOffsets.length > 0 ? photoOffsets : undefined,
           });
+          // Refresh the shared query after the billable generation was
+          // accepted. Failure to refresh must not undo the successful 202.
+          await refreshAiCredits().catch(() => undefined);
           if (!mountedRef.current || genRef.current !== gen) return;
           setPhase("done");
         } catch (e) {
           if (!mountedRef.current || genRef.current !== gen) return;
+          if (isInsufficientAiCredits(e)) {
+            setPhase("out_of_credits");
+            setErrorMsg(outOfCreditsMessageFromBody(e.body));
+            return;
+          }
           setPhase("error");
           setErrorMsg(
             `${e instanceof Error && e.message ? e.message : "Couldn't start the report."} Your photos are saved on the project.`,
@@ -332,6 +345,21 @@ export function WalkthroughDoneSheet({
                 We'll notify you when it's ready.
               </Text>
               <Button title="Done" onPress={onExit} />
+            </>
+          ) : phase === "out_of_credits" ? (
+            <>
+              <Feather
+                name="alert-circle"
+                size={28}
+                color={colors.destructive}
+              />
+              <Text style={[styles.title, { color: colors.foreground }]}>
+                Out of credits
+              </Text>
+              <Text style={[styles.body, { color: colors.mutedForeground }]}>
+                {errorMsg} Your photos are saved on the project.
+              </Text>
+              <Button title="OK" variant="secondary" onPress={onExit} />
             </>
           ) : (
             <>

@@ -9,16 +9,22 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { useAiCredits } from "@/hooks/useAiCredits";
 import { useColors } from "@/hooks/useColors";
-import { api, type AiUsageEntry } from "@/services/api";
+import {
+  outOfCreditsMessage,
+  outOfCreditsMessageFromBody,
+  totalAiCredits,
+} from "@/services/aiCredits";
+import { isInsufficientAiCredits } from "@/services/api";
 
-const SNAP_AI = ["38%"];
+const SNAP_AI = ["42%"];
 
 /**
  * AI actions sheet, opened from the floating cluster's AI button.
- * Lists the two AI flows with a remaining-usage badge per row from
- * GET /api/ai/usage (fetched fresh per open; badge is best-effort —
- * a failed fetch never blocks the actions).
+ * Lists the two billable AI flows and their shared GET /api/credits total.
+ * The old per-feature /api/ai/usage meter stays available elsewhere but is
+ * intentionally not shown here: it is not the actual credit gate.
  *
  * presentedRef guard: never dismiss() a non-presented modal (INITIAL →
  * DISMISSING wedge).
@@ -38,21 +44,32 @@ export function AiActionsSheet({
   const insets = useSafeAreaInsets();
   const sheetRef = useRef<BottomSheetModal>(null);
   const presentedRef = useRef(false);
-  const [usage, setUsage] = useState<AiUsageEntry[] | null>(null);
+  const { credits, refresh } = useAiCredits();
+  const [checkingCredits, setCheckingCredits] = useState(false);
+  const [creditMessage, setCreditMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (visible) {
       presentedRef.current = true;
       sheetRef.current?.present();
       let cancelled = false;
-      setUsage(null);
-      api
-        .getAiUsage()
-        .then((r) => {
-          if (!cancelled) setUsage(r.features);
+      setCreditMessage(null);
+      setCheckingCredits(true);
+      refresh()
+        .then((latest) => {
+          if (!cancelled && totalAiCredits(latest) <= 0) {
+            setCreditMessage(outOfCreditsMessage(latest.next_reset_at));
+          }
         })
         .catch(() => {
-          /* badge stays hidden — non-fatal */
+          if (!cancelled) {
+            setCreditMessage(
+              "Couldn't check available credits. Try again before starting an AI action.",
+            );
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setCheckingCredits(false);
         });
       return () => {
         cancelled = true;
@@ -75,13 +92,29 @@ export function AiActionsSheet({
     [],
   );
 
-  // Exact feature keys (confirmed contract). Unlimited (limit <= 0) or
-  // absent → no badge; fetch failure fails open (actions never blocked).
-  const remainingFor = (feature: string): number | null => {
-    if (!usage) return null;
-    const row = usage.find((u) => u.feature === feature);
-    if (!row || !(row.limit > 0)) return null;
-    return Math.max(0, row.remaining);
+  const startBillableAction = async (action: () => void) => {
+    if (checkingCredits) return;
+    setCreditMessage(null);
+    setCheckingCredits(true);
+    try {
+      // Always revalidate just before entering the action. For a
+      // walkthrough this happens before capture requests microphone access,
+      // preventing a user from recording a site visit with no credits.
+      const latest = await refresh();
+      if (totalAiCredits(latest) <= 0) {
+        setCreditMessage(outOfCreditsMessage(latest.next_reset_at));
+        return;
+      }
+      action();
+    } catch (e) {
+      setCreditMessage(
+        isInsufficientAiCredits(e)
+          ? outOfCreditsMessageFromBody(e.body)
+          : "Couldn't check available credits. Try again before starting an AI action.",
+      );
+    } finally {
+      setCheckingCredits(false);
+    }
   };
 
   const rows: {
@@ -89,7 +122,6 @@ export function AiActionsSheet({
     icon: React.ComponentProps<typeof Feather>["name"];
     title: string;
     desc: string;
-    remaining: number | null;
     onPress: () => void;
   }[] = [
     {
@@ -97,18 +129,17 @@ export function AiActionsSheet({
       icon: "mic",
       title: "Walkthrough",
       desc: "Talk and capture — get an AI-written report",
-      remaining: remainingFor("walkthrough_generation"),
-      onPress: onWalkthrough,
+      onPress: () => void startBillableAction(onWalkthrough),
     },
     {
       key: "report",
       icon: "file-text",
       title: "Generate Report",
       desc: "Pick photos, add a note, get a report",
-      remaining: remainingFor("report_generation"),
-      onPress: onGenerateReport,
+      onPress: () => void startBillableAction(onGenerateReport),
     },
   ];
+  const noCredits = credits ? totalAiCredits(credits) <= 0 : false;
 
   return (
     <BottomSheetModal
@@ -131,23 +162,33 @@ export function AiActionsSheet({
         <Text style={[styles.title, { color: colors.foreground }]}>
           AI actions
         </Text>
+        <Text style={[styles.creditTotal, { color: colors.mutedForeground }]}>
+          {credits
+            ? `${totalAiCredits(credits)} AI credit${totalAiCredits(credits) === 1 ? "" : "s"} remaining`
+            : "Checking available credits…"}
+        </Text>
+        {creditMessage ? (
+          <Text style={[styles.creditMessage, { color: colors.destructive }]}>
+            {creditMessage}
+          </Text>
+        ) : null}
         {rows.map((r) => (
           <Pressable
             key={r.key}
             onPress={r.onPress}
+            disabled={checkingCredits || noCredits}
             accessibilityRole="button"
             accessibilityLabel={r.title}
             style={({ pressed }) => [
               styles.row,
               {
                 backgroundColor: colors.muted,
-                opacity: pressed ? 0.85 : 1,
+                opacity:
+                  checkingCredits || noCredits ? 0.5 : pressed ? 0.85 : 1,
               },
             ]}
           >
-            <View
-              style={[styles.rowIcon, { backgroundColor: colors.primary }]}
-            >
+            <View style={[styles.rowIcon, { backgroundColor: colors.primary }]}>
               <Feather
                 name={r.icon}
                 size={18}
@@ -165,23 +206,11 @@ export function AiActionsSheet({
                 {r.desc}
               </Text>
             </View>
-            {r.remaining !== null ? (
-              <View
-                style={[
-                  styles.usageBadge,
-                  { backgroundColor: colors.card, borderColor: colors.border },
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.usageBadgeText,
-                    { color: colors.mutedForeground },
-                  ]}
-                >
-                  {r.remaining} left
-                </Text>
-              </View>
-            ) : null}
+            <Feather
+              name="chevron-right"
+              size={18}
+              color={colors.mutedForeground}
+            />
           </Pressable>
         ))}
       </BottomSheetView>
@@ -194,6 +223,12 @@ const styles = StyleSheet.create({
   title: {
     fontFamily: "Inter_700Bold",
     fontSize: 17,
+  },
+  creditTotal: { fontFamily: "Inter_500Medium", fontSize: 13, marginTop: -8 },
+  creditMessage: {
+    fontFamily: "Inter_500Medium",
+    fontSize: 13,
+    lineHeight: 18,
   },
   row: {
     flexDirection: "row",
@@ -211,11 +246,4 @@ const styles = StyleSheet.create({
   },
   rowTitle: { fontFamily: "Inter_600SemiBold", fontSize: 15 },
   rowDesc: { fontFamily: "Inter_400Regular", fontSize: 12.5 },
-  usageBadge: {
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-  },
-  usageBadgeText: { fontFamily: "Inter_600SemiBold", fontSize: 11 },
 });
