@@ -17,7 +17,15 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Stack, useRouter, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { AppState, useColorScheme } from "react-native";
+import {
+  ActivityIndicator,
+  AppState,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  useColorScheme,
+} from "react-native";
 import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
@@ -28,6 +36,7 @@ import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { DataProvider } from "@/contexts/DataContext";
 import { ToastProvider } from "@/contexts/ToastContext";
 import { UploadStatusProvider } from "@/contexts/UploadStatusContext";
+import { useColors } from "@/hooks/useColors";
 import { hasSkippedPlanThisSession } from "@/services/appleIap";
 import { cleanupLegacyBackgroundTasks } from "@/services/legacyTaskCleanup";
 import {
@@ -59,7 +68,7 @@ SplashScreen.preventAutoHideAsync();
 const queryClient = new QueryClient();
 
 function AuthGate({ children }: { children: React.ReactNode }) {
-  const { user, ready } = useAuth();
+  const { user, ready, authState, refreshUser } = useAuth();
   const segments = useSegments();
   const router = useRouter();
 
@@ -137,6 +146,17 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     // bail, and let the segments change re-run the effect so `routed`
     // (and the splash hide) waits for the redirect to COMMIT.
     const needsOnboarding = user.profileCompletedAt == null;
+    const waitingForLiveAuth =
+      authState === "unverified" && needsOnboarding;
+
+    if (waitingForLiveAuth) {
+      // A cached incomplete snapshot does not contain authoritative
+      // ownership. Keep the navigator mounted, show the reconnect state
+      // below, and let the existing foreground/net/backoff reverify loop
+      // update authState and user before onboarding can render.
+      setRouted(true);
+      return;
+    }
 
     if (needsOnboarding) {
       if (!onOnboarding) {
@@ -211,7 +231,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       router.replace("/(tabs)");
     }
     setRouted(true);
-  }, [user, ready, segments, router]);
+  }, [user, ready, authState, segments, router]);
 
   // Post-auth push token capture, gated on (a) an authenticated user
   // and (b) not currently on the auth/onboarding screens. This is the
@@ -281,8 +301,119 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     return () => sub.remove();
   }, [user]);
 
-  return <>{children}</>;
+  const waitingForLiveAuth =
+    user !== null &&
+    authState === "unverified" &&
+    user.profileCompletedAt == null;
+
+  return (
+    <>
+      {children}
+      {waitingForLiveAuth ? (
+        <AuthReverificationOverlay onRetry={refreshUser} />
+      ) : null}
+    </>
+  );
 }
+
+function AuthReverificationOverlay({
+  onRetry,
+}: {
+  onRetry: () => Promise<void>;
+}) {
+  const colors = useColors();
+  const [retrying, setRetrying] = useState(false);
+
+  const handleRetry = async () => {
+    if (retrying) return;
+    setRetrying(true);
+    try {
+      await onRetry();
+    } finally {
+      setRetrying(false);
+    }
+  };
+
+  return (
+    <View
+      style={[
+        StyleSheet.absoluteFillObject,
+        styles.authReverificationOverlay,
+        { backgroundColor: colors.background },
+      ]}
+    >
+      <ActivityIndicator size="large" color={colors.primary} />
+      <Text style={[styles.authReverificationTitle, { color: colors.foreground }]}>
+        Connecting…
+      </Text>
+      <Text
+        style={[
+          styles.authReverificationMessage,
+          { color: colors.mutedForeground },
+        ]}
+      >
+        We&apos;re confirming your account details before setup continues.
+      </Text>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Retry account verification"
+        disabled={retrying}
+        onPress={() => void handleRetry()}
+        style={[
+          styles.authReverificationButton,
+          { backgroundColor: colors.primary },
+          retrying && styles.authReverificationButtonDisabled,
+        ]}
+      >
+        <Text
+          style={[
+            styles.authReverificationButtonText,
+            { color: colors.primaryForeground },
+          ]}
+        >
+          {retrying ? "Retrying…" : "Retry"}
+        </Text>
+      </Pressable>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  authReverificationOverlay: {
+    alignItems: "center",
+    elevation: 1000,
+    justifyContent: "center",
+    paddingHorizontal: 32,
+    zIndex: 1000,
+  },
+  authReverificationTitle: {
+    fontSize: 22,
+    fontWeight: "700",
+    marginTop: 16,
+  },
+  authReverificationMessage: {
+    fontSize: 15,
+    lineHeight: 22,
+    marginTop: 6,
+    maxWidth: 320,
+    textAlign: "center",
+  },
+  authReverificationButton: {
+    alignItems: "center",
+    borderRadius: 12,
+    justifyContent: "center",
+    marginTop: 24,
+    minHeight: 48,
+    paddingHorizontal: 28,
+  },
+  authReverificationButtonDisabled: {
+    opacity: 0.65,
+  },
+  authReverificationButtonText: {
+    fontSize: 16,
+    fontWeight: "600",
+  },
+});
 
 // --- Splash-hold bridge ---------------------------------------------------
 // `AuthGate` decides the route; `RootLayout` owns the splash. We
