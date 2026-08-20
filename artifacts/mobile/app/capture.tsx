@@ -490,6 +490,19 @@ export default function CaptureScreen() {
     [],
   );
 
+  // This hook must remain above every render guard. It still waits for the
+  // same prerequisites as before: an existing project and granted camera
+  // permission.
+  const seededWalkthruRef = useRef(false);
+  useEffect(() => {
+    if (seededWalkthruRef.current) return;
+    if (!project || !permission?.granted) return;
+    seededWalkthruRef.current = true;
+    if (modeParam === "walkthru") enterWalkthruMode();
+    // enterWalkthruMode is initialized before effects run.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modeParam, permission?.granted, project?.id]);
+
   if (!project) {
     return (
       <View style={[styles.wrap, { backgroundColor: "#000" }]}>
@@ -1032,17 +1045,6 @@ export default function CaptureScreen() {
       if (!seen && modeRef.current === "walkthru") setWtIntroVisible(true);
     });
   };
-
-  // ?mode=walkthru (project screen's floating AI button) seeds the
-  // walkthrough flow once on mount — same explainer gating as the
-  // manual mode switch. Deliberately mount-only.
-  const seededWalkthruRef = useRef(false);
-  useEffect(() => {
-    if (seededWalkthruRef.current) return;
-    seededWalkthruRef.current = true;
-    if (modeParam === "walkthru") enterWalkthruMode();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // Differentiate tap vs. hold for the shutter.
   const onShutterPressIn = () => {
