@@ -62,7 +62,10 @@ import {
   retryItem as retryUploadQueueItem,
 } from "@/services/uploadQueue";
 import type { Photo } from "@/services/types";
-import { storage } from "@/services/storage";
+import {
+  storage,
+  WT_EXPLAINER_COMPLETION_TARGET,
+} from "@/services/storage";
 import {
   cancelRecording as cancelWtRecording,
   requestPermission as requestWtMicPermission,
@@ -95,7 +98,6 @@ const MAX_RECORDING_BYTES = 450 * 1024 * 1024;
 const WT_MAX_MS = 15 * 60 * 1000;
 // Narration turns warning-colored near the cap.
 const WT_WARN_MS = 13 * 60 * 1000;
-const WT_EXPLAINER_COMPLETION_TARGET = 5;
 
 type ZoomPreset = { label: string; value: number };
 // No anchor above 4x, so pinch never zooms past the top preset's value.
@@ -1037,7 +1039,10 @@ export default function CaptureScreen() {
   const enterWalkthruMode = () => {
     setMode("walkthru");
     modeRef.current = "walkthru";
-    if (!user) return;
+    if (!user) {
+      if (modeRef.current === "walkthru") setWtIntroVisible(true);
+      return;
+    }
     void storage.getWalkthroughCompletionCount(user.id).then((count) => {
       // Stale-read guard: the user may have switched away before the
       // flag resolved — never surface the intro outside WALKTHRU.

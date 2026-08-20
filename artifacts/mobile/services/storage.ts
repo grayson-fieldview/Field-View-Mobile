@@ -17,6 +17,8 @@ const KEYS = {
   photos: "@fv/photos",
 } as const;
 
+export const WT_EXPLAINER_COMPLETION_TARGET = 5;
+
 const walkthroughCompletionCountKey = (userId: string) =>
   `@fv/walkthrough/completed_count/v1/${encodeURIComponent(userId)}`;
 
@@ -111,13 +113,19 @@ export const storage = {
       walkthroughCompletionCountKey(userId),
       0,
     );
-    return Number.isInteger(count) && count > 0 ? Math.min(count, 5) : 0;
+    return Number.isInteger(count) &&
+      count > 0
+      ? Math.min(count, WT_EXPLAINER_COMPLETION_TARGET)
+      : 0;
   },
   incrementWalkthroughCompletionCount: async (
     userId: string,
   ): Promise<number> => {
     const current = await storage.getWalkthroughCompletionCount(userId);
-    const next = Math.min(current + 1, 5);
+    const next = Math.min(
+      current + 1,
+      WT_EXPLAINER_COMPLETION_TARGET,
+    );
     try {
       await AsyncStorage.setItem(
         walkthroughCompletionCountKey(userId),
