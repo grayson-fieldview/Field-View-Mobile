@@ -11,7 +11,10 @@ import {
   ActionSheetIOS,
   ActivityIndicator,
   Alert,
+  Animated,
   Modal,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   Platform,
   Pressable,
   ScrollView,
@@ -116,6 +119,8 @@ const DEFAULT_FILTERS: GalleryFilters = {
   tags: [],
   users: [],
 };
+
+const STICKY_HEADER_SCROLL_THRESHOLD = 176;
 
 /** Chip label for an uploader: trimmed full name, or "Unknown user" when
  *  both names are null/empty. */
@@ -366,6 +371,30 @@ export default function ProjectDetailScreen() {
   // checkbox paths keep working unchanged.
   const [selectArmed, setSelectArmed] = useState(false);
   const selectMode = selectArmed || selected.size > 0;
+  const [stickyHeaderVisible, setStickyHeaderVisible] = useState(false);
+  const stickyHeaderVisibleRef = useRef(false);
+  const stickyHeaderOpacity = useRef(new Animated.Value(0)).current;
+
+  const onProjectScroll = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const nextVisible =
+        event.nativeEvent.contentOffset.y >= STICKY_HEADER_SCROLL_THRESHOLD;
+      if (nextVisible === stickyHeaderVisibleRef.current) return;
+      stickyHeaderVisibleRef.current = nextVisible;
+      setStickyHeaderVisible(nextVisible);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const animation = Animated.timing(stickyHeaderOpacity, {
+      toValue: stickyHeaderVisible ? 1 : 0,
+      duration: 180,
+      useNativeDriver: true,
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [stickyHeaderOpacity, stickyHeaderVisible]);
 
   // Gallery filters (client-side; the photo list is fully loaded).
   const [filters, setFilters] = useState<GalleryFilters>(DEFAULT_FILTERS);
@@ -1618,6 +1647,8 @@ export default function ProjectDetailScreen() {
             // identity changes exactly when rows must re-render.
             extraData={{ selectMode, selected }}
             ListHeaderComponent={photosListHeader}
+            onScroll={onProjectScroll}
+            scrollEventThrottle={16}
             contentContainerStyle={{
               // Extra bottom padding for the floating action cluster
               // (≈88px incl. margin) so it never covers the last photo
@@ -1639,6 +1670,8 @@ export default function ProjectDetailScreen() {
       ) : (
       <ScrollView
         // +88 clears the floating action cluster (visible on these tabs).
+        onScroll={onProjectScroll}
+        scrollEventThrottle={16}
         contentContainerStyle={{ paddingBottom: insets.bottom + 24 + 88 }}
       >
         {sharedHeader}
@@ -2388,6 +2421,51 @@ export default function ProjectDetailScreen() {
         ) : null}
       </ScrollView>
       )}
+
+      {!selectMode ? (
+        <Animated.View
+          pointerEvents={stickyHeaderVisible ? "auto" : "none"}
+          style={[
+            styles.stickyProjectHeader,
+            {
+              paddingTop: insets.top,
+              backgroundColor: colors.card,
+              borderBottomColor: colors.border,
+              opacity: stickyHeaderOpacity,
+            },
+          ]}
+        >
+          <View style={styles.stickyProjectHeaderRow}>
+            <Pressable
+              onPress={() => router.back()}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel="Close project"
+              style={styles.stickyProjectHeaderButton}
+            >
+              <Feather name="x" size={20} color={colors.foreground} />
+            </Pressable>
+            <Text
+              style={[
+                styles.stickyProjectHeaderTitle,
+                { color: colors.foreground },
+              ]}
+              numberOfLines={1}
+            >
+              {project.name}
+            </Text>
+            <Pressable
+              onPress={() => setShowProjectMenu(true)}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel="More options"
+              style={styles.stickyProjectHeaderButton}
+            >
+              <KebabIcon size={18} color={colors.foreground} />
+            </Pressable>
+          </View>
+        </Animated.View>
+      ) : null}
 
       {/* Task photos sheet — attach/detach existing project photos */}
 
@@ -3945,6 +4023,33 @@ function ModalShell({
 
 const styles = StyleSheet.create({
   wrap: { flex: 1 },
+  stickyProjectHeader: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 20,
+    elevation: 20,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  stickyProjectHeaderRow: {
+    height: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 12,
+  },
+  stickyProjectHeaderButton: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  stickyProjectHeaderTitle: {
+    flex: 1,
+    fontFamily: "Inter_700Bold",
+    fontSize: 16,
+  },
   heroWrap: {
     width: "100%",
     height: 176,
