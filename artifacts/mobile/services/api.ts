@@ -29,6 +29,7 @@ const COOKIE_STORAGE_KEY = "fv_session_cookies";
 // Map prevents the "connect.sid=A; connect.sid=B" duplication bug.
 const cookieJar: Map<string, string> = new Map();
 let loaded = false;
+let loadSessionPromise: Promise<string | null> | null = null;
 /**
  * Serialized jar as last written to (or read from) the Keychain — used
  * by parseAndPersistSetCookie to skip byte-identical rewrites (rolling
@@ -85,51 +86,64 @@ export function debugCookieSnapshot(): {
 }
 
 /** Load the persisted cookie jar into memory (call once on app start). */
-export async function loadSession(): Promise<string | null> {
+export function loadSession(): Promise<string | null> {
   console.log("[boot] loadSession starting");
   if (loaded) {
     console.log(
       "[boot] loadSession already-loaded, jar size =",
       cookieJar.size,
     );
-    return cookieJar.size ? serializeCookieJar() : null;
+    return Promise.resolve(cookieJar.size ? serializeCookieJar() : null);
   }
-  loaded = true;
-  const raw = await secureStorage.getItem(COOKIE_STORAGE_KEY);
-  if (raw == null) {
-    console.log("[boot] keychain read fv_session_cookies = MISSING");
-  } else {
-    console.log(
-      `[boot] keychain read fv_session_cookies = PRESENT (len=${raw.length})`,
-    );
-  }
-  console.log(
-    "[cookie-migration] loaded from storage:",
-    raw ? `(len=${raw.length})` : "(empty)",
-  );
-  if (!raw) {
-    console.log("[cookie-migration] after dedup: (empty)");
-    console.log("[cookie-migration] differs:", false);
-    console.log("[boot] cookieJar size = 0, names = []");
-    return null;
+  if (loadSessionPromise) {
+    console.log("[boot] loadSession awaiting in-flight read");
+    return loadSessionPromise;
   }
 
-  // One-time migration: dedupe any duplicate cookie names that the
-  // previous append-style logic may have written. Last value wins.
-  cookieJar.clear();
-  ingestSerializedJar(raw);
-  const cleaned = serializeCookieJar();
-  console.log("[cookie-migration] after dedup:", `(len=${cleaned.length})`);
-  console.log("[cookie-migration] differs:", raw !== cleaned);
-  const snap = debugCookieSnapshot();
-  console.log(
-    `[boot] cookieJar size = ${snap.size}, names = [${snap.names.join(", ")}]`,
-  );
-  if (cleaned !== raw) {
-    queueJarWrite(cleaned);
-  }
-  lastPersistedJar = cleaned;
-  return cleaned || null;
+  loadSessionPromise = (async () => {
+    const raw = await secureStorage.getItem(COOKIE_STORAGE_KEY);
+    if (raw == null) {
+      console.log("[boot] keychain read fv_session_cookies = MISSING");
+    } else {
+      console.log(
+        `[boot] keychain read fv_session_cookies = PRESENT (len=${raw.length})`,
+      );
+    }
+    console.log(
+      "[cookie-migration] loaded from storage:",
+      raw ? `(len=${raw.length})` : "(empty)",
+    );
+    if (!raw) {
+      console.log("[cookie-migration] after dedup: (empty)");
+      console.log("[cookie-migration] differs:", false);
+      console.log("[boot] cookieJar size = 0, names = []");
+      loaded = true;
+      return null;
+    }
+
+    // One-time migration: dedupe any duplicate cookie names that the
+    // previous append-style logic may have written. Last value wins.
+    cookieJar.clear();
+    ingestSerializedJar(raw);
+    const cleaned = serializeCookieJar();
+    console.log("[cookie-migration] after dedup:", `(len=${cleaned.length})`);
+    console.log("[cookie-migration] differs:", raw !== cleaned);
+    const snap = debugCookieSnapshot();
+    console.log(
+      `[boot] cookieJar size = ${snap.size}, names = [${snap.names.join(", ")}]`,
+    );
+    if (cleaned !== raw) {
+      queueJarWrite(cleaned);
+    }
+    lastPersistedJar = cleaned;
+    loaded = true;
+    return cleaned || null;
+  })().catch((error) => {
+    loadSessionPromise = null;
+    throw error;
+  });
+
+  return loadSessionPromise;
 }
 
 /** Clear the in-memory and on-disk cookie jar. */
@@ -414,7 +428,7 @@ async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
       "EXPO_PUBLIC_API_BASE_URL is not configured. Check artifacts/mobile/.env.",
     );
   }
-  if (!loaded) await loadSession();
+  await loadSession();
 
   const headers: Record<string, string> = {
     Accept: "application/json",
@@ -3018,7 +3032,7 @@ export const api = {
         "EXPO_PUBLIC_API_BASE_URL is not configured. Check artifacts/mobile/.env.",
       );
     }
-    if (!loaded) await loadSession();
+    await loadSession();
     const headers: Record<string, string> = {
       Accept: "application/pdf",
       "X-FieldView-Client": "mobile-1",
