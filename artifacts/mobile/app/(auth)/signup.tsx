@@ -69,6 +69,7 @@ export default function SignupScreen() {
     setError,
     // Evaluated at press time; anyInFlight is screen-computed below.
     isBlocked: () => anyInFlight || submitLockRef.current,
+    registrationFlow: true,
   });
 
   // All buttons share this: disabled while any sign-in is in flight

@@ -39,6 +39,10 @@ import {
   identifyPostHogUser,
   resetPostHog,
 } from "@/services/posthog";
+import {
+  logMetaRegistrationCompleted,
+  type MetaRegistrationMethod,
+} from "@/services/metaAttribution";
 
 /**
  * Account-level settings shared by every user on the team. Mirrors
@@ -996,7 +1000,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    * never clears an existing valid session.
    */
   const completeOAuthSignIn = useCallback(
-    (loginRes: unknown) => {
+    (loginRes: unknown, registrationMethod?: MetaRegistrationMethod) => {
       const me = normalizeUser(loginRes);
       if (!me)
         throw new Error("Sign-in succeeded but we couldn't load your account.");
@@ -1007,6 +1011,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Persist the snapshot so a future cold start that can't reach
       // the server can restore this user instead of showing login.
       if (next) void persistUserSnapshot(next);
+      // The email registration endpoint only succeeds when it creates
+      // an account. OAuth signup intent is logged by the signup screen
+      // after this function resolves; the shared OAuth endpoints also
+      // serve login and do not return an isNewUser signal.
+      if (registrationMethod === "email") {
+        logMetaRegistrationCompleted("email");
+      }
       // Deliberately NO fetchAccountSettings() here (unlike signIn):
       // an unawaited authenticated request immediately after
       // req.login() rotates the session id would depend on ordering
@@ -1051,7 +1062,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       termsAccepted: boolean;
       inviteToken?: string | null;
     }) => {
-      completeOAuthSignIn(await api.registerMobile(args));
+      completeOAuthSignIn(await api.registerMobile(args), "email");
     },
     [completeOAuthSignIn],
   );

@@ -6,6 +6,7 @@ import {
   signInWithAppleNative,
   signInWithGoogleNative,
 } from "@/services/socialAuth";
+import { logMetaRegistrationCompleted } from "@/services/metaAttribution";
 
 import { oauthErrorMessage } from "./oauthErrorMessage";
 
@@ -25,9 +26,11 @@ export type OAuthProvider = "apple" | "google";
 export function useOAuthSignIn({
   setError,
   isBlocked,
+  registrationFlow = false,
 }: {
   setError: (msg: string | null) => void;
   isBlocked: () => boolean;
+  registrationFlow?: boolean;
 }) {
   const router = useRouter();
   const { signInWithApple, signInWithGoogle } = useAuth();
@@ -62,6 +65,9 @@ export function useOAuthSignIn({
         });
       } else {
         await signInWithGoogle({ idToken: result.idToken });
+      }
+      if (registrationFlow) {
+        logMetaRegistrationCompleted(provider);
       }
       setSignedIn(true); // keep everything disabled — see guard note
       router.replace("/(tabs)");

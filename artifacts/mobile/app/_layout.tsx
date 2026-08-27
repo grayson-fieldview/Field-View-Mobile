@@ -41,6 +41,7 @@ import { UploadStatusProvider } from "@/contexts/UploadStatusContext";
 import { useColors } from "@/hooks/useColors";
 import { hasSkippedPlanThisSession } from "@/services/appleIap";
 import { cleanupLegacyBackgroundTasks } from "@/services/legacyTaskCleanup";
+import { initMetaAttribution } from "@/services/metaAttribution";
 import { capturePostHogScreen } from "@/services/posthog";
 import {
   configureNotificationHandler,
@@ -717,6 +718,10 @@ export default function RootLayout() {
     // installs that predate the removal. Guarded by an AsyncStorage
     // flag so it runs once per install; never throws (best-effort).
     void cleanupLegacyBackgroundTasks();
+    // Deferred, ATT-gated Meta SDK init — isAutoInitEnabled is false
+    // in app.json specifically so this is the only initialization
+    // path (see services/metaAttribution.ts for why).
+    void initMetaAttribution();
   }, []);
 
   if (!fontsLoaded && !fontError) return null;

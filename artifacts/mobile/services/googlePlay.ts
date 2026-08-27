@@ -24,6 +24,7 @@
 import type { Purchase, SubscriptionOffer } from "expo-iap";
 
 import { ApiError, api, normalizeUser, type BackendUser } from "./api";
+import { logMetaSubscriptionPurchase } from "./metaAttribution";
 import { Sentry } from "./sentry";
 
 /**
@@ -230,5 +231,14 @@ async function submitAndFinish(
   // idempotent handling makes that harmless.
   const { finishTransaction } = await import("expo-iap");
   await finishTransaction({ purchase, isConsumable: false });
+  // The server response is authoritative: Play may replay a purchase
+  // after the request-time offer selection is gone from memory, while
+  // subscriptionStatus still tells us whether the accepted entitlement
+  // actually started in a trial.
+  const status = me.subscriptionStatus?.toLowerCase();
+  logMetaSubscriptionPurchase({
+    productId: purchase.productId,
+    isTrial: status === "trial" || status === "trialing",
+  });
   return me;
 }

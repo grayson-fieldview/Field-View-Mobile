@@ -88,7 +88,7 @@
     "expo-secure-store": "^55.0.13",
     "expo-sharing": "~14.0.8",
     "expo-task-manager": "~14.0.9",
-    "expo-tracking-transparency": "^57.0.1",
+    "expo-tracking-transparency": "^6.0.8",
     "expo-updates": "~29.0.17",
     "expo-video": "~3.0.16",
     "expo-video-thumbnails": "~10.0.8",

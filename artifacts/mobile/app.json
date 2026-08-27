@@ -39,7 +39,8 @@
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.WRITE_EXTERNAL_STORAGE",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.RECORD_AUDIO",
+        "com.google.android.gms.permission.AD_ID"
       ],
       "blockedPermissions": [
         "android.permission.ACCESS_BACKGROUND_LOCATION",
@@ -121,7 +122,20 @@
           "microphonePermission": "Field View records audio for voice notes and with your project videos so the captured footage matches what you said on site."
         }
       ],
-      "expo-localization"
+      "expo-localization",
+      [
+        "react-native-fbsdk-next",
+        {
+          "appID": "2202677383635765",
+          "clientToken": "12aa2d8d0cd497b7e0aeb9ec9c2e350a",
+          "displayName": "Field View",
+          "scheme": "fb2202677383635765",
+          "isAutoInitEnabled": false,
+          "autoLogAppEventsEnabled": false,
+          "advertiserIDCollectionEnabled": false,
+          "iosUserTrackingPermission": "Field View uses this to measure how well our ads are working, which helps us keep the app free of intrusive advertising."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

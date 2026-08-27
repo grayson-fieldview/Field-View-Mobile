@@ -28,6 +28,7 @@ import { Alert } from "react-native";
 import type { Purchase } from "expo-iap";
 
 import { ApiError, api, normalizeUser, type BackendUser } from "./api";
+import { logMetaSubscriptionPurchase } from "./metaAttribution";
 
 /** Product IDs are fieldview.seats.3 … fieldview.seats.10. */
 export const SEAT_PRODUCT_PREFIX = "fieldview.seats.";
@@ -208,6 +209,12 @@ async function submitAndFinish(
   // server's double-charge guard makes that harmless.
   const { finishTransaction } = await import("expo-iap");
   await finishTransaction({ purchase, isConsumable: false });
+  // User decision: iOS seat products do not encode trial vs paid, so
+  // every accepted Apple purchase is currently a Subscribe event.
+  logMetaSubscriptionPurchase({
+    productId: purchase.productId,
+    isTrial: false,
+  });
   return me;
 }
 
