@@ -56,6 +56,8 @@ import { useUploadStatus } from "@/contexts/UploadStatusContext";
 import {
   cropToAspectRatio,
   DEFAULT_PHOTO_ASPECT_RATIO,
+  isVideoMimeType,
+  MAX_PICKED_VIDEO_BYTES,
   prepareForUpload,
 } from "@/services/imageProcessing";
 import {
@@ -843,7 +845,7 @@ export default function CaptureScreen() {
       // requestMediaLibraryPermissionsAsync would falsely block the
       // picker, so launch it directly.
       const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ImagePicker.MediaTypeOptions.All,
         allowsMultipleSelection: true,
         selectionLimit: 20,
         quality: 0.7,
@@ -851,8 +853,34 @@ export default function CaptureScreen() {
       });
       if (res.canceled || res.assets.length === 0) return;
       const now = new Date().toISOString();
+
+      // Reject oversized VIDEOS before they ever reach prepareForUpload —
+      // same 450MB ceiling recordAsync enforces for in-app recordings, so
+      // a picked clip can't exceed what a recorded one ever could. Photos
+      // (and videos under the limit) pass through untouched; a mixed
+      // selection uploads the accepted items rather than failing outright.
+      const oversizeNames: string[] = [];
+      const accepted = res.assets.filter((a) => {
+        if (
+          isVideoMimeType(a.mimeType) &&
+          typeof a.fileSize === "number" &&
+          a.fileSize > MAX_PICKED_VIDEO_BYTES
+        ) {
+          oversizeNames.push(a.fileName ?? "video");
+          return false;
+        }
+        return true;
+      });
+
+      if (accepted.length === 0) {
+        setErrorMsg(
+          `Video over 450MB limit, skipped: ${oversizeNames.join(", ")}`,
+        );
+        return;
+      }
+
       const prepared = await Promise.all(
-        res.assets.map(async (a) => ({
+        accepted.map(async (a) => ({
           a,
           p: await prepareForUpload(a.uri, a.mimeType ?? "image/jpeg"),
         })),
@@ -868,15 +896,18 @@ export default function CaptureScreen() {
           originalName: p?.originalName,
           mimeType: p?.mimeType,
           fileSize: p?.fileSize,
+          isVideo: isVideoMimeType(p?.mimeType ?? a.mimeType),
           checklistItemId,
           taskId,
         })),
       );
       // Imports count toward the session pill, so they join the tray too.
       addToTray(savedImports);
-      setSessionCount((s) => s + res.assets.length);
+      setSessionCount((s) => s + accepted.length);
       setStatusMsg(
-        `Added ${res.assets.length} photo${res.assets.length === 1 ? "" : "s"} from library`,
+        oversizeNames.length > 0
+          ? `Added ${accepted.length} item${accepted.length === 1 ? "" : "s"} from library — skipped ${oversizeNames.length} video${oversizeNames.length === 1 ? "" : "s"} over 450MB`
+          : `Added ${accepted.length} photo${accepted.length === 1 ? "" : "s"} from library`,
       );
       Haptics.notificationAsync(
         Haptics.NotificationFeedbackType.Success,

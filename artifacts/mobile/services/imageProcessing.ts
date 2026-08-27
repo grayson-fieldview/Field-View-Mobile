@@ -22,6 +22,25 @@ export interface PreparedUpload {
 }
 
 /**
+ * Max size for a VIDEO picked from the camera roll, in bytes. Deliberately
+ * the same 450MB ceiling as capture.tsx's MAX_RECORDING_BYTES (recordAsync's
+ * maxFileSize) so the app enforces one consistent video-size limit whether
+ * the clip was recorded in-app or picked from the library. Duplicated as a
+ * literal rather than imported from capture.tsx (a route file, not a
+ * shared module) — keep the two values in sync if either changes.
+ */
+export const MAX_PICKED_VIDEO_BYTES = 450 * 1024 * 1024;
+
+/**
+ * True when a mime type string denotes a video. Mirrors the check
+ * mapBackendMedia uses server-side-derived rows, so a locally-cached
+ * picked video and its post-upload server row agree on `isVideo`.
+ */
+export function isVideoMimeType(mimeType: string | null | undefined): boolean {
+  return typeof mimeType === "string" && mimeType.startsWith("video/");
+}
+
+/**
  * Stable on-device directory for photos awaiting upload.
  *
  * documentDirectory — NOT cacheDirectory — because iOS is free to purge

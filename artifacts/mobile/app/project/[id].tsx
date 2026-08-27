@@ -71,7 +71,11 @@ import { useUploadStatus } from "@/contexts/UploadStatusContext";
 import { useColors } from "@/hooks/useColors";
 import { useProjectChecklists } from "@/hooks/useProjectChecklists";
 import { useProjectReports } from "@/hooks/useProjectReports";
-import { prepareForUpload } from "@/services/imageProcessing";
+import {
+  isVideoMimeType,
+  MAX_PICKED_VIDEO_BYTES,
+  prepareForUpload,
+} from "@/services/imageProcessing";
 import { shareLink } from "@/lib/shareLink";
 import {
   api,
@@ -643,7 +647,7 @@ export default function ProjectDetailScreen() {
     setAddingFromLibrary(true);
     try {
       const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: ImagePicker.MediaTypeOptions.All,
         allowsMultipleSelection: true,
         selectionLimit: 20,
         quality: 0.7,
@@ -651,8 +655,32 @@ export default function ProjectDetailScreen() {
       });
       if (res.canceled || res.assets.length === 0) return;
       const now = new Date().toISOString();
+
+      // Reject oversized VIDEOS before they ever reach prepareForUpload —
+      // same 450MB ceiling recordAsync enforces for in-app recordings, so
+      // a picked clip can't exceed what a recorded one ever could. Photos
+      // (and videos under the limit) pass through untouched; a mixed
+      // selection uploads the accepted items rather than failing outright.
+      const oversizeNames: string[] = [];
+      const accepted = res.assets.filter((a) => {
+        if (
+          isVideoMimeType(a.mimeType) &&
+          typeof a.fileSize === "number" &&
+          a.fileSize > MAX_PICKED_VIDEO_BYTES
+        ) {
+          oversizeNames.push(a.fileName ?? "video");
+          return false;
+        }
+        return true;
+      });
+
+      if (accepted.length === 0) {
+        showToast(`Video over 450MB limit, skipped: ${oversizeNames.join(", ")}`);
+        return;
+      }
+
       const prepared = await Promise.all(
-        res.assets.map(async (a) => ({
+        accepted.map(async (a) => ({
           a,
           p: await prepareForUpload(a.uri, a.mimeType ?? "image/jpeg"),
         })),
@@ -665,10 +693,17 @@ export default function ProjectDetailScreen() {
           originalName: p?.originalName,
           mimeType: p?.mimeType,
           fileSize: p?.fileSize,
+          // mapBackendMedia derives isVideo from mimeType once the server
+          // round-trip lands; set it explicitly here too so the LOCAL
+          // optimistic row (grid tile, poster-frame logic) is correct
+          // immediately, same as capture.tsx does for recorded video.
+          isVideo: isVideoMimeType(p?.mimeType ?? a.mimeType),
         })),
       );
       showToast(
-        `Added ${res.assets.length} photo${res.assets.length === 1 ? "" : "s"} from library`,
+        oversizeNames.length > 0
+          ? `Added ${accepted.length} item${accepted.length === 1 ? "" : "s"} from library — skipped ${oversizeNames.length} video${oversizeNames.length === 1 ? "" : "s"} over 450MB`
+          : `Added ${accepted.length} photo${accepted.length === 1 ? "" : "s"} from library`,
       );
     } catch (e) {
       showToast(e instanceof Error ? e.message : "Couldn't add photos");

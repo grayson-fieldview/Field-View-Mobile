@@ -16,7 +16,26 @@ import { Sentry } from "./sentry";
 const STORAGE_KEY = "@fv/upload_queue";
 const TICK_MS = 2_000;
 const PERSIST_DEBOUNCE_MS = 100;
-const MAX_CONCURRENT = 3;
+/**
+ * Concurrency is bucketed by media type, not a single shared pool.
+ * api.uploadToS3 reads the whole local file into memory via
+ * fetch(uri).blob() before the PUT (see api.ts) — never rewritten to
+ * stream here (separate follow-up). A picked (not just recorded) video
+ * can now reach up to MAX_PICKED_VIDEO_BYTES (450MB, imageProcessing.ts),
+ * and MAX_CONCURRENT_PHOTOS-many of those in flight at once would
+ * multiply that peak memory. Capping the video bucket at 1 bounds peak
+ * memory at roughly one in-flight video plus normal photo traffic,
+ * regardless of how many videos are queued behind it. Photos keep their
+ * existing 3-wide pool, independent of the video bucket (so worst case
+ * is 3 photos + 1 video concurrently, not 4 photos or 4 videos).
+ */
+const MAX_CONCURRENT_PHOTOS = 3;
+const MAX_CONCURRENT_VIDEOS = 1;
+
+/** Bucket classification for the concurrency gate above. */
+function isVideoItem(item: QueuedUpload): boolean {
+  return item.mimeType.startsWith("video/");
+}
 
 const BACKOFF_MS: number[] = [
   1_000,            // attempt 1 → 1s
@@ -790,7 +809,6 @@ async function processItem(item: QueuedUpload): Promise<void> {
 
 function tick(): void {
   if (!loaded) return;
-  if (inFlight.size >= MAX_CONCURRENT) return;
   const now = Date.now();
   const eligible = queue
     .filter(
@@ -802,10 +820,33 @@ function tick(): void {
             (it.nextRetryAt ?? 0) <= now)),
     )
     .sort((a, b) => a.createdAt - b.createdAt);
+  if (eligible.length === 0) return;
+
+  // Seed bucket counts from what's already in flight (across ticks, not
+  // just this pass) so a long-running video upload keeps its slot
+  // occupied until it actually finishes.
+  let photosInFlight = 0;
+  let videosInFlight = 0;
+  for (const id of inFlight) {
+    const it = queue.find((q) => q.id === id);
+    if (!it) continue;
+    if (isVideoItem(it)) videosInFlight++;
+    else photosInFlight++;
+  }
 
   for (const item of eligible) {
-    if (inFlight.size >= MAX_CONCURRENT) break;
+    const video = isVideoItem(item);
+    // A full bucket skips (not breaks) this item — a later photo in the
+    // list can still start while the video bucket is saturated, and
+    // vice versa, since the two pools are independent.
+    if (video) {
+      if (videosInFlight >= MAX_CONCURRENT_VIDEOS) continue;
+    } else if (photosInFlight >= MAX_CONCURRENT_PHOTOS) {
+      continue;
+    }
     inFlight.add(item.id);
+    if (video) videosInFlight++;
+    else photosInFlight++;
     if (item.status === "uploaded_pending_attach") {
       // Bytes + Media row already exist — resume only the attach step
       // (this is the relaunch-recovery path; status must NOT be reset
