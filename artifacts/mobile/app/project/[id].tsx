@@ -681,21 +681,13 @@ export default function ProjectDetailScreen() {
   // share is in flight. Disables the hero share button so a
   // double-tap can't mint two gallery tokens.
   const [sharingSelection, setSharingSelection] = useState(false);
-  // Snapshot vs Live choice modal for the gallery share link.
-  // Snapshot (default) freezes the selected photos; Live tracks all
-  // project photos over time. isLive is chosen inside the modal and
-  // passed straight to the POST.
-  const [shareChoiceVisible, setShareChoiceVisible] = useState(false);
-  const [shareIsLive, setShareIsLive] = useState(false);
 
-  const openShareChoice = () => {
-    if (sharingSelection) return;
-    if (selected.size === 0) return;
-    setShareIsLive(false); // default Snapshot on every open
-    setShareChoiceVisible(true);
-  };
-
-  const onShareSelected = async (isLive: boolean) => {
+  // Select-mode share ALWAYS mints a SNAPSHOT gallery (the selected
+  // photos, frozen). There is no live/snapshot choice here anymore —
+  // requiring a selection to reach "live" was what let a selection
+  // and isLive:true be combined and silently discarded server-side.
+  // Live is now reachable only from onShareProject below.
+  const onShareSelected = async () => {
     if (!project) return;
     if (sharingSelection) return;
     if (selected.size === 0) return;
@@ -715,13 +707,10 @@ export default function ProjectDetailScreen() {
     setSharingSelection(true);
     let token: string;
     try {
+      // No isLive — this path only ever creates a snapshot.
       const res = await api.createSharedGallery({
         projectId: Number(project.id),
         mediaIds,
-        // Snapshot omits the flag entirely (pre-isLive server payload
-        // parity); Live sends it explicitly. mediaIds are sent either
-        // way — the server ignores them for live galleries.
-        ...(isLive ? { isLive: true } : {}),
       });
       token = res.token;
     } catch (e) {
@@ -735,7 +724,8 @@ export default function ProjectDetailScreen() {
     // recipients open this in Safari, so it must always point at the
     // public web host. NOTE: /gallery/<token>, not /p/<token>.
     const shareUrl = `https://app.field-view.com/gallery/${token}`;
-    showToast("Share link ready");
+    const count = mediaIds.length;
+    showToast(`Snapshot link ready — ${count} photo${count === 1 ? "" : "s"}`);
     try {
       await Share.share({ url: shareUrl });
     } catch {
@@ -747,13 +737,25 @@ export default function ProjectDetailScreen() {
   const onShareProject = async () => {
     if (!project) return;
     if (sharingProject) return;
-    // Project-level public share. Mint (or fetch existing) token
-    // first; only open the share sheet on success.
+    // Project-level share now always mints a LIVE gallery (all
+    // project photos, auto-updating) instead of the old public
+    // project-page token. No selection required, no modal.
+    //
+    // NOTE (behavior change): api.shareProject() was idempotent —
+    // calling it twice returned the same token. createSharedGallery
+    // is NOT idempotent — every tap here mints a brand-new gallery
+    // token/row, even though it's the "same" live link conceptually.
+    // Repeated taps (or retries) will accumulate distinct tokens that
+    // all keep working. Flagging this rather than silently adding
+    // client-side dedup/caching for it.
     setSharingProject(true);
     let token: string;
     try {
-      const res = await api.shareProject(project.id);
-      token = res.shareToken;
+      const res = await api.createSharedGallery({
+        projectId: Number(project.id),
+        isLive: true,
+      });
+      token = res.token;
     } catch (e) {
       showToast(shareLinkFailureMessage(e));
       setSharingProject(false);
@@ -763,9 +765,11 @@ export default function ProjectDetailScreen() {
     // Hard-coded public web origin (NOT EXPO_PUBLIC_API_BASE_URL):
     // recipients open the link in Safari, so it must always point
     // at the public marketing/web host regardless of which API base
-    // the build was pinned to.
-    const shareUrl = `https://app.field-view.com/p/${token}`;
-    showToast("Share link ready");
+    // the build was pinned to. NOTE: /gallery/<token>, not /p/<token>
+    // — this is now a live gallery link, not the old public project
+    // page.
+    const shareUrl = `https://app.field-view.com/gallery/${token}`;
+    showToast("Live link ready — all project photos");
     try {
       // url-only — passing both `url` and `message` causes iMessage
       // to render two link previews plus the body text. Keeping it
@@ -2759,7 +2763,7 @@ export default function ProjectDetailScreen() {
             {selected.size} selected
           </Text>
           <Pressable
-            onPress={openShareChoice}
+            onPress={() => void onShareSelected()}
             hitSlop={6}
             disabled={sharingSelection || selected.size === 0}
             accessibilityRole="button"
@@ -2802,102 +2806,6 @@ export default function ProjectDetailScreen() {
           </Pressable>
         </View>
       ) : null}
-
-      {/* Snapshot vs Live gallery share choice. Defaults to Snapshot;
-          Create link fires the POST with the chosen mode. */}
-      <Modal
-        visible={shareChoiceVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShareChoiceVisible(false)}
-      >
-        <Pressable
-          style={styles.shareChoiceBackdrop}
-          onPress={() => setShareChoiceVisible(false)}
-        >
-          <Pressable
-            style={[
-              styles.shareChoiceSheet,
-              { backgroundColor: colors.card, borderColor: colors.border },
-            ]}
-            onPress={() => {}}
-          >
-            <Text
-              style={{
-                color: colors.foreground,
-                fontFamily: "Inter_700Bold",
-                fontSize: 16,
-              }}
-            >
-              Share gallery link
-            </Text>
-            {(
-              [
-                {
-                  live: false,
-                  title: "Snapshot",
-                  desc: "Just the selected photos, frozen as they are now.",
-                },
-                {
-                  live: true,
-                  title: "Live",
-                  desc: "All project photos, newest first — the link updates as photos are added.",
-                },
-              ] as const
-            ).map((opt) => {
-              const active = shareIsLive === opt.live;
-              return (
-                <Pressable
-                  key={opt.title}
-                  onPress={() => setShareIsLive(opt.live)}
-                  accessibilityRole="radio"
-                  accessibilityState={{ selected: active }}
-                  style={[
-                    styles.shareChoiceOption,
-                    {
-                      borderColor: active ? colors.primary : colors.border,
-                      backgroundColor: colors.background,
-                    },
-                  ]}
-                >
-                  <Feather
-                    name={active ? "check-circle" : "circle"}
-                    size={18}
-                    color={active ? colors.primary : colors.mutedForeground}
-                  />
-                  <View style={{ flex: 1 }}>
-                    <Text
-                      style={{
-                        color: colors.foreground,
-                        fontFamily: "Inter_600SemiBold",
-                        fontSize: 14,
-                      }}
-                    >
-                      {opt.title}
-                    </Text>
-                    <Text
-                      style={{
-                        color: colors.mutedForeground,
-                        fontSize: 12,
-                        lineHeight: 16,
-                      }}
-                    >
-                      {opt.desc}
-                    </Text>
-                  </View>
-                </Pressable>
-              );
-            })}
-            <Button
-              title="Create link"
-              onPress={() => {
-                setShareChoiceVisible(false);
-                void onShareSelected(shareIsLive);
-              }}
-            />
-          </Pressable>
-        </Pressable>
-      </Modal>
 
       {/* Top-right kebab overflow menu. Lightweight Modal-as-popover
           (matches the rest of this screen's modal patterns). */}
@@ -4160,26 +4068,6 @@ const styles = StyleSheet.create({
   },
   statDivider: { width: StyleSheet.hairlineWidth, height: 32 },
   // Kebab popover (top-right overflow menu).
-  shareChoiceBackdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.4)",
-    justifyContent: "center",
-    padding: 24,
-  },
-  shareChoiceSheet: {
-    borderRadius: 16,
-    borderWidth: StyleSheet.hairlineWidth,
-    padding: 16,
-    gap: 12,
-  },
-  shareChoiceOption: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    borderWidth: 1,
-    borderRadius: 12,
-    padding: 12,
-  },
   menuBackdrop: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.25)",

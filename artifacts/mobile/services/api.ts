@@ -1837,23 +1837,23 @@ export const api = {
     ),
 
   /**
-   * Create a share link scoped to a SUBSET of a project's media.
-   * Server contract: mediaIds required + non-empty, every id must
-   * belong to the project. Returns 201 with the SharedGallery row —
-   * use `response.token` to build the /gallery/<token> URL.
+   * Create a shared gallery link. Two shapes, both POST /api/galleries:
+   *  - SNAPSHOT: { projectId, mediaIds } (mediaIds required + non-empty,
+   *    every id must belong to the project). Frozen to those photos.
+   *  - LIVE: { projectId, isLive: true }, mediaIds omitted. Server
+   *    ignores mediaIds for live galleries, so it isn't sent — the
+   *    gallery tracks ALL project photos, newest first, updating as
+   *    photos are added.
+   * Returns 201 with the SharedGallery row — use `response.token` to
+   * build the /gallery/<token> URL. Not idempotent: every POST mints
+   * a fresh token, even for the same project/isLive combination.
    */
   createSharedGallery: (payload: {
     projectId: number;
-    mediaIds: number[];
+    mediaIds?: number[];
     includeMetadata?: boolean;
     includeDescriptions?: boolean;
-    /**
-     * false/absent (default) = SNAPSHOT: the given mediaIds, frozen.
-     * true = LIVE: the gallery tracks ALL project photos, newest
-     * first, updating as photos are added. mediaIds are still sent
-     * for live galleries (server ignores them) so the request shape
-     * stays valid for pre-isLive servers.
-     */
+    /** true = LIVE gallery (all project photos, auto-updating). Omit/false = SNAPSHOT. */
     isLive?: boolean;
   }) =>
     apiFetch<BackendSharedGalleryResponse>("/api/galleries", {
