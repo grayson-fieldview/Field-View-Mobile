@@ -35,9 +35,60 @@ export const MAX_PICKED_VIDEO_BYTES = 450 * 1024 * 1024;
  * True when a mime type string denotes a video. Mirrors the check
  * mapBackendMedia uses server-side-derived rows, so a locally-cached
  * picked video and its post-upload server row agree on `isVideo`.
+ * Used as the FALLBACK signal by isVideoAsset below — mimeType can be
+ * independently null even when the picker's own `type` field is set
+ * (confirmed in expo-image-picker's native source: `type` is a literal
+ * the native handler always assigns for the video code path, while
+ * `mimeType` is a separate, sometimes-failing lookup — file extension
+ * on iOS, ContentResolver.getType on Android).
  */
 export function isVideoMimeType(mimeType: string | null | undefined): boolean {
   return typeof mimeType === "string" && mimeType.startsWith("video/");
+}
+
+/**
+ * True when a picked ImagePicker asset is a video. Prefers `asset.type`
+ * ('video' | 'pairedVideo') — reliably populated by the native module for
+ * every video result — over `asset.mimeType`, which expo-image-picker
+ * does not always populate (falls back to it only on the rare `type:
+ * null` case the docs call out for some Android ContentProviders).
+ */
+export function isVideoAsset(asset: {
+  type?: string | null;
+  mimeType?: string | null;
+}): boolean {
+  if (typeof asset.type === "string" && asset.type.length > 0) {
+    return asset.type === "video" || asset.type === "pairedVideo";
+  }
+  return isVideoMimeType(asset.mimeType);
+}
+
+/**
+ * Resolves a picked asset's real file size in bytes, for the video size
+ * ceiling. `asset.fileSize` from expo-image-picker is NOT reliably
+ * present — confirmed in native source: Android's video path only
+ * reports a ContentResolver-queried size with no fallback (unlike the
+ * image path, which falls back to the copied file's on-disk length), so
+ * it can come back undefined even though the video was already copied
+ * to a local file. When the reported size is missing, stat the local
+ * file directly (asset.uri is already a local file uri for both
+ * platforms at this point) rather than trust an absent value — an
+ * unresolvable size returns undefined so the CALLER can reject rather
+ * than silently let an unverified-size video through.
+ */
+export async function resolveAssetFileSize(
+  uri: string,
+  reportedSize?: number | null,
+): Promise<number | undefined> {
+  if (typeof reportedSize === "number" && reportedSize > 0) {
+    return reportedSize;
+  }
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    return info.exists ? ((info as { size?: number }).size ?? undefined) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

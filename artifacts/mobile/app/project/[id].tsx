@@ -72,9 +72,10 @@ import { useColors } from "@/hooks/useColors";
 import { useProjectChecklists } from "@/hooks/useProjectChecklists";
 import { useProjectReports } from "@/hooks/useProjectReports";
 import {
-  isVideoMimeType,
+  isVideoAsset,
   MAX_PICKED_VIDEO_BYTES,
   prepareForUpload,
+  resolveAssetFileSize,
 } from "@/services/imageProcessing";
 import { shareLink } from "@/lib/shareLink";
 import {
@@ -647,7 +648,9 @@ export default function ProjectDetailScreen() {
     setAddingFromLibrary(true);
     try {
       const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.All,
+        // Array form — MediaTypeOptions is deprecated on SDK 54 and
+        // console.warns at runtime when used.
+        mediaTypes: ["images", "videos"],
         allowsMultipleSelection: true,
         selectionLimit: 20,
         quality: 0.7,
@@ -661,21 +664,35 @@ export default function ProjectDetailScreen() {
       // a picked clip can't exceed what a recorded one ever could. Photos
       // (and videos under the limit) pass through untouched; a mixed
       // selection uploads the accepted items rather than failing outright.
-      const oversizeNames: string[] = [];
-      const accepted = res.assets.filter((a) => {
-        if (
-          isVideoMimeType(a.mimeType) &&
-          typeof a.fileSize === "number" &&
-          a.fileSize > MAX_PICKED_VIDEO_BYTES
-        ) {
-          oversizeNames.push(a.fileName ?? "video");
-          return false;
+      // a.fileSize is not reliably populated by the picker (confirmed in
+      // native source — Android's video path has no on-disk-length
+      // fallback the image path has), so an unresolvable size is treated
+      // as a rejection rather than let through unchecked.
+      type Rejected = { name: string; reason: "too-large" | "unknown-size" };
+      const rejected: Rejected[] = [];
+      const accepted: typeof res.assets = [];
+      for (const a of res.assets) {
+        if (!isVideoAsset(a)) {
+          accepted.push(a);
+          continue;
         }
-        return true;
-      });
+        const name = a.fileName ?? "video";
+        const size = await resolveAssetFileSize(a.uri, a.fileSize);
+        if (typeof size !== "number") {
+          rejected.push({ name, reason: "unknown-size" });
+          continue;
+        }
+        if (size > MAX_PICKED_VIDEO_BYTES) {
+          rejected.push({ name, reason: "too-large" });
+          continue;
+        }
+        accepted.push(a);
+      }
+      const describeRejected = (r: Rejected) =>
+        r.reason === "too-large" ? `${r.name} (over 450MB)` : `${r.name} (size unknown)`;
 
       if (accepted.length === 0) {
-        showToast(`Video over 450MB limit, skipped: ${oversizeNames.join(", ")}`);
+        showToast(`Couldn't add video: ${rejected.map(describeRejected).join(", ")}`);
         return;
       }
 
@@ -697,12 +714,12 @@ export default function ProjectDetailScreen() {
           // round-trip lands; set it explicitly here too so the LOCAL
           // optimistic row (grid tile, poster-frame logic) is correct
           // immediately, same as capture.tsx does for recorded video.
-          isVideo: isVideoMimeType(p?.mimeType ?? a.mimeType),
+          isVideo: isVideoAsset({ type: a.type, mimeType: p?.mimeType ?? a.mimeType }),
         })),
       );
       showToast(
-        oversizeNames.length > 0
-          ? `Added ${accepted.length} item${accepted.length === 1 ? "" : "s"} from library — skipped ${oversizeNames.length} video${oversizeNames.length === 1 ? "" : "s"} over 450MB`
+        rejected.length > 0
+          ? `Added ${accepted.length} item${accepted.length === 1 ? "" : "s"} from library — skipped: ${rejected.map(describeRejected).join(", ")}`
           : `Added ${accepted.length} photo${accepted.length === 1 ? "" : "s"} from library`,
       );
     } catch (e) {
