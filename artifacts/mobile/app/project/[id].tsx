@@ -18,7 +18,6 @@ import {
   Platform,
   Pressable,
   ScrollView,
-  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -73,6 +72,7 @@ import { useColors } from "@/hooks/useColors";
 import { useProjectChecklists } from "@/hooks/useProjectChecklists";
 import { useProjectReports } from "@/hooks/useProjectReports";
 import { prepareForUpload } from "@/services/imageProcessing";
+import { shareLink } from "@/lib/shareLink";
 import {
   api,
   ApiError,
@@ -726,11 +726,7 @@ export default function ProjectDetailScreen() {
     const shareUrl = `https://app.field-view.com/gallery/${token}`;
     const count = mediaIds.length;
     showToast(`Snapshot link ready — ${count} photo${count === 1 ? "" : "s"}`);
-    try {
-      await Share.share({ url: shareUrl });
-    } catch {
-      /* user cancelled */
-    }
+    await shareLink(shareUrl);
     exitSelectMode();
   };
 
@@ -770,14 +766,7 @@ export default function ProjectDetailScreen() {
     // page.
     const shareUrl = `https://app.field-view.com/gallery/${token}`;
     showToast("Live link ready — all project photos");
-    try {
-      // url-only — passing both `url` and `message` causes iMessage
-      // to render two link previews plus the body text. Keeping it
-      // minimal is the fix for the double-preview bug.
-      await Share.share({ url: shareUrl });
-    } catch {
-      /* user cancelled */
-    }
+    await shareLink(shareUrl);
   };
 
   const togglePhotoSelected = (id: string) => {

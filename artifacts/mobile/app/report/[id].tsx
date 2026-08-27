@@ -8,7 +8,6 @@ import {
   Platform,
   Pressable,
   ScrollView,
-  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -24,6 +23,7 @@ import { useToast } from "@/contexts/ToastContext";
 import { useColors } from "@/hooks/useColors";
 import { REPORT_PHOTO_CAP, useReportDetail } from "@/hooks/useReportDetail";
 import { reportBadge } from "@/lib/reportBadge";
+import { shareLink } from "@/lib/shareLink";
 import { ApiError, api } from "@/services/api";
 import { downloadAndSharePdf } from "@/services/reportPdf";
 
@@ -190,12 +190,7 @@ export default function ReportDetailScreen() {
     // recipients open this in Safari, so it must not follow the API base.
     const shareUrl = `https://app.field-view.com/report/${token}`;
     showToast("Share link ready");
-    try {
-      // url-only — url+message double-renders link previews in iMessage.
-      await Share.share({ url: shareUrl });
-    } catch {
-      /* user cancelled */
-    }
+    await shareLink(shareUrl);
   };
 
   // ----- Delete report (kebab) -----
