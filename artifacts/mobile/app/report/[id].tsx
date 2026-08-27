@@ -190,7 +190,7 @@ export default function ReportDetailScreen() {
     // recipients open this in Safari, so it must not follow the API base.
     const shareUrl = `https://app.field-view.com/report/${token}`;
     showToast("Share link ready");
-    await shareLink(shareUrl);
+    await shareLink(shareUrl, report.title);
   };
 
   // ----- Delete report (kebab) -----

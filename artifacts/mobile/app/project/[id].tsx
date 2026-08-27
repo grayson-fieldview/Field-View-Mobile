@@ -726,7 +726,7 @@ export default function ProjectDetailScreen() {
     const shareUrl = `https://app.field-view.com/gallery/${token}`;
     const count = mediaIds.length;
     showToast(`Snapshot link ready — ${count} photo${count === 1 ? "" : "s"}`);
-    await shareLink(shareUrl);
+    await shareLink(shareUrl, `Photos from ${project.name}`);
     exitSelectMode();
   };
 
@@ -766,7 +766,7 @@ export default function ProjectDetailScreen() {
     // page.
     const shareUrl = `https://app.field-view.com/gallery/${token}`;
     showToast("Live link ready — all project photos");
-    await shareLink(shareUrl);
+    await shareLink(shareUrl, `Photos from ${project.name}`);
   };
 
   const togglePhotoSelected = (id: string) => {
